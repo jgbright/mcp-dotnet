@@ -1,0 +1,641 @@
+using System.Text.Json;
+
+namespace AzureDevOpsMcp.Tests;
+
+/// <summary>
+/// Mapping is where the output shape is enforced: a field that repeats the common case is nulled
+/// out here, and anything filtered is counted rather than dropped.
+/// </summary>
+public class ProjectAndRepoMappingTests
+{
+    [Fact]
+    public void A_normal_project_carries_neither_state_nor_visibility()
+    {
+        var dto = Mapping.Project(new WireProject("id", "Core", null, "wellFormed", "private", null));
+
+        Assert.Null(dto.State);
+        Assert.Null(dto.Visibility);
+        Assert.Equal("Core", dto.Name);
+    }
+
+    [Fact]
+    public void An_unusual_project_state_is_kept_because_it_explains_a_failure()
+    {
+        var dto = Mapping.Project(new WireProject("id", "Core", null, "createPending", "public", null));
+
+        Assert.Equal("createPending", dto.State);
+        Assert.Equal("public", dto.Visibility);
+    }
+
+    [Fact]
+    public void A_description_that_only_repeats_the_name_is_dropped()
+    {
+        Assert.Null(Mapping.Project(new WireProject("id", "Core", "Core", null, null, null)).Description);
+    }
+
+    [Fact]
+    public void A_long_description_is_cut_short_rather_than_carried_whole()
+    {
+        var dto = Mapping.Project(new WireProject("id", "Core", new string('x', 500), null, null, null));
+
+        Assert.Equal(101, dto.Description!.Length); // 100 + the ellipsis
+        Assert.EndsWith("…", dto.Description);
+    }
+
+    [Fact]
+    public void Repository_default_branches_lose_the_refs_heads_prefix()
+    {
+        var dto = Mapping.Repo(new WireRepo("id", "core", "refs/heads/main", "https://x", false, null));
+
+        Assert.Equal("main", dto.DefaultBranch);
+        Assert.Null(dto.Disabled); // false does not earn a field
+    }
+
+    [Fact]
+    public void A_disabled_repository_says_so()
+    {
+        Assert.True(Mapping.Repo(new WireRepo("id", "core", null, null, true, null)).Disabled);
+    }
+}
+
+public class PullRequestMappingTests
+{
+    private static WireRepo Repo() => new("r1", "core", null, null, null, new WireProjectRef("p1", "Core"));
+
+    private static WirePullRequest Pr(
+        string? mergeStatus = "succeeded", bool? draft = null, List<WireReviewer>? reviewers = null) =>
+        new(42, "Fix the retry loop", "body", "active", new WireIdentity("Mike", "mike@contoso.example", "u1"),
+            DateTimeOffset.UnixEpoch, null, "refs/heads/fix/retry", "refs/heads/main", draft, mergeStatus,
+            Repo(), reviewers);
+
+    [Fact]
+    public void Branches_are_shortened_and_the_browser_url_is_constructed()
+    {
+        var dto = Mapping.PullRequest(Pr(), "https://dev.azure.com/contoso", includeRepo: true);
+
+        Assert.Equal("fix/retry", dto.SourceBranch);
+        Assert.Equal("main", dto.TargetBranch);
+        Assert.Equal("https://dev.azure.com/contoso/Core/_git/core/pullrequest/42", dto.WebUrl);
+    }
+
+    [Fact]
+    public void Project_and_repository_names_are_escaped_into_the_url()
+    {
+        var pr = Pr() with
+        {
+            Repository = new WireRepo("r1", "web site", null, null, null, new WireProjectRef("p1", "My Project")),
+        };
+
+        Assert.Equal("https://dev.azure.com/contoso/My%20Project/_git/web%20site/pullrequest/42",
+            Mapping.PullRequest(pr, "https://dev.azure.com/contoso", includeRepo: true).WebUrl);
+    }
+
+    [Fact]
+    public void The_repository_name_is_omitted_when_the_caller_already_named_one()
+    {
+        Assert.Null(Mapping.PullRequest(Pr(), "https://x", includeRepo: false).Repo);
+        Assert.Equal("core", Mapping.PullRequest(Pr(), "https://x", includeRepo: true).Repo);
+    }
+
+    [Fact]
+    public void A_healthy_merge_status_is_omitted_and_a_blocked_one_is_not()
+    {
+        Assert.Null(Mapping.PullRequest(Pr(), "https://x", true).MergeStatus);
+        Assert.Equal("conflicts", Mapping.PullRequest(Pr("conflicts"), "https://x", true).MergeStatus);
+    }
+
+    [Theory]
+    [InlineData(10, "approved")]
+    [InlineData(5, "approved with suggestions")]
+    [InlineData(-5, "waiting for author")]
+    [InlineData(-10, "rejected")]
+    public void Votes_are_translated_out_of_their_numeric_scale(int vote, string expected)
+    {
+        Assert.Equal(expected, Mapping.Vote(vote));
+    }
+
+    [Fact]
+    public void No_vote_yet_says_nothing()
+    {
+        Assert.Null(Mapping.Vote(0));
+        Assert.Null(Mapping.Vote(null));
+    }
+
+    [Fact]
+    public void An_empty_reviewer_list_becomes_null_rather_than_an_empty_array()
+    {
+        Assert.Null(Mapping.Reviewers([]));
+        Assert.Null(Mapping.Reviewers(null));
+    }
+}
+
+public class ThreadMappingTests
+{
+    private static WireComment Comment(
+        int id, string? content = "looks good", string? type = "text", bool? deleted = null) =>
+        new(id, null, new WireIdentity("Mike", null, null), content, type, DateTimeOffset.UnixEpoch, deleted);
+
+    [Fact]
+    public void A_normal_thread_keeps_its_comments_and_omits_the_default_comment_type()
+    {
+        var counts = new SkipCounter();
+
+        var dto = Mapping.Thread(new WireThread(1, "active", [Comment(1)], null, null), false, 2000, counts);
+
+        Assert.Equal("looks good", Assert.Single(dto!.Comments).Body);
+        Assert.Null(dto.Comments[0].Type);
+        Assert.Null(counts.ToDto());
+    }
+
+    [Fact]
+    public void System_comments_are_counted_not_returned()
+    {
+        var counts = new SkipCounter();
+
+        var dto = Mapping.Thread(
+            new WireThread(1, "closed", [Comment(1, "Mike voted", "system")], null, null), false, 2000, counts);
+
+        Assert.Null(dto); // nothing is left once the system comment is filtered
+        Assert.Equal(1, counts.ToDto()!.System);
+        Assert.Null(counts.ToDto()!.Deleted);
+    }
+
+    [Fact]
+    public void System_comments_can_be_asked_for_and_then_carry_their_type()
+    {
+        var counts = new SkipCounter();
+
+        var dto = Mapping.Thread(
+            new WireThread(1, "closed", [Comment(1, "Mike voted", "system")], null, null), true, 2000, counts);
+
+        Assert.Equal("system", Assert.Single(dto!.Comments).Type);
+        Assert.Null(counts.ToDto());
+    }
+
+    [Fact]
+    public void Deleted_comments_are_counted_and_a_deleted_thread_is_counted_once()
+    {
+        var counts = new SkipCounter();
+
+        Mapping.Thread(new WireThread(1, null, [Comment(1, deleted: true)], null, null), false, 2000, counts);
+        Mapping.Thread(new WireThread(2, null, [Comment(2)], null, true), false, 2000, counts);
+
+        Assert.Equal(2, counts.ToDto()!.Deleted);
+    }
+
+    [Fact]
+    public void File_and_line_come_from_the_thread_context_when_it_is_a_code_comment()
+    {
+        var context = new WireThreadContext("/src/AdoTools.cs", new WireFilePosition(120, 1), null);
+
+        var dto = Mapping.Thread(new WireThread(1, "active", [Comment(1)], context, null), false, 2000, new SkipCounter());
+
+        Assert.Equal("/src/AdoTools.cs", dto!.FilePath);
+        Assert.Equal(120, dto.Line);
+    }
+
+    [Fact]
+    public void Comment_bodies_are_converted_from_markdown_and_truncated()
+    {
+        var dto = Mapping.Thread(
+            new WireThread(1, null, [Comment(1, "**ship** it")], null, null), false, 4, new SkipCounter());
+
+        Assert.Equal("ship", Assert.Single(dto!.Comments).Body);
+        Assert.True(dto.Comments[0].Truncated);
+    }
+}
+
+public class WorkItemMappingTests
+{
+    private static Dictionary<string, JsonElement> Fields(string json) =>
+        JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json)!;
+
+    private const string Typical = """
+        {
+          "System.TeamProject": "Core",
+          "System.WorkItemType": "Bug",
+          "System.Title": "Retry loop spins",
+          "System.State": "Active",
+          "System.AssignedTo": { "displayName": "Mike", "uniqueName": "mike@contoso.example" },
+          "System.ChangedDate": "2026-07-01T12:00:00Z",
+          "System.AreaPath": "Core\\Platform",
+          "System.IterationPath": "Core",
+          "System.Tags": "sql; regression ; ",
+          "Microsoft.VSTS.Common.Priority": 2
+        }
+        """;
+
+    [Fact]
+    public void Fields_are_flattened_and_the_assignee_reduced_to_a_display_name()
+    {
+        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null), "https://dev.azure.com/contoso");
+
+        Assert.Equal(17, dto.Id);
+        Assert.Equal("Bug", dto.Type);
+        Assert.Equal("Retry loop spins", dto.Title);
+        Assert.Equal("Mike", dto.AssignedTo);
+        Assert.Equal(2, dto.Priority);
+        Assert.Equal(new DateTimeOffset(2026, 7, 1, 12, 0, 0, TimeSpan.Zero), dto.Changed);
+        Assert.Equal("https://dev.azure.com/contoso/Core/_workitems/edit/17", dto.WebUrl);
+    }
+
+    [Fact]
+    public void An_area_path_that_is_just_the_project_carries_no_information()
+    {
+        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null), "https://x");
+
+        Assert.Equal("Core\\Platform", dto.AreaPath);
+        Assert.Null(dto.IterationPath); // "Core" is the project itself
+    }
+
+    [Fact]
+    public void Tags_are_split_and_trimmed()
+    {
+        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null), "https://x");
+
+        Assert.Equal(["sql", "regression"], dto.Tags);
+    }
+
+    [Fact]
+    public void No_tags_means_no_field_at_all()
+    {
+        Assert.Null(Mapping.Tags(null));
+        Assert.Null(Mapping.Tags(""));
+        Assert.Null(Mapping.Tags("  ;  "));
+    }
+
+    [Fact]
+    public void A_work_item_with_almost_no_fields_maps_without_throwing()
+    {
+        var dto = Mapping.WorkItem(new WireWorkItem(9, null, null, null), "https://x");
+
+        Assert.Equal(9, dto.Id);
+        Assert.Null(dto.Title);
+        Assert.Null(dto.WebUrl); // no project, so no address that resolves
+    }
+
+    [Fact]
+    public void Html_body_fields_are_converted_and_a_truncation_anywhere_is_flagged_once()
+    {
+        var fields = Fields("""
+            {
+              "System.TeamProject": "Core",
+              "System.Description": "<p>see <a href=\"https://contoso.example\">the doc</a></p>",
+              "Microsoft.VSTS.TCM.ReproSteps": "<ol><li>run it</li></ol>"
+            }
+            """);
+
+        var dto = Mapping.WorkItemDetail(new WireWorkItem(3, fields, null, null), 8, "https://x", null, null);
+
+        Assert.Equal("see the ", dto.Description); // "see the doc (https://contoso.example)", cut at 8
+        Assert.Equal("- run it", dto.ReproSteps);  // exactly 8, so this field did not set the flag
+        Assert.True(dto.Truncated);
+    }
+
+    [Fact]
+    public void A_reason_that_merely_repeats_the_state_is_dropped()
+    {
+        var fields = Fields("""{ "System.State": "New", "System.Reason": "New" }""");
+
+        Assert.Null(Mapping.WorkItemDetail(new WireWorkItem(3, fields, null, null), 0, "https://x", null, null).Reason);
+    }
+
+    [Fact]
+    public void Empty_comment_lists_are_omitted_rather_than_serialized_as_an_empty_array()
+    {
+        var dto = Mapping.WorkItemDetail(new WireWorkItem(3, null, null, null), 0, "https://x", [], null);
+
+        Assert.Null(dto.Comments);
+    }
+
+    [Fact]
+    public void A_deleted_comment_is_counted_and_not_returned()
+    {
+        var counts = new SkipCounter();
+
+        var kept = Mapping.WorkItemComment(
+            new WireWorkItemComment(1, "<p>looks fine</p>", new WireIdentity("Mike", null, null),
+                DateTimeOffset.UnixEpoch, null, null), 2000, counts);
+        var dropped = Mapping.WorkItemComment(
+            new WireWorkItemComment(2, "oops", null, null, null, true), 2000, counts);
+
+        Assert.Equal("looks fine", kept!.Body);
+        Assert.Null(dropped);
+        Assert.Equal(1, counts.ToDto()!.Deleted);
+    }
+}
+
+public class RelationMappingTests
+{
+    private static Dictionary<string, JsonElement> Attributes(string name) =>
+        JsonSerializer.Deserialize<Dictionary<string, JsonElement>>($$"""{ "name": "{{name}}" }""")!;
+
+    [Fact]
+    public void A_work_item_link_is_reduced_to_the_id_and_drops_the_api_url()
+    {
+        var relations = Mapping.Relations([
+            new WireRelation("System.LinkTypes.Hierarchy-Reverse",
+                "https://dev.azure.com/contoso/_apis/wit/workItems/1234", Attributes("Parent")),
+        ]);
+
+        var dto = Assert.Single(relations!);
+        Assert.Equal("Hierarchy-Reverse", dto.Type);
+        Assert.Equal("Parent", dto.Name);
+        Assert.Equal(1234, dto.WorkItemId);
+        Assert.Null(dto.Url); // the id says everything the link says
+    }
+
+    [Fact]
+    public void A_link_to_something_that_is_not_a_work_item_keeps_its_url()
+    {
+        var relations = Mapping.Relations([
+            new WireRelation("ArtifactLink", "vstfs:///Git/Commit/p%2Fr%2Fabc123", Attributes("Fixed in Commit")),
+        ]);
+
+        var dto = Assert.Single(relations!);
+        Assert.Null(dto.WorkItemId);
+        Assert.Equal("vstfs:///Git/Commit/p%2Fr%2Fabc123", dto.Url);
+    }
+
+    [Fact]
+    public void No_relations_means_no_field()
+    {
+        Assert.Null(Mapping.Relations(null));
+        Assert.Null(Mapping.Relations([]));
+    }
+}
+
+public class PipelineMappingTests
+{
+    [Fact]
+    public void The_root_folder_is_not_worth_reporting()
+    {
+        Assert.Null(Mapping.Pipeline(new WirePipeline(1, "ci", "\\", null)).Folder);
+        Assert.Equal("\\nightly", Mapping.Pipeline(new WirePipeline(1, "ci", "\\nightly", null)).Folder);
+    }
+
+    [Fact]
+    public void A_finished_run_reports_its_result_and_not_its_status()
+    {
+        var build = new WireBuild(
+            77, "20260701.3", "completed", "failed", DateTimeOffset.UnixEpoch, null, null,
+            "refs/heads/main", new WireBuildDefinition(1, "ci"), new WireIdentity("Mike", null, null),
+            new WireProjectRef("p1", "Core"));
+
+        var dto = Mapping.Run(build, "https://dev.azure.com/contoso", "Fallback");
+
+        Assert.Null(dto.State);
+        Assert.Equal("failed", dto.Result);
+        Assert.Equal("main", dto.Branch);
+        Assert.Equal("Mike", dto.RequestedFor);
+        Assert.Equal("https://dev.azure.com/contoso/Core/_build/results?buildId=77", dto.WebUrl);
+    }
+
+    [Fact]
+    public void A_running_build_reports_its_status_because_there_is_no_result_yet()
+    {
+        var build = new WireBuild(77, "x", "inProgress", null, null, null, null, null, null, null, null);
+
+        var dto = Mapping.Run(build, "https://x", "Core");
+
+        Assert.Equal("inProgress", dto.State);
+        Assert.Null(dto.Result);
+    }
+}
+
+public class TimelineMappingTests
+{
+    private static WireTimelineRecord Record(
+        string id, string? parent, string type, string name, string? result, int order,
+        List<WireIssue>? issues = null, WireLogRef? log = null) =>
+        new(id, parent, type, name, "completed", result, null, null, null, null, issues, log, order);
+
+    private static WireTimeline Pipeline() => new([
+        Record("s1", null, "Stage", "Build", "failed", 1),
+        Record("j1", "s1", "Job", "Compile", "failed", 2),
+        Record("t1", "j1", "Task", "Restore", "succeeded", 3),
+        Record("t2", "j1", "Task", "dotnet build", "failed", 4,
+            [new WireIssue("error", null, "CS0246: type not found"), new WireIssue("warning", null, "noisy")]),
+        Record("s2", null, "Stage", "Deploy", "skipped", 5),
+    ]);
+
+    [Fact]
+    public void Only_failed_tasks_are_reported_and_they_name_their_stage_and_job()
+    {
+        var counts = new SkipCounter();
+
+        var failed = Mapping.FailedSteps(Pipeline(), 5, counts);
+
+        var step = Assert.Single(failed).Step;
+        Assert.Equal("Build", step.Stage);
+        Assert.Equal("Compile", step.Job);
+        Assert.Equal("dotnet build", step.Task);
+        Assert.Equal(["CS0246: type not found"], step.Errors); // warnings did not fail the step
+    }
+
+    [Fact]
+    public void Two_failed_tasks_with_the_same_name_each_keep_their_own_log()
+    {
+        // The same step name in two jobs is routine in matrix builds. Pairing logs by name would
+        // either crash or attach one job's log to the other's failure.
+        var timeline = new WireTimeline([
+            Record("j1", null, "Job", "Linux", "failed", 1),
+            Record("j2", null, "Job", "Windows", "failed", 2),
+            Record("t1", "j1", "Task", "Run tests", "failed", 3, log: new WireLogRef(1, "https://logs/1")),
+            Record("t2", "j2", "Task", "Run tests", "failed", 4, log: new WireLogRef(2, "https://logs/2")),
+        ]);
+
+        var failed = Mapping.FailedSteps(timeline, 5, new SkipCounter());
+
+        Assert.Equal(["Linux", "Windows"], failed.Select(f => f.Step.Job));
+        Assert.Equal(["https://logs/1", "https://logs/2"], failed.Select(f => f.LogUrl));
+    }
+
+    [Fact]
+    public void The_stage_and_job_roll_ups_are_not_reported_as_separate_failures()
+    {
+        // Otherwise one broken task is reported three times: as a task, as its job, as its stage.
+        Assert.Single(Mapping.FailedSteps(Pipeline(), 5, new SkipCounter()));
+    }
+
+    [Fact]
+    public void Records_that_passed_are_counted_rather_than_listed()
+    {
+        var counts = new SkipCounter();
+
+        Mapping.FailedSteps(Pipeline(), 5, counts);
+
+        Assert.Equal(1, counts.ToDto()!.Succeeded); // Restore. The skipped Deploy stage did not pass.
+        Assert.Null(counts.ToDto()!.Deleted);
+    }
+
+    [Fact]
+    public void A_skipped_stage_is_reported_as_neither_failed_nor_passed()
+    {
+        // Counting it as passing would say the pipeline did work it never did.
+        Assert.False(Mapping.IsFailure("skipped"));
+        Assert.False(Mapping.IsSuccess("skipped"));
+        Assert.False(Mapping.IsSuccess(null));
+        Assert.True(Mapping.IsSuccess("succeededWithIssues"));
+    }
+
+    [Fact]
+    public void The_error_list_is_bounded()
+    {
+        var many = new WireTimeline([
+            Record("t1", null, "Task", "build", "failed", 1,
+                Enumerable.Range(0, 20).Select(i => new WireIssue("error", null, $"e{i}")).ToList()),
+        ]);
+
+        Assert.Equal(3, Mapping.FailedSteps(many, 3, new SkipCounter())[0].Step.Errors!.Count);
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("canceled")]
+    [InlineData("abandoned")]
+    public void Cancelled_and_abandoned_count_as_failure(string result)
+    {
+        Assert.True(Mapping.IsFailure(result));
+    }
+
+    [Theory]
+    [InlineData("succeeded")]
+    [InlineData("succeededWithIssues")]
+    [InlineData("skipped")]
+    [InlineData(null)]
+    public void Everything_else_does_not(string? result)
+    {
+        Assert.False(Mapping.IsFailure(result));
+    }
+
+    [Fact]
+    public void An_empty_timeline_produces_no_failures_and_no_exception()
+    {
+        Assert.Empty(Mapping.FailedSteps(new WireTimeline(null), 5, new SkipCounter()));
+    }
+
+    [Fact]
+    public void A_record_whose_parent_is_missing_still_maps()
+    {
+        var orphan = new WireTimeline([Record("t1", "gone", "Task", "build", "failed", 1)]);
+
+        var step = Assert.Single(Mapping.FailedSteps(orphan, 5, new SkipCounter())).Step;
+        Assert.Null(step.Stage);
+        Assert.Null(step.Job);
+    }
+}
+
+public class LogTailTests
+{
+    [Fact]
+    public void The_end_of_the_log_is_kept_because_that_is_where_the_error_is()
+    {
+        var log = string.Join("\n", Enumerable.Range(1, 100).Select(i => $"line {i}"));
+
+        var (tail, truncated) = Mapping.LogTail(log, 3);
+
+        Assert.Equal("line 98\nline 99\nline 100", tail);
+        Assert.True(truncated);
+    }
+
+    [Fact]
+    public void A_short_log_is_returned_whole_and_unflagged()
+    {
+        var (tail, truncated) = Mapping.LogTail("only\nline", 40);
+
+        Assert.Equal("only\nline", tail);
+        Assert.Null(truncated);
+    }
+
+    [Fact]
+    public void Windows_line_endings_do_not_produce_stray_carriage_returns()
+    {
+        var (tail, _) = Mapping.LogTail("a\r\nb\r\n", 40);
+
+        Assert.Equal("a\nb", tail);
+    }
+
+    [Fact]
+    public void Asking_for_no_lines_or_having_no_log_yields_nothing()
+    {
+        Assert.Equal((null, null), Mapping.LogTail("something", 0));
+        Assert.Equal((null, null), Mapping.LogTail("   ", 40));
+    }
+}
+
+public class FieldHelperTests
+{
+    private static Dictionary<string, JsonElement> Fields(string json) =>
+        JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json)!;
+
+    [Fact]
+    public void A_field_of_the_wrong_shape_reads_as_absent_rather_than_throwing()
+    {
+        var fields = Fields("""{ "System.Title": 42, "Microsoft.VSTS.Common.Priority": "high" }""");
+
+        Assert.Null(Mapping.Str(fields, "System.Title"));
+        Assert.Null(Mapping.Int(fields, "Microsoft.VSTS.Common.Priority"));
+    }
+
+    [Fact]
+    public void An_identity_field_reads_whether_it_is_an_object_or_already_a_string()
+    {
+        Assert.Equal("Mike", Mapping.Person(Fields("""{ "a": { "displayName": "Mike" } }"""), "a"));
+        Assert.Equal("Mike", Mapping.Person(Fields("""{ "a": "Mike" }"""), "a"));
+        Assert.Null(Mapping.Person(Fields("""{ "a": 1 }"""), "a"));
+        Assert.Null(Mapping.Person(null, "a"));
+    }
+
+    [Fact]
+    public void An_unparseable_date_reads_as_absent()
+    {
+        Assert.Null(Mapping.Date(Fields("""{ "d": "not a date" }"""), "d"));
+    }
+
+    [Theory]
+    [InlineData("refs/heads/main", "main")]
+    [InlineData("refs/heads/feature/a/b", "feature/a/b")]
+    [InlineData("refs/pull/12/merge", "refs/pull/12/merge")]
+    [InlineData(null, null)]
+    public void Branch_names_lose_only_the_heads_prefix(string? input, string? expected)
+    {
+        Assert.Equal(expected, Mapping.ShortBranch(input));
+    }
+
+    [Theory]
+    [InlineData("System.LinkTypes.Hierarchy-Forward", "Hierarchy-Forward")]
+    [InlineData("Microsoft.VSTS.Common.TestedBy-Forward", "TestedBy-Forward")]
+    [InlineData("ArtifactLink", "ArtifactLink")]
+    public void Relation_names_lose_their_namespace(string input, string expected)
+    {
+        Assert.Equal(expected, Mapping.ShortRelation(input));
+    }
+
+    [Theory]
+    [InlineData("https://dev.azure.com/x/_apis/wit/workItems/99", 99)]
+    [InlineData("https://dev.azure.com/x/_apis/wit/workitems/99", 99)]
+    [InlineData("https://dev.azure.com/x/_apis/git/repositories/abc", null)]
+    [InlineData("vstfs:///Git/PullRequestId/a%2Fb%2F3", null)]
+    [InlineData(null, null)]
+    public void Only_work_item_urls_yield_a_work_item_id(string? url, int? expected)
+    {
+        Assert.Equal(expected, Mapping.LinkedWorkItemId(url));
+    }
+
+    [Theory]
+    [InlineData("completed", true)]
+    [InlineData("Completed", true)]
+    [InlineData(null, true)]
+    // `cancelling` reads like an ending, but the run is still winding down and becomes `completed`
+    // once the cancellation lands. A waiter that stopped here would report a run that had not
+    // stopped.
+    [InlineData("cancelling", false)]
+    [InlineData("inProgress", false)]
+    [InlineData("notStarted", false)]
+    [InlineData("postponed", false)]
+    public void Only_completed_ends_a_run(string? status, bool expected)
+    {
+        Assert.Equal(expected, Mapping.IsTerminalRunStatus(status));
+    }
+}

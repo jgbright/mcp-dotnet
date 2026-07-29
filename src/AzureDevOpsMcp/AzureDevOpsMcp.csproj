@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- Packs as a .NET global tool: `dotnet pack` then `dotnet tool install` puts `ado-mcp` on the
+       PATH, so an MCP client can launch it by name rather than by a dotnet run against this path. -->
+  <PropertyGroup>
+    <PackAsTool>true</PackAsTool>
+    <!-- See the note in TeamsMcp.csproj: AzureDevOpsMcp, AdoMcp and AdoMcpServer are all taken on
+         nuget.org by unrelated packages, so the ids here carry an owner prefix. -->
+    <PackageId>JasonBright.Mcp.AzureDevOps</PackageId>
+    <ToolCommandName>ado-mcp</ToolCommandName>
+    <Description>
+      MCP stdio server exposing Azure DevOps through its REST API: projects, repositories, pull
+      requests, work items, pipelines and search (code, work items, wiki), read-only. Signs in to
+      Entra ID once interactively and runs silently thereafter.
+    </Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Tests exercise the pure helpers (body conversion, mapping, WIQL, log formatting) directly. -->
+    <InternalsVisibleTo Include="AzureDevOpsMcp.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- No Azure DevOps client SDK on purpose: the tools drive the REST API through a small typed
+         HttpClient wrapper so that paging, requested fields and HTTP logging stay under our control. -->
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
+    <PackageReference Include="ModelContextProtocol.Extensions.Tasks" Version="2.0.0" />
+  </ItemGroup>
+
+</Project>
