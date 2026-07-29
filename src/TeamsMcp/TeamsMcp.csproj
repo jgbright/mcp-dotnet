@@ -1,0 +1,45 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- Packs as a .NET global tool: `dotnet pack` then `dotnet tool install` puts `teams-mcp` on the
+       PATH, so an MCP client can launch it by name rather than by a dotnet run against this path. -->
+  <PropertyGroup>
+    <PackAsTool>true</PackAsTool>
+    <!-- Owner-prefixed because the obvious ids are gone: nuget.org already carries an unrelated
+         AzureDevOpsMcp, AdoMcp and AdoMcpServer, all from other authors. The prefix also groups the
+         servers in this repo and is reservable, which a generic id is not. The id is independent of
+         both the assembly name and ToolCommandName, so nothing else moves with it. -->
+    <PackageId>JasonBright.Mcp.Teams</PackageId>
+    <ToolCommandName>teams-mcp</ToolCommandName>
+    <Description>
+      MCP stdio server exposing Microsoft Teams through Microsoft Graph: read teams, channels, chats
+      and messages, and send messages behind an opt-in gate. Signs in once interactively and runs
+      silently thereafter.
+    </Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Tests exercise the pure helpers (HtmlToText, Map, log formatting) directly. -->
+    <InternalsVisibleTo Include="TeamsMcp.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Graph" Version="6.2.0" />
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
+    <PackageReference Include="ModelContextProtocol.Extensions.Tasks" Version="2.0.0" />
+  </ItemGroup>
+
+</Project>
