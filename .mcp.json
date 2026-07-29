@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "csharp": {
+      "type": "stdio",
+      "command": "csharp-lsp-mcp"
+    }
+  }
+}
