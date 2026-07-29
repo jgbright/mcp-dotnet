@@ -1,0 +1,65 @@
+# How Git handles the files in this repository.
+#
+# Text is normalized to LF in the object database and converted back on
+# checkout, so a clean clone behaves the same on Windows and on Linux whatever
+# `core.autocrlf` the person cloning happens to have set. Only the files whose
+# line endings are functional rather than cosmetic pin `eol=` explicitly;
+# everything else is checked out with the platform's native ending.
+
+# Default for everything Git detects as text.
+* text=auto
+
+# Declared rather than detected. `diff=` selects a built-in function-context
+# driver, so a hunk header names the enclosing member instead of a stray brace.
+*.cs            text diff=csharp
+*.md            text diff=markdown
+*.csproj        text
+*.props         text
+*.targets       text
+*.slnx          text
+*.json          text
+*.yml           text
+*.yaml          text
+*.xml           text
+*.config        text
+*.ps1           text
+*.psm1          text
+*.psd1          text
+.gitattributes  text
+.gitignore      text
+.editorconfig   text
+
+# Endings that are load-bearing: a POSIX shell chokes on a trailing CR, cmd.exe
+# mis-parses an LF-only batch file, and Visual Studio still wants CRLF in .sln.
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.cmd           text eol=crlf
+*.bat           text eol=crlf
+*.sln           text eol=crlf
+
+# Byte-exact: a patch whose endings get rewritten no longer applies, and a
+# signing key is not text at all.
+*.patch         -text
+*.diff          -text
+*.snk           binary
+*.pfx           binary
+
+# Binary: never converted, never diffed, never merged.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.webp          binary
+*.pdf           binary
+*.zip           binary
+*.gz            binary
+*.7z            binary
+*.dll           binary
+*.exe           binary
+*.pdb           binary
+*.nupkg         binary
+*.snupkg        binary
+*.ttf           binary
+*.woff          binary
+*.woff2         binary
