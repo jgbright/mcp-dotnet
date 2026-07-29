@@ -1,0 +1,133 @@
+# Validates a pull request, and main after it lands. Build and test only: nothing here publishes,
+# tags or touches the tool store, and nothing needs a secret. The servers' TEAMS_MCP_* /
+# ADO_MCP_* contract is a runtime concern, and no test talks to Graph or Azure DevOps.
+name: pr
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+# One run per pull request. Pushing again abandons the run that is now out of date. Keyed on the
+# pull request number where there is one and on the ref otherwise, so a push to main never cancels
+# a pull request's run or vice versa.
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Windows-first on purpose, matching where these servers actually run: the MSAL token cache is
+    # DPAPI-protected here, and `install` detects clients by the paths a Windows checkout has.
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out (full history)
+        uses: actions/checkout@v7
+        with:
+          # Nerdbank.GitVersioning derives the patch from git height, so a shallow clone (the
+          # default) produces a wrong version or fails the build outright.
+          fetch-depth: 0
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore local tools (nbgv)
+        run: dotnet tool restore
+
+      - name: Report the version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $raw = dotnet nbgv get-version --format json
+          if ($LASTEXITCODE -ne 0) { throw 'nbgv could not compute a version.' }
+          $v = $raw | ConvertFrom-Json
+
+          # A pull request is built from refs/pull/N/merge, which is not a public release ref, so
+          # this build is always a prerelease. SimpleVersion is what the same commit ships as once
+          # it is on main, the number the reviewer actually wants to see.
+          "### Version" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "| | |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "| --- | --- |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "| Would ship as | ``$($v.SimpleVersion)`` |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "| This build | ``$($v.NuGetPackageVersion)`` |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "| Public release | $($v.PublicRelease) |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "| Ref | ``$($v.BuildingRef)`` |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "| Height | $($v.VersionHeight) |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+          Write-Host "would ship as $($v.SimpleVersion); this build is $($v.NuGetPackageVersion)"
+
+      - name: Restore
+        run: dotnet restore McpServers.slnx
+
+      # -warnaserror after an explicit restore, so a restore warning (a resolved-but-mismatched
+      # package, say) is reported where it happens rather than failing the compile step.
+      - name: Build
+        run: dotnet build McpServers.slnx --configuration Release --no-restore -warnaserror
+
+      # `--logger trx` without a LogFileName on purpose: both test projects write into one results
+      # directory, and a fixed name means the second run silently overwrites the first. The
+      # default name disambiguates. Which project a file belongs to is read out of the file below.
+      - name: Test
+        run: >
+          dotnet test McpServers.slnx --configuration Release --no-build
+          --logger "trx"
+          --results-directory artifacts/test-results
+
+      - name: Summarise the test results
+        # Runs on failure too. A red build is exactly when the counts matter.
+        if: always()
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem artifacts/test-results -Filter *.trx -Recurse -ErrorAction SilentlyContinue)
+          if (-not $files) {
+            "### Tests`n`nNo results file was produced." | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            return
+          }
+
+          "### Tests" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "| Assembly | Total | Passed | Failed | Skipped |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "| --- | ---: | ---: | ---: | ---: |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+          $failed = @()
+          foreach ($f in $files) {
+            # -LiteralPath: the default trx name disambiguates collisions with a "[1]" suffix, and
+            # square brackets are wildcards to every non-literal PowerShell path parameter.
+            $x = [xml](Get-Content -LiteralPath $f.FullName -Raw)
+            $c = $x.TestRun.ResultSummary.Counters
+
+            # The trx file name carries a timestamp, not a project. The assembly under test is the
+            # `storage` of any test definition in it.
+            $storage = @($x.TestRun.TestDefinitions.UnitTest)[0].storage
+            $name = if ($storage) { Split-Path $storage -Leaf } else { $f.Name }
+
+            $skipped = [int]$c.total - [int]$c.executed
+            "| $name | $($c.total) | $($c.passed) | $($c.failed) | $skipped |" |
+              Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+            $failed += @($x.TestRun.Results.UnitTestResult) |
+              Where-Object { $_.outcome -eq 'Failed' } |
+              ForEach-Object { $_.testName }
+          }
+
+          if ($failed) {
+            "" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            "**Failed:**" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            $failed | ForEach-Object { "- ``$_``" | Out-File $env:GITHUB_STEP_SUMMARY -Append }
+          }
+
+      - name: Upload the test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: artifacts/test-results
+          if-no-files-found: warn
