@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "teams": {
+      "type": "stdio",
+      "command": "teams-mcp",
+      "args": []
+    },
+    "ado": {
+      "type": "stdio",
+      "command": "ado-mcp",
+      "args": []
+    }
+  }
+}

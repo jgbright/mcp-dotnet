@@ -1,0 +1,13 @@
+{
+  "name": "mcp-dotnet",
+  "owner": {
+    "name": "Jason Bright"
+  },
+  "plugins": [
+    {
+      "name": "mcp-dotnet",
+      "source": "./plugin",
+      "description": "Microsoft Teams and Azure DevOps MCP servers (.NET) with companion skills for messaging, watching conversations, and re-authenticating."
+    }
+  ]
+}
