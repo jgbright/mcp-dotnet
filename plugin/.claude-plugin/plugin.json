@@ -1,0 +1,8 @@
+{
+  "name": "mcp-dotnet",
+  "description": "Microsoft Teams and Azure DevOps MCP servers (.NET) with companion skills for messaging, watching conversations, and re-authenticating.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Jason Bright"
+  }
+}
