@@ -1,0 +1,177 @@
+# Cuts a release: build, test, pack, tag, publish a GitHub Release with the .nupkg files attached,
+# and push both packages to nuget.org.
+#
+# Dispatched by hand rather than triggered by a pushed tag. The version lives in version.json and
+# git height, so the workflow is the thing that knows it. Asking someone to type a matching tag
+# only creates a way for the tag and the packages to disagree.
+name: release
+
+on:
+  workflow_dispatch:
+
+# Everything this needs and nothing else. contents: write covers pushing the tag and creating the
+# release. id-token: write lets the job mint the GitHub OIDC token that nuget.org's trusted
+# publishing exchanges for a temporary push key — without it the login step fails with no token
+# available, which is the one failure here that does not look like a nuget.org problem. No
+# packages: write, which governs GitHub Packages and is not where these go.
+permissions:
+  contents: write
+  id-token: write
+
+# Never two releases at once, and never cancel one midway: a cancelled run can leave a pushed tag
+# with no release attached to it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out (full history and tags)
+        uses: actions/checkout@v7
+        with:
+          # nbgv derives the patch from git height and this job checks the tag it is about to
+          # create against the ones already there; a shallow clone has neither.
+          fetch-depth: 0
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore local tools (nbgv)
+        run: dotnet tool restore
+
+      # The gate runs before the build rather than after it. It is the same check either way, and
+      # failing in ten seconds beats failing after a build, a test run and a pack.
+      - name: Check this ref can be released
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ($env:GITHUB_REF -ne 'refs/heads/main') {
+            throw "Releases are cut from main. This run is on '$env:GITHUB_REF'."
+          }
+
+          $raw = dotnet nbgv get-version --format json
+          if ($LASTEXITCODE -ne 0) { throw 'nbgv could not compute a version.' }
+          $v = $raw | ConvertFrom-Json
+
+          # PublicRelease is nbgv matching the ref against publicReleaseRefSpec in version.json. If
+          # it is false the packages carry a -g<commit> suffix, and a prerelease is not a release.
+          if (-not $v.PublicRelease) {
+            throw "nbgv says this is not a public release: version '$($v.NuGetPackageVersion)' " +
+                  "from ref '$($v.BuildingRef)'. version.json's publicReleaseRefSpec decides this."
+          }
+          if ($v.NuGetPackageVersion -match '-') {
+            throw "Version '$($v.NuGetPackageVersion)' is a prerelease."
+          }
+
+          $tag = "v$($v.SimpleVersion)"
+          if (git tag --list $tag) {
+            throw "Tag $tag already exists. Bump the major/minor in version.json, or check whether " +
+                  'this commit has already been released.'
+          }
+
+          "version=$($v.SimpleVersion)" | Out-File $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "releasing $($v.SimpleVersion) as $tag"
+
+      - name: Restore
+        run: dotnet restore McpServers.slnx
+
+      - name: Build
+        run: dotnet build McpServers.slnx --configuration Release --no-restore -warnaserror
+
+      # No LogFileName, for the reason pr.yml gives: two test projects, one results directory.
+      - name: Test
+        run: >
+          dotnet test McpServers.slnx --configuration Release --no-build
+          --logger "trx"
+          --results-directory artifacts/test-results
+
+      # No --no-build: PackAsTool runs a publish as part of packing, and suppressing the build takes
+      # that with it, producing a package whose tool payload is stale or missing. Both servers pack
+      # (teams-mcp, ado-mcp) into artifacts/, per PackageOutputPath in Directory.Build.props.
+      - name: Pack
+        run: dotnet pack McpServers.slnx --configuration Release
+
+      - name: Tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # nbgv writes an annotated tag, which needs a committer identity the runner does not have.
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          dotnet nbgv tag
+          if ($LASTEXITCODE -ne 0) { throw 'nbgv tag failed.' }
+
+          git push origin "refs/tags/${{ steps.version.outputs.tag }}"
+          if ($LASTEXITCODE -ne 0) { throw 'Pushing the tag failed.' }
+
+      - name: Create the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # PowerShell does not expand a glob on behalf of a native command, so the paths are
+          # resolved here; passing the array then expands to one argument per file.
+          $packages = @(Get-ChildItem artifacts/*.nupkg | ForEach-Object { $_.FullName })
+          if (-not $packages) { throw 'No .nupkg files in artifacts/ to attach.' }
+          $packages | ForEach-Object { Write-Host "attaching $_" }
+
+          gh release create "${{ steps.version.outputs.tag }}" $packages `
+            --title "${{ steps.version.outputs.tag }}" `
+            --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'gh release create failed.' }
+
+      - name: Upload the packages as build artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: artifacts/*.nupkg
+          if-no-files-found: warn
+
+      # No long-lived API key: nuget.org trusted publishing exchanges this job's GitHub OIDC token
+      # for a temporary push key, against a policy registered on nuget.org naming this repository
+      # owner, this repository and this workflow file by name (`release.yml`, no path). Renaming
+      # this file therefore breaks publishing until the policy is edited to match.
+      #
+      # Immediately before the push on purpose: the key it returns lives one hour and each OIDC
+      # token buys exactly one key, so minting it early only shortens the window.
+      #
+      # NUGET_USER is the nuget.org profile name, not an email and not a credential. It is a secret
+      # only because nuget.org recommends it; publishing is authorized by the OIDC token and the
+      # policy behind it, so this value leaking would let nobody push anything.
+      - name: Get a short-lived NuGet key (trusted publishing)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      # Last, and the only irreversible step in the job: a published version can never be re-pushed
+      # or deleted, only unlisted. Everything that can fail cheaply — the ref and tag gate, the
+      # build, the tests — has already run, and the tag and GitHub Release exist, so a failure here
+      # leaves a release that is short a feed rather than a feed entry with no release behind it.
+      #
+      # --skip-duplicate makes a re-dispatch after a half-finished push a no-op on the package that
+      # already landed rather than a 409.
+      - name: Push to NuGet
+        shell: pwsh
+        env:
+          NUGET_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($p in Get-ChildItem artifacts/*.nupkg) {
+            dotnet nuget push $p.FullName `
+              --source https://api.nuget.org/v3/index.json `
+              --api-key $env:NUGET_KEY `
+              --skip-duplicate
+            if ($LASTEXITCODE -ne 0) { throw "Pushing $($p.Name) failed." }
+          }

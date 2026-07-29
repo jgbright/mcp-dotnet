@@ -1,0 +1,40 @@
+<Project>
+
+  <!--
+    Shared NuGet metadata for the servers in this repo. Both ship as .NET global tools, so an
+    author or a tag set here is set once for every package instead of drifting between csproj
+    files. The test projects inherit these too and opt out of packing with IsPackable=false.
+
+    Not set, on purpose:
+      Version                      comes from version.json via Nerdbank.GitVersioning (below)
+      PackageId / ToolCommandName  per project, since they make each package a distinct tool
+      RepositoryUrl                the remote is private, so a URL here would 404 for consumers
+                                   and SourceLink would resolve to nothing. Set it if it goes public.
+  -->
+  <PropertyGroup>
+    <Authors>Jason Bright</Authors>
+    <Product>mcp-dotnet</Product>
+    <PackageTags>mcp;model-context-protocol;stdio;ai</PackageTags>
+    <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts</PackageOutputPath>
+
+    <!-- An SPDX expression rather than PackageLicenseFile: nuget.org renders it as a link to the
+         license text it already knows, so the package does not have to carry a copy. LICENSE at the
+         repository root is the same license for anyone reading the source. -->
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <!--
+    Versioning for every project in the repo. Nerdbank.GitVersioning reads version.json, adds the
+    git height as the patch, and injects Version / AssemblyVersion / FileVersion / PackageVersion.
+    That is why there is no <Version> above: an explicit one conflicts with what it sets.
+
+    PrivateAssets="all" keeps it a build-time dependency, out of both packages' dependency lists.
+
+    It needs real git history, so a shallow clone (CI's default) produces a wrong version or a
+    build failure. Both workflows check out with fetch-depth: 0 for that reason.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Nerdbank.GitVersioning" Version="3.10.91" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>
