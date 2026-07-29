@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AzureDevOpsMcp/AzureDevOpsMcp.csproj" />
+    <Project Path="src/TeamsMcp/TeamsMcp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AzureDevOpsMcp.Tests/AzureDevOpsMcp.Tests.csproj" />
+    <Project Path="tests/TeamsMcp.Tests/TeamsMcp.Tests.csproj" />
+  </Folder>
+</Solution>
