@@ -8,14 +8,16 @@
     Not set, on purpose:
       Version                      comes from version.json via Nerdbank.GitVersioning (below)
       PackageId / ToolCommandName  per project, since they make each package a distinct tool
-      RepositoryUrl                the remote is private, so a URL here would 404 for consumers
-                                   and SourceLink would resolve to nothing. Set it if it goes public.
   -->
   <PropertyGroup>
     <Authors>Jason Bright</Authors>
     <Product>mcp-dotnet</Product>
     <PackageTags>mcp;model-context-protocol;stdio;ai</PackageTags>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts</PackageOutputPath>
+
+    <PackageProjectUrl>https://github.com/jgbright/mcp-dotnet</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jgbright/mcp-dotnet</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
 
     <!-- An SPDX expression rather than PackageLicenseFile: nuget.org renders it as a link to the
          license text it already knows, so the package does not have to carry a copy. LICENSE at the

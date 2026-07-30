@@ -36,12 +36,13 @@ scope (or in the launching shell) is inherited — no per-project config needed.
 
 ## Installing
 
-From a local clone:
-
 ```
-/plugin marketplace add <path-to-this-repo>
+/plugin marketplace add jgbright/mcp-dotnet
 /plugin install mcp-dotnet@mcp-dotnet
 ```
+
+`/plugin marketplace add <path-to-a-local-clone>` instead, to install a checkout you are working
+on rather than what is on GitHub.
 
 Sign in once with `teams-mcp auth` (the `mcp-reauth` skill automates most of it).
 `ado-mcp` authenticates the same way through its own cached record.
