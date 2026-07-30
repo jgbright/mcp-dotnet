@@ -20,9 +20,7 @@ a permanent, public commitment rather than a placeholder: the ids are **owner-pr
 possible — the old id keeps existing and the new one starts from no downloads. The `JasonBright.`
 prefix is reserved, and the trusted publishing policy covers every package its owner owns, so a
 third server picks an id under the prefix and publishes with nothing to register and no key to
-issue. The license is MIT (`PackageLicenseExpression` plus a root `LICENSE`). `RepositoryUrl` stays
-unset while the remote is private, since it would 404 for consumers — publishing the packages did
-not publish the source.
+issue. The license is MIT (`PackageLicenseExpression` plus a root `LICENSE`).
 
 ## Versioning
 
@@ -71,6 +69,15 @@ So **renaming or moving that workflow revokes publishing** until the policy is e
 which is the one edit under `.github/workflows/` that breaks something outside this repository. The
 login step sits immediately before the push because the key is short-lived and each OIDC token buys
 exactly one. The only repository secret is `NUGET_USER`, the nuget.org profile name, which
-authorizes nothing by itself. A policy on a private repository is provisional for seven days until a
-first publish binds it to GitHub's immutable repository and owner ids; it deactivates unused, and
-the window is restartable.
+authorizes nothing by itself — but it must exist, because an unset secret expands to an empty string
+and `NuGet/login@v1` rejects that as `Input required and not supplied: user`, which reads like a
+malformed workflow rather than a missing value.
+
+A policy nuget.org cannot yet resolve to a repository is provisional for seven days and deactivates
+unused; the first successful publish binds it to GitHub's immutable repository and owner ids.
+
+**A release that fails after the tag step leaves work to undo.** The tag and the GitHub Release are
+created before the push, and the pre-flight gate refuses a ref whose tag already exists, so a
+failure at the login or push step makes a plain re-dispatch fail in ten seconds. Recovering is
+`gh release delete <tag> --yes` plus `git push origin :refs/tags/<tag>` before dispatching again —
+safe precisely because the push is last, so nothing reached the feed.

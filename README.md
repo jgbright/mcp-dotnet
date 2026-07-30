@@ -1,8 +1,8 @@
 # mcp-dotnet
 
-Two MCP stdio servers on .NET 10, built on the official
-[ModelContextProtocol](https://www.nuget.org/packages/ModelContextProtocol) C# SDK, signing in to
-Entra ID through Azure.Identity:
+Two MCP stdio servers on .NET 10. Both are built on the official
+[ModelContextProtocol](https://www.nuget.org/packages/ModelContextProtocol) C# SDK and sign in to
+Entra ID through Azure.Identity.
 
 - **Teams** (`teams-mcp`): Microsoft Teams via Microsoft Graph. Read teams, channels, chats and
   messages, search, wait for new messages, and send behind an opt-in gate.
@@ -10,48 +10,157 @@ Entra ID through Azure.Identity:
   search (code, work items, wiki) via the REST API, plus gated work item writes and pull request
   comments.
 
+Each server works on its own, so install only the one you need. Design documentation is in
+[`docs/`](docs/). Everything from here to [Teams server](#teams-server) is what it takes to get
+running.
+
+## Quick start
+
+Four steps. You need the [.NET 10 SDK](https://dotnet.microsoft.com/download) and an Entra ID app
+registration in your own tenant. [App registrations](#app-registrations) says what it has to be.
+There is no way around that step, because the servers sign in as you against your own
+organization. There is no shared id to hand out.
+
+**1. Install the servers** from nuget.org. This puts `teams-mcp` and `ado-mcp` on your PATH.
+
+```powershell
+dotnet tool install --global JasonBright.Mcp.Teams
+dotnet tool install --global JasonBright.Mcp.AzureDevOps
 ```
-src/TeamsMcp/                 the Teams server
-src/AzureDevOpsMcp/           the Azure DevOps server
-tests/TeamsMcp.Tests/         xUnit tests for the pure logic, run with `dotnet test`
-tests/AzureDevOpsMcp.Tests/
-scripts/                      rebuild.ps1 (dev inner loop)
-McpServers.slnx               all four projects
+
+**2. Point them at your tenant.** Nothing here is secret. Tenant and client ids are public OAuth
+identifiers. Set them at user scope and every client picks them up, because an MCP server is a
+child process of the client that launches it.
+
+```powershell
+[Environment]::SetEnvironmentVariable('TEAMS_MCP_TENANT_ID', '<tenant-guid>',     'User')
+[Environment]::SetEnvironmentVariable('TEAMS_MCP_CLIENT_ID', '<app-guid>',        'User')
+[Environment]::SetEnvironmentVariable('ADO_MCP_TENANT_ID',   '<tenant-guid>',     'User')
+[Environment]::SetEnvironmentVariable('ADO_MCP_CLIENT_ID',   '<app-guid>',        'User')
+[Environment]::SetEnvironmentVariable('ADO_MCP_ORG_URL',     'https://dev.azure.com/contoso', 'User')
+[Environment]::SetEnvironmentVariable('ADO_MCP_PROJECT',     'Core',              'User')
 ```
 
-The servers are independent processes and share no code. The conventions (output shaped for a
-model's context window, `req=N` log correlation, gated mutations, the log format) are duplicated
-on purpose and will be factored into a library when a third server forces it.
+On Linux and macOS these are `export` lines in your shell profile. Terminals that are already open
+keep the old values, so start a new one.
 
-Design documentation is in [`docs/`](docs/) — architecture, the authentication split, the tool
-conventions, the logging design, a document per server, and the decision records.
+Both servers are read-only until you also set a gate. See [Enabling writes](#enabling-writes).
+Every other variable has a default, and each server's section below lists them.
 
-## Getting started
+**3. Install the plugin** in Claude Code. It registers both servers and brings three skills that
+use them (`teams-message`, `teams-watcher`, `mcp-reauth`).
 
-You need the .NET 10 SDK, an Entra ID app registration per server (a public client in your
-tenant), and an MCP client such as Claude Code, VS Code or Cursor.
+```
+/plugin marketplace add jgbright/mcp-dotnet
+/plugin install mcp-dotnet@mcp-dotnet
+```
 
-Then, per server:
+On VS Code or Cursor, or if you would rather keep the config in one repository, write it yourself.
+See [a `.mcp.json` by hand](#a-mcpjson-by-hand). You can also have the server write it for you with
+`teams-mcp install` or `ado-mcp install`. See
+[Registering a server in a repository](#registering-a-server-in-a-repository).
 
-1. Install it from nuget.org: `dotnet tool install --global JasonBright.Mcp.Teams` /
-   `JasonBright.Mcp.AzureDevOps` ([Installing as .NET tools](#installing-as-net-tools)). Or run
-   from a checkout with `dotnet run --project src/<Server> --`.
-2. Register it in the repository that should use it: `teams-mcp install` / `ado-mcp install`
-   ([Registering a server in a repository](#registering-a-server-in-a-repository)).
-3. Set the environment variables the registration references. There are no secrets: tenant and
-   client ids are OAuth public identifiers.
-4. Sign in once: `teams-mcp auth` / `ado-mcp auth`. Interactive, console-only. The server itself
-   never prompts.
-5. Verify: `teams-mcp selftest` / `ado-mcp selftest`. That runs the same silent-auth path the
-   server uses plus one real API round trip, with raw errors on the console.
+**4. Sign in once, then check it.** Sign-in is interactive and console-only. The server itself
+never prompts, because it has nowhere to prompt over stdio.
 
-Each server works on its own. Install only the one you need.
+```powershell
+teams-mcp auth       # device-code sign-in, once per machine
+teams-mcp selftest   # silent-auth path plus one real Graph call, raw errors on the console
+
+ado-mcp auth
+ado-mcp selftest
+```
+
+Restart the MCP client and the tools are there. If something is wrong, run `selftest` first. It
+tells you whether the problem is sign-in or the tool.
+
+### Enabling writes
+
+Both servers are read-only out of the box. The tools that change something are always listed, and
+they refuse at call time until their gate is set.
+
+| Gate | Enables |
+| --- | --- |
+| `TEAMS_MCP_ALLOW_SEND=true` | `send_channel_message`, `send_chat_message` |
+| `ADO_MCP_ALLOW_WRITE=true` | `create_work_item`, `update_work_item`, `add_pull_request_comment` |
+
+Set them the same way as step 2, or in a hand-written config's `env` block. Two things to know:
+
+- **Teams needs a fresh `teams-mcp auth` afterward.** The permissions sign-in asks for follow the
+  gate, so a token minted while the gate was off carries no permission to post. See
+  [Sign-in](#sign-in-once). Azure DevOps has no equivalent, because it uses a single resource
+  scope. There the gate is only a call-time refusal.
+- **Neither `install` nor the plugin writes a gate.** That config usually gets committed, and
+  whether a machine may post as you is not a property of a repository.
+
+### A `.mcp.json` by hand
+
+With the plugin, configuration stays in your environment and the file itself is empty. If you would
+rather keep it in one place, or you are on a client the plugin does not cover, this is the whole
+file with both gates on:
+
+```json
+{
+  "mcpServers": {
+    "teams": {
+      "type": "stdio",
+      "command": "teams-mcp",
+      "env": {
+        "TEAMS_MCP_TENANT_ID": "00000000-0000-0000-0000-000000000000",
+        "TEAMS_MCP_CLIENT_ID": "11111111-1111-1111-1111-111111111111",
+        "TEAMS_MCP_ALLOW_SEND": "true"
+      }
+    },
+    "azuredevops": {
+      "type": "stdio",
+      "command": "ado-mcp",
+      "env": {
+        "ADO_MCP_TENANT_ID": "00000000-0000-0000-0000-000000000000",
+        "ADO_MCP_CLIENT_ID": "22222222-2222-2222-2222-222222222222",
+        "ADO_MCP_ORG_URL": "https://dev.azure.com/contoso",
+        "ADO_MCP_PROJECT": "Core",
+        "ADO_MCP_ALLOW_WRITE": "true"
+      }
+    }
+  }
+}
+```
+
+Put it at the root of a repository for Claude Code. VS Code wants the same entries at
+`.vscode/mcp.json` under a `servers` property, using `${env:VAR}` as its reference syntax. Cursor
+wants `.cursor/mcp.json`, shaped like Claude Code's.
+
+One caveat, since this file usually gets committed. `"${TEAMS_MCP_TENANT_ID}"` is legal anywhere a
+literal is. Referencing identity instead of pinning it is what lets one file serve a team whose
+members are in different tenants. Addresses like the organization URL and the default project are
+the part worth writing literally. A gate written literally gives everyone who clones the repository
+the ability to post as themselves. That may be what you want on a personal machine, and it is
+rarely what you want on a shared one.
+
+### App registrations
+
+One public-client app registration per server, in your tenant. Public client because these are
+desktop tools with nowhere to keep a secret. The token is obtained interactively and cached by the
+OS.
+
+**Teams** needs these delegated Microsoft Graph permissions: `User.Read`, `Team.ReadBasic.All`,
+`Channel.ReadBasic.All`, `Chat.Read`, and `ChannelMessage.Read.All` (admin consent). Add
+`ChannelMessage.Send` and `ChatMessage.Send` only if sending will ever be enabled. Enable the
+device code flow. Add a `http://localhost` Mobile/Desktop redirect URI if you want
+`TEAMS_MCP_AUTH=browser`.
+
+**Azure DevOps** needs delegated permission to Azure DevOps (`user_impersonation`). There is no
+scope list to maintain, because it is a single resource scope. The organization also has to allow
+Entra access, under Organization settings, Security, Policies.
+
+One registration can serve both if you would rather manage one. Each server only reads its own two
+variables, so pointing both at the same app id works.
 
 ## Teams server
 
 ### Configuration
 
-No values live in this repo. Everything comes from the environment:
+No values live in this repo. Everything comes from the environment.
 
 | Variable | Purpose |
 | --- | --- |
@@ -63,11 +172,7 @@ No values live in this repo. Everything comes from the environment:
 | `TEAMS_MCP_LOG_DIR` | Log directory, default `%LOCALAPPDATA%\teams-mcp\logs` |
 | `TEAMS_MCP_LOG_CONTENT` | `true` logs message bodies verbatim, default off |
 
-The app registration must be a public client (device code flow enabled, plus a
-`http://localhost` Mobile/Desktop redirect URI for browser mode) with delegated Graph
-permissions: `User.Read`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `Chat.Read`,
-`ChannelMessage.Read.All` (admin consent), and, only if sending will ever be enabled,
-`ChannelMessage.Send` and `ChatMessage.Send`.
+[App registrations](#app-registrations) says what the app registration needs.
 
 ### Sign-in (once)
 
@@ -75,53 +180,57 @@ permissions: `User.Read`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `Chat.R
 dotnet run --project src/TeamsMcp -- auth
 ```
 
-Interactive device-code sign-in. The MSAL token cache persists (OS-protected) with an
-authentication record at `%LOCALAPPDATA%\teams-mcp\auth-record.json`, so the server never
-prompts. It fails with instructions when sign-in is missing or expired.
+Interactive device-code sign-in. The MSAL token cache persists and is protected by the OS, with an
+authentication record at `%LOCALAPPDATA%\teams-mcp\auth-record.json`. That is why the server never
+prompts. When sign-in is missing or expired it fails with instructions.
 
-The scopes requested follow the send gate. With `TEAMS_MCP_ALLOW_SEND` unset, `auth` asks for
-only the read scopes, so a read-only deployment never consents to posting as the signed-in user.
-That narrows consent rather than the token: Entra returns every scope already granted to the app,
-so reducing the request cannot take a permission back. Turning the gate on later may therefore
-need a fresh `-- auth`, and the server says so. It records the granted scopes in
-`%LOCALAPPDATA%\teams-mcp\auth-scopes.json` and, when they fall short, fails with an error naming
-the missing ones. Both `-- auth` and `-- selftest` print requested next to granted.
+The scopes requested follow the send gate. With `TEAMS_MCP_ALLOW_SEND` unset, `auth` asks only for
+the read scopes, so a read-only install never consents to posting as you. That narrows the consent,
+not the token. Entra returns every scope already granted to the app, so asking for less cannot take
+a permission back. Turning the gate on later may need a fresh `-- auth`, and the server says so
+when it does. It records the granted scopes in `%LOCALAPPDATA%\teams-mcp\auth-scopes.json`, and
+when they fall short it fails with an error naming the missing ones. Both `-- auth` and
+`-- selftest` print requested next to granted.
 
 ### Tools
 
 Read: `list_teams`, `list_channels`, `list_chats`, `read_channel_messages`, `read_chat_messages`,
-plus the waiters `wait_for_channel_messages` and `wait_for_chat_messages`. `team` and `channel`
-accept ids or display names. `list_chats` filters by member or topic to find a chat id. Message
-reads return `{messages, hasMore?, skipped?}`: deleted and system messages are skipped and
-counted, bodies are plain text (links kept as `text (url)`), truncated at `body_limit` with
-`truncated: true`. Null fields are omitted from all output.
+plus the waiters `wait_for_channel_messages` and `wait_for_chat_messages`.
+
+`team` and `channel` accept ids or display names. `list_chats` filters by member or topic when you
+need to find a chat id. Message reads return `{messages, hasMore?, skipped?}`. Deleted and system
+messages are skipped and counted. Bodies come back as plain text, with links kept as `text (url)`,
+truncated at `body_limit` and flagged with `truncated: true`. Null fields are omitted from all
+output.
 
 Search, over the Microsoft Search index: `search_messages`, `list_mentions`, and the waiters
-`wait_for_mentions` and `wait_for_any_message`. These four are the only tools that span every
-chat and every joined team's channels in one request, because Graph has no delegated "all my
-messages" endpoint. Two things follow from being index-backed: a hit trails what was just said by
-seconds or longer, and it carries the index's summary rather than the message body. A hit is an
-address (`chatId`, or `teamId`+`channelId`, plus `webUrl`), and the read tools fetch the text.
+`wait_for_mentions` and `wait_for_any_message`. These four are the only tools that span every chat
+and every joined team's channels in one request, because Graph has no delegated "all my messages"
+endpoint.
+
+Being index-backed has two consequences. A hit trails what was just said by seconds or longer, and
+it carries the index's summary rather than the message body. So treat a hit as an address
+(`chatId`, or `teamId` plus `channelId`, plus `webUrl`) and use the read tools to fetch the text.
 
 `query` is [KQL](https://learn.microsoft.com/en-us/graph/search-concept-chat-messages):
 `from:Alice`, `IsMentioned:true`, `hasAttachment:true`, `sent>2026-07-01`, `"exact phrase"`,
-`AND`/`OR`/`NOT`. `since` is applied as a day-granular `sent>` scope on the service and exactly
-client-side afterwards.
+`AND`/`OR`/`NOT`. `since` is applied as a day-granular `sent>` scope on the service, then applied
+exactly client-side afterwards.
 
-The waiters return as soon as anything newer than their cursor (or `since`, defaulting to now)
-arrives. Running out of `timeout_seconds` is a normal answer with `timedOut: true`, and every
-wait returns a `nextCursor` to pass back as `cursor`, so resuming needs no bookkeeping. A client
-that supports the MCP Tasks extension gets a task handle to poll. One that does not simply
-blocks until the tool's own timeout. `wait_for_chat_messages` accepts up to twenty chats in one
-call. The search-backed waiters poll no faster than every 20 seconds.
+The waiters return as soon as anything newer than their cursor arrives. The cursor defaults to
+`since`, which defaults to now. Running out of `timeout_seconds` is a normal answer with
+`timedOut: true`. Every wait returns a `nextCursor` to pass back as `cursor`, so resuming needs no
+bookkeeping on your side. A client that supports the MCP Tasks extension gets a task handle to
+poll. One that does not just blocks until the tool's own timeout. `wait_for_chat_messages` accepts
+up to twenty chats in one call. The search-backed waiters poll no faster than every 20 seconds.
 
-Mutations (require `TEAMS_MCP_ALLOW_SEND=true`): `send_channel_message`, `send_chat_message`.
-Both take an optional `format: html` for hyperlinks.
+Mutations, which require `TEAMS_MCP_ALLOW_SEND=true`: `send_channel_message` and
+`send_chat_message`. Both take an optional `format: html` for hyperlinks.
 
 ### MCP registration
 
-`teams-mcp install` writes it (see
-[Registering a server in a repository](#registering-a-server-in-a-repository)):
+`teams-mcp install` writes this. See
+[Registering a server in a repository](#registering-a-server-in-a-repository).
 
 ```json
 "teams": {
@@ -134,8 +243,8 @@ Both take an optional `format: html` for hyperlinks.
 }
 ```
 
-`TEAMS_MCP_ALLOW_SEND` is not written: the send gate belongs to an environment rather than to a
-repository. `--set TEAMS_MCP_ALLOW_SEND=true` puts it in the file anyway.
+`TEAMS_MCP_ALLOW_SEND` is not written, because the send gate belongs to an environment rather than
+to a repository. `--set TEAMS_MCP_ALLOW_SEND=true` puts it in the file anyway.
 
 ## Azure DevOps server
 
@@ -154,13 +263,13 @@ repository. `--set TEAMS_MCP_ALLOW_SEND=true` puts it in the file anyway.
 | `ADO_MCP_LOG_DIR` | Log directory, default `%LOCALAPPDATA%\ado-mcp\logs` |
 | `ADO_MCP_LOG_CONTENT` | `true` logs descriptions and comment bodies verbatim, default off |
 
-Authentication is against Entra ID, not a personal access token. A PAT is a long-lived bearer
-secret that would sit in the MCP client's config, while the refresh token here lives in the
-OS-protected cache and follows the organization's conditional-access policy. The app registration
-must be a public client with delegated permission to Azure DevOps (`user_impersonation`). Azure
-DevOps' own Entra application id, `499b84ac-1321-427f-aa17-267ca6975798`, is the resource being
-requested. It is a fixed public identifier and the one hardcoded id in this repo. The
-organization must allow Entra access (Organization settings, Security, Policies).
+Authentication goes through Entra ID rather than a personal access token. A PAT is a long-lived
+bearer secret that would sit in the MCP client's config. The refresh token here lives in the
+OS-protected cache and follows the organization's conditional-access policy.
+[App registrations](#app-registrations) says what the app registration needs.
+
+Azure DevOps' own Entra application id, `499b84ac-1321-427f-aa17-267ca6975798`, is the resource
+being requested. It is a fixed public identifier and the one hardcoded id in this repo.
 
 ### Sign-in (once)
 
@@ -168,9 +277,9 @@ organization must allow Entra access (Organization settings, Security, Policies)
 dotnet run --project src/AzureDevOpsMcp -- auth
 ```
 
-Same split as the Teams server: this is the only interactive flow, and it writes an
-authentication record to `%LOCALAPPDATA%\ado-mcp\auth-record.json` beside the MSAL cache. The
-server path can never prompt over stdio.
+Same split as the Teams server. This is the only interactive flow, and it writes an authentication
+record to `%LOCALAPPDATA%\ado-mcp\auth-record.json` beside the MSAL cache. The server path can
+never prompt over stdio.
 
 ### Tools
 
@@ -194,7 +303,7 @@ Read:
 | `deployment_status` | Config-driven, see the deployment map section |
 
 `project`, `repo`, `pipeline` and `team` accept an id or a name. Names match case-insensitively,
-exact first then substring, and an ambiguous or unknown name fails with the candidates listed.
+exact first and then substring. An ambiguous or unknown name fails with the candidates listed.
 `project` defaults to `ADO_MCP_PROJECT`.
 
 `list_work_items` takes either a full `wiql` query or filter arguments (`type`, `state`,
@@ -202,58 +311,70 @@ exact first then substring, and an ambiguous or unknown name fails with the cand
 echoes it back in `wiql`, so a filter that matched nothing can be inspected, refined and passed
 back in. `team` restricts results to the area paths that team owns.
 
-The three `search_*` tools go through the Azure DevOps Search service on its own host
-(`almsearch.dev.azure.com`, derived from `ADO_MCP_ORG_URL`) and take its query syntax:
-`AND`/`OR`/`NOT`, wildcards, and inline filters such as `ext:cs` or `class:Foo`. Every result set
-carries the service's `total` match count, so an empty list with `total: 0` really means nothing
-matched. `search_code` additionally needs the free Code Search extension installed in the
-organization. The service scopes a `path` filter to one repository: a TFVC path (`$/Project/...`)
-names its own, any other path needs `repo` alongside it.
+The three `search_*` tools go through the Azure DevOps Search service on its own host,
+`almsearch.dev.azure.com`, derived from `ADO_MCP_ORG_URL`. They take its query syntax:
+`AND`/`OR`/`NOT`, wildcards, and inline filters like `ext:cs` or `class:Foo`. Every result set
+carries the service's `total` match count, so an empty list with `total: 0` really does mean
+nothing matched.
 
-Bodies are plain text (work item HTML and pull request Markdown both converted, links kept as
-`text (url)`), truncated at `body_limit` with `truncated: true`. Deleted and system-generated
-comments are filtered out and counted in `skipped`, as are the timeline records
-`get_pipeline_run` does not report because they passed. Null fields are omitted, and fields that
-merely repeat the common case are nulled: a `wellFormed` project state, a `succeeded` merge
-status, an area path equal to the project.
+`search_code` also needs the free Code Search extension installed in the organization. The service
+scopes a `path` filter to one repository. A TFVC path (`$/Project/...`) names its own. Any other
+path needs `repo` alongside it.
+
+Bodies come back as plain text. Work item HTML and pull request Markdown are both converted, links
+are kept as `text (url)`, and long bodies are truncated at `body_limit` and flagged with
+`truncated: true`. Deleted and system-generated comments are filtered out and counted in `skipped`,
+as are the timeline records `get_pipeline_run` does not report because they passed. Null fields are
+omitted, and fields that just repeat the common case are nulled out: a `wellFormed` project state,
+a `succeeded` merge status, an area path equal to the project.
 
 ### Mutations
 
-Require `ADO_MCP_ALLOW_WRITE=true`: `update_work_item`, `create_work_item`,
-`add_pull_request_comment`. With the gate unset each refuses with instructions before touching
+`update_work_item`, `create_work_item` and `add_pull_request_comment` require
+`ADO_MCP_ALLOW_WRITE=true`. With the gate unset, each refuses with instructions before touching
 anything.
 
-Only the arguments given are written. Between them the two work item tools reach everything the
+Only the arguments you pass are written. Between them the two work item tools reach everything the
 read tools report: `title`, `description`, `repro_steps`, `acceptance_criteria`, `state`,
-`assigned_to`, `area`, `iteration`, tags, `priority` and the parent link. `update_work_item`
-changes exactly the fields passed — the body fields replace what is there, so read the item first
-if you mean to extend it — while its `comment` posts to the discussion and
-`add_tags`/`remove_tags` merge case-insensitively with the tags already on the item. A work item
-has at most one parent, so `parent` replaces whatever it is under (asking for the parent it
-already has writes nothing) and `remove_parent` leaves it unparented. `priority` is the process's
-own scale, commonly 1–4; leaving it off a `create_work_item` call takes the process default rather
-than a considered value, which is usually 2. `assigned_to` takes a display name, an email, or an
-identity GUID. A display name resolves through the identity service, and on a write an ambiguous
-name is an error listing the candidates, never a guess. `type` resolves against the project's own
-work item types.
-`add_pull_request_comment` starts a new thread, or replies on one when `thread_id` (from
-`get_pull_request`) is given. Every write returns the post-write state, so no follow-up read is
-needed. Deleting things, voting on or completing pull requests, and triggering pipelines are not
-offered.
+`assigned_to`, `area`, `iteration`, tags, `priority` and the parent link.
+
+`update_work_item` changes exactly the fields passed. The body fields replace what is there, so
+read the item first if you mean to extend it. Its `comment` posts to the discussion, and `add_tags`
+and `remove_tags` merge case-insensitively with the tags already on the item.
+
+A work item has at most one parent, so `parent` replaces whatever it is under. Asking for the
+parent it already has writes nothing. `remove_parent` leaves it unparented.
+
+`priority` is the process's own scale, commonly 1 to 4. Leaving it off a `create_work_item` call
+takes the process default rather than a considered value, which is usually 2.
+
+`assigned_to` takes a display name, an email, or an identity GUID. A display name resolves through
+the identity service. On a write, an ambiguous name is an error listing the candidates, never a
+guess. `type` resolves against the project's own work item types.
+
+`add_pull_request_comment` starts a new thread, or replies on one when you pass a `thread_id` from
+`get_pull_request`.
+
+Every write returns the state after the write, so you never need a follow-up read. Deleting things,
+voting on or completing pull requests, and triggering pipelines are not offered.
 
 ### Deployment map (`deployment_status`)
 
-`deployment_status` answers "what is in production" per deployable. A deployable names either a
-classic release pipeline (`releaseDefinition` + `environment`) or a build/YAML pipeline
+`deployment_status` answers "what is in production" for each deployable. A deployable names either
+a classic release pipeline (`releaseDefinition` plus `environment`) or a build or YAML pipeline
 (`pipeline`, optionally through an ADO Environment named in `environment`, optionally pinned to a
-`branch`). Each reports the latest succeeded deployment, the build it shipped, the version that
-build was made from (a TFVC changeset or a git commit, whichever the build's repository implies),
-and the work landed since: changesets under the deployable's paths, or commits on its branch.
+`branch`).
+
+Each one reports the latest succeeded deployment, the build it shipped, the version that build was
+made from (a TFVC changeset or a git commit, whichever the build's repository implies), and the
+work landed since. That last part is changesets under the deployable's paths, or commits on its
+branch.
+
 Ask with `changeset: N` and every TFVC-built deployable also answers whether that changeset is
 deployed (`containsChangeset`) and whether it touched the deployable's paths (`affects`).
 
-The map is data the server reads from `%LOCALAPPDATA%\ado-mcp\deployments.json` (or
-`ADO_MCP_DEPLOYMENTS`), re-read when its timestamp changes:
+The map is data the server reads from `%LOCALAPPDATA%\ado-mcp\deployments.json`, or from
+`ADO_MCP_DEPLOYMENTS`. It is re-read whenever the file's timestamp changes.
 
 ```json
 {
@@ -271,9 +392,9 @@ The map is data the server reads from `%LOCALAPPDATA%\ado-mcp\deployments.json` 
 }
 ```
 
-Names resolve leniently like everywhere else. `paths` are TFVC server-path prefixes, optional
-because the server can derive them from the build definition's own TFVC workspace mappings.
-Unknown fields are ignored, so other consumers can share the file.
+Names resolve leniently, the same as everywhere else. `paths` are TFVC server-path prefixes. They
+are optional, because the server can derive them from the build definition's own TFVC workspace
+mappings. Unknown fields are ignored, so other tools can share the file.
 
 `dotnet run --project src/AzureDevOpsMcp -- config` loads and validates the data files without
 driving the tools through an MCP client.
@@ -295,15 +416,15 @@ driving the tools through an MCP client.
 }
 ```
 
-The organization and project come from the environment the install ran in and are written
-literally, since pinning a repository to its organization is the point. `ADO_MCP_ALLOW_WRITE` and
-the data-file paths are not written (`--set` adds them if you want).
+The organization and project come from the environment the install ran in, and they are written
+literally, because pinning a repository to its organization is the point. `ADO_MCP_ALLOW_WRITE` and
+the data-file paths are not written. `--set` adds them if you want.
 
 ## Logs
 
 Each server writes to its own file, `%LOCALAPPDATA%\teams-mcp\logs\teams-mcp.log` and
-`%LOCALAPPDATA%\ado-mcp\logs\ado-mcp.log`, and to stderr, which MCP clients usually discard. One
-line per event, flushed immediately, rolling to `.1` at 8 MB:
+`%LOCALAPPDATA%\ado-mcp\logs\ado-mcp.log`. It also writes to stderr, which MCP clients usually
+discard. One line per event, flushed immediately, rolling to `.1` at 8 MB.
 
 ```
 2026-07-28T07:03:12.441Z INF 30724 tool.start req=7 read_channel_messages team="Platform" channel="General" limit=20
@@ -311,54 +432,51 @@ line per event, flushed immediately, rolling to `.1` at 8 MB:
 2026-07-28T07:03:12.905Z INF 30724 tool.ok req=7 read_channel_messages ok ms=464 messages=20 hasMore=true skipped.system=3
 ```
 
-`req=N` ties a tool call to every HTTP request it made, and errors returned to the model carry
-the matching `req=N` plus the log path. Event names to grep: `startup`, `auth.record`,
-`auth.mismatch`, `auth.token`, `auth.fail`, `tool.start`, `tool.ok`, `tool.fail`, `resolve`,
-`page`, `poll`, `config`, `crash`, and the HTTP pair (`graph.http`/`graph.http.fail` in Teams,
-`http`/`http.fail` in Azure DevOps).
+`req=N` ties a tool call to every HTTP request it made. Errors returned to the model carry the
+matching `req=N` plus the log path.
+
+Event names to grep for: `startup`, `auth.record`, `auth.mismatch`, `auth.token`, `auth.fail`,
+`tool.start`, `tool.ok`, `tool.fail`, `resolve`, `page`, `poll`, `config`, `crash`, and the HTTP
+pair (`graph.http` and `graph.http.fail` in Teams, `http` and `http.fail` in Azure DevOps).
 
 User-authored text is not logged unless `…_LOG_CONTENT=true`, only its length. `…_LOG_LEVEL=Debug`
 adds successful HTTP calls, paging and name resolution. `Trace` adds the MCP SDK's JSON-RPC
 traffic.
 
-Fastest triage, in order: `-- selftest` (separates auth problems from tool problems), the
-`startup` lines at the top of the log, then the failing HTTP line with the service's own error
-body.
+For fastest triage, in order: run `-- selftest`, which separates auth problems from tool problems.
+Then read the `startup` lines at the top of the log. Then find the failing HTTP line, which carries
+the service's own error body.
 
 ## Cross-platform notes
 
 Both servers run on Windows, Linux and macOS. `%LOCALAPPDATA%` in this README means .NET's
-local-application-data folder wherever the platform puts it: `$XDG_DATA_HOME` (default
-`~/.local/share`) on Linux, `~/Library/Application Support` on macOS.
+local-application-data folder, wherever the platform puts it. That is `$XDG_DATA_HOME` (default
+`~/.local/share`) on Linux and `~/Library/Application Support` on macOS.
 
-The MSAL token cache is encrypted with whatever the OS provides: DPAPI on Windows, the Keychain
-on macOS, libsecret on Linux. On headless Linux with no keyring, `auth` fails with a
-cache-persistence error. The servers do not opt into the unencrypted-file fallback, so provide a
-keyring rather than working around it. Sign-in itself works over SSH: the device-code flow only
-needs a console here and a browser somewhere.
+The MSAL token cache is encrypted with whatever the OS provides: DPAPI on Windows, the Keychain on
+macOS, libsecret on Linux. On headless Linux with no keyring, `auth` fails with a cache-persistence
+error. The servers do not opt into the unencrypted-file fallback, so provide a keyring rather than
+working around it. Sign-in itself works fine over SSH, because the device-code flow only needs a
+console here and a browser somewhere.
 
 ## Installing as .NET tools
 
-Both servers are on nuget.org. Install either or both:
-
-```powershell
-dotnet tool install --global JasonBright.Mcp.Teams
-dotnet tool install --global JasonBright.Mcp.AzureDevOps
-```
+Both servers are on nuget.org, installed in [step 1 of the quick start](#quick-start):
 
 | Package | Tool command | Server |
 | --- | --- | --- |
 | [`JasonBright.Mcp.Teams`](https://www.nuget.org/packages/JasonBright.Mcp.Teams) | `teams-mcp` | Teams, through Microsoft Graph |
 | [`JasonBright.Mcp.AzureDevOps`](https://www.nuget.org/packages/JasonBright.Mcp.AzureDevOps) | `ado-mcp` | Azure DevOps |
 
-That puts `teams-mcp` and `ado-mcp` on the PATH, and all the verbs work as they do from source.
-`dotnet tool update --global <id>` moves an installation to the latest release; both packages ship
-one shared version, so they move together.
+All the verbs work as they do from source. `dotnet tool update --global <id>` moves an installation
+to the latest release. Both packages ship one shared version, so they move together. To run from a
+checkout instead of a tool, use `dotnet run --project src/TeamsMcp -- <verb>`, which is what the
+later sections of this README show.
 
 The ids are owner-prefixed because `AzureDevOpsMcp`, `AdoMcp` and `AdoMcpServer` are all taken on
-nuget.org by unrelated packages, and nuget.org rejects a new id that differs from an existing one
-only by case or separators — which ruled out `Ado.Mcp` and friends too. The ids are independent of
-the assembly names and of the tool commands, so none of those move with them.
+nuget.org by unrelated packages. nuget.org also rejects a new id that differs from an existing one
+only by case or separators, which ruled out `Ado.Mcp` and friends. The ids are independent of the
+assembly names and of the tool commands, so none of those move with them.
 
 ### Installing a local build
 
@@ -372,56 +490,60 @@ dotnet tool install --global --add-source ./artifacts --version $v JasonBright.M
 dotnet tool install --global --add-source ./artifacts --version $v JasonBright.Mcp.AzureDevOps
 ```
 
-The version pin is what makes that work: `--add-source` adds `artifacts/` to your feeds rather than
-replacing them, so NuGet still resolves the highest version across all of them — which is the
-release on nuget.org, not the build you just made, and it reports success either way. A rebuild at
-the same version is not picked up by `dotnet tool update` either (it sees the version already
-satisfied), so uninstall and reinstall. `scripts/rebuild.ps1` does all of this for both servers,
-against a generated config with every source cleared but `artifacts/`, and verifies the swap
-actually happened.
+The version pin is what makes that work. `--add-source` adds `artifacts/` to your feeds rather than
+replacing them, so NuGet still resolves the highest version across all of them. That is the release
+on nuget.org, not the build you just made, and it reports success either way.
+
+A rebuild at the same version is not picked up by `dotnet tool update` either, since it sees the
+version as already satisfied. Uninstall and reinstall instead. `scripts/rebuild.ps1` does all of
+this for both servers, against a generated config with every source cleared but `artifacts/`, and
+it verifies the swap actually happened.
 
 ### How the packages are published
 
-Dispatching `.github/workflows/release.yml` from `main` is the whole of it: it packs, tags, creates
+Dispatching `.github/workflows/release.yml` from `main` is the whole of it. It packs, tags, creates
 the GitHub Release, and pushes both `.nupkg` files to nuget.org.
 
 There is no long-lived API key. The push uses
-[trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing): the job
+[trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing). The job
 mints a GitHub OIDC token (`id-token: write` in its `permissions:`), `NuGet/login@v1` exchanges it
-with nuget.org for a key that lives one hour, and the push uses that. What authorizes the exchange
-is a policy registered on nuget.org naming the repository owner, the repository, and the workflow
-**file name** — `release.yml`, without the `.github/workflows/` path. Two things follow:
+with nuget.org for a key that lives one hour, and the push uses that key. The exchange is
+authorized by a policy registered on nuget.org naming the repository owner, the repository, and the
+workflow **file name**, which is `release.yml` without the `.github/workflows/` path. Two things
+follow:
 
 - **Renaming or moving that file breaks publishing** until the policy is edited to match. The policy
   matches the file name, not the job or the step inside it.
-- **A policy covers every package its owner owns**, so a third server publishes with nothing issued
-  and nothing changed here. The `JasonBright.` prefix is reserved on nuget.org, so nobody else can
-  claim an id under it either.
+- **A policy covers every package its owner owns.** A third server publishes with nothing issued and
+  nothing changed here. The `JasonBright.` prefix is reserved on nuget.org, so nobody else can claim
+  an id under it either.
 
-One repository secret exists, `NUGET_USER`: the nuget.org profile name (not an email) that
-`NuGet/login@v1` takes. It is an identifier rather than a credential — publishing is authorized by
+One repository secret exists, `NUGET_USER`, the nuget.org profile name (not an email) that
+`NuGet/login@v1` takes. It is an identifier rather than a credential. Publishing is authorized by
 the OIDC token and the policy behind it.
 
-**A policy on a private repository is provisional for its first seven days.** nuget.org cannot bind
-it to GitHub's immutable repository and owner ids until a publish arrives carrying them, and that
-binding is what stops someone deleting a repository, recreating it under the same name, and
-inheriting the right to publish. The policy works normally during the window; if nothing is
-published within it the policy goes inactive, and the window can be restarted from the Trusted
-Publishing page as often as needed. The first successful push makes it permanent. This repository is
-private, so that applied to the first release and will apply again to any policy added later.
+**A new policy can start out provisional for seven days**, which nuget.org documents as the usual
+case for a private repository. Until a publish arrives carrying GitHub's immutable repository and
+owner ids, nuget.org has only the strings typed into the policy. Binding to those ids is what stops
+someone deleting a repository, recreating it under the same name, and inheriting the right to
+publish. The policy works normally during that window. If nothing is published within it the policy
+goes inactive, and the window can be restarted from the Trusted Publishing page. The first
+successful push makes it permanent. Worth knowing if a policy stops working before it has ever been
+used.
 
 The metadata behind the packages, in case a new one is added:
 
-- **License** is MIT — `PackageLicenseExpression` in `Directory.Build.props`, `LICENSE` at the root.
+- **License** is MIT, set by `PackageLicenseExpression` in `Directory.Build.props`, with `LICENSE`
+  at the root.
 - **Package ids and tool command names** are per-csproj, since they are what make each package a
-  distinct tool. Everything shared — authors, product, tags, license, output path — is in
-  `Directory.Build.props`.
-- **`RepositoryUrl` stays unset** while the remote is private: it would 404 for every consumer and
-  SourceLink would resolve to nothing. Set it if the repository goes public.
+  distinct tool. Everything shared lives in `Directory.Build.props`: authors, product, tags,
+  license, output path.
+- **`RepositoryUrl` and `PackageProjectUrl` point at the GitHub remote**, which is public, so both
+  resolve for a consumer and SourceLink has something to point at.
 
 **A push cannot be undone.** A published version can never be re-pushed or deleted, only unlisted.
 That is why the release workflow refuses any ref that is not `main`, any version nbgv calls a
-prerelease, and any tag that already exists — all before it builds anything.
+prerelease, and any tag that already exists, all before it builds anything.
 
 ## Registering a server in a repository
 
@@ -430,7 +552,7 @@ ado-mcp install            # in the repository the server should be available in
 teams-mcp install
 ```
 
-Installing finds the repository (walking up to the nearest `.git`), detects which MCP client it
+Installing finds the repository by walking up to the nearest `.git`, works out which MCP client it
 uses, and merges the server into that client's config:
 
 | Client | Config written | Servers property | Reference syntax | Detected from |
@@ -439,15 +561,14 @@ uses, and merges the server into that client's config:
 | `vscode` | `.vscode/mcp.json` | `servers` | `${env:VAR}` | `.vscode/mcp.json`, `.github/copilot-instructions.md` |
 | `cursor` | `.cursor/mcp.json` | `mcpServers` | `${VAR}` | `.cursor/mcp.json`, `.cursorrules` |
 
-When several clients are detected the first wins and the others are named in the output.
-`--client <name>` picks one, and a repository showing signs of nothing gets the Claude Code
-shape.
+When several clients are detected, the first wins and the others are named in the output.
+`--client <name>` picks one. A repository showing signs of nothing gets the Claude Code shape.
 
-Identity is referenced (`${ADO_MCP_TENANT_ID}`), addresses are literal, and mutation gates are
-never written. Nothing already in the file is lost: other servers and top-level properties are
-preserved, and an entry that already differs is a refusal printing both versions until `--force`.
-Re-running with the same environment is a no-op. The written command reflects how the install was
-invoked: the .NET tool registers `ado-mcp`, a checkout registers `dotnet run --project <path>`.
+Identity is referenced (`${ADO_MCP_TENANT_ID}`), addresses are literal, and mutation gates are never
+written. Nothing already in the file is lost. Other servers and top-level properties are preserved,
+and an entry that already differs is a refusal that prints both versions until you pass `--force`.
+Re-running with the same environment does nothing. The command written reflects how the install was
+invoked: the .NET tool registers `ado-mcp`, and a checkout registers `dotnet run --project <path>`.
 
 ```
 ado-mcp install [directory] [options]
@@ -461,48 +582,65 @@ ado-mcp install [directory] [options]
 ```
 
 Installing only writes the registration, so it ends by reporting which referenced variables are
-missing from the current environment and whether sign-in has happened. `install`, then `auth`,
+missing from the current environment and whether sign-in has happened. Run `install`, then `auth`,
 then `selftest`.
 
 ## Versioning
 
 The version comes from
-[Nerdbank.GitVersioning](https://github.com/dotnet/Nerdbank.GitVersioning). `version.json`
-carries `major.minor`, nbgv derives the patch from git height (commits since that line last
-changed), and no csproj sets a version.
+[Nerdbank.GitVersioning](https://github.com/dotnet/Nerdbank.GitVersioning). `version.json` carries
+`major.minor`, nbgv derives the patch from git height (commits since that line last changed), and
+no csproj sets a version.
 
 ```powershell
 dotnet tool restore              # once per clone
 dotnet nbgv get-version          # what this checkout would ship as
 ```
 
-An ordinary commit needs no version edit. Bump `version.json` only for a new major/minor. Only
-`main` produces a clean version (`0.1.4`). Everywhere else builds a `-g<commit>` prerelease, so a
-branch build cannot be mistaken for a release. Anything computing a version needs full git
+An ordinary commit needs no version edit. Bump `version.json` only for a new major or minor. Only
+`main` produces a clean version like `0.1.4`. Everywhere else builds a `-g<commit>` prerelease, so
+a branch build cannot be mistaken for a release. Anything computing a version needs full git
 history, which is why both workflows check out with `fetch-depth: 0`.
 
 ## Continuous integration
 
-Two GitHub Actions workflows, both on `windows-latest` (the servers are Windows-first: DPAPI
-token cache, `install`'s client detection). Nothing in a build or a test reaches Graph or Azure
-DevOps, so neither workflow carries a credential: the one repository secret, `NUGET_USER`, is a
-nuget.org profile name, and the key that publishes is minted per run by trusted publishing.
+Two GitHub Actions workflows, both on `windows-latest`, because the servers are Windows-first: the
+DPAPI token cache, and `install`'s client detection. Nothing in a build or a test reaches Graph or
+Azure DevOps, so neither workflow carries a credential. The one repository secret, `NUGET_USER`, is
+a nuget.org profile name, and the key that publishes is minted per run by trusted publishing.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `.github/workflows/pr.yml` | pull request against `main`, push to `main` | Builds the solution in Release with `-warnaserror`, runs the tests, and writes the computed version and test counts into the job summary |
 | `.github/workflows/release.yml` | manual dispatch from `main` | Cuts a release, see below |
 
-To cut a release, run the release workflow from `main` (bump `version.json` first only for a new
-major/minor). It refuses if the ref is not `main`, if nbgv calls the build a prerelease, or if
-the tag already exists. Then it builds, tests, packs, tags with `nbgv tag` (`v0.1.4`), pushes the
-tag, publishes a GitHub Release with both `.nupkg` files attached, and pushes both packages to
-nuget.org through trusted publishing — no API key is stored anywhere (see
-[How the packages are published](#how-the-packages-are-published)).
+To cut a release, run the release workflow from `main`. Bump `version.json` first only for a new
+major or minor. It refuses if the ref is not `main`, if nbgv calls the build a prerelease, or if the
+tag already exists. Then it builds, tests, packs, tags with `nbgv tag` (`v0.1.4`), pushes the tag,
+publishes a GitHub Release with both `.nupkg` files attached, and pushes both packages to nuget.org
+through trusted publishing. No API key is stored anywhere. See
+[How the packages are published](#how-the-packages-are-published).
 
 ## Working on this repo
 
-`.mcp.json` registers a C# language server as an MCP server so an agent editing this code can
+```
+src/TeamsMcp/                 the Teams server
+src/AzureDevOpsMcp/           the Azure DevOps server
+tests/TeamsMcp.Tests/         xUnit tests for the pure logic, run with `dotnet test`
+tests/AzureDevOpsMcp.Tests/
+plugin/                       the Claude Code plugin: both servers plus three skills
+scripts/                      rebuild.ps1 (dev inner loop)
+McpServers.slnx               all four projects
+```
+
+The servers are independent processes and share no code. The conventions are duplicated on purpose:
+output shaped for a model's context window, `req=N` log correlation, gated mutations, the log
+format. They will be factored into a library when a third server forces it.
+
+Design documentation is in [`docs/`](docs/): architecture, the authentication split, the tool
+conventions, the logging design, a document per server, and the decision records.
+
+`.mcp.json` registers a C# language server as an MCP server, so an agent editing this code can
 resolve symbols instead of grepping. The tools it launches are not checked in, so install them
 once:
 

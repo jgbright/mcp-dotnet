@@ -32,9 +32,8 @@ assembly names and of the tool commands, so none of those move with them. The `J
 prefix is reserved on nuget.org, which is what makes a third server's id a packaging decision
 rather than a name to race someone for.
 
-`RepositoryUrl` stays unset while the remote is private: it would 404 for every consumer and
-SourceLink would resolve to nothing. Being published does not change that — the packages are
-public, the source is not.
+`RepositoryUrl` and `PackageProjectUrl` name the GitHub remote, which is public, so a consumer
+following either gets somewhere and SourceLink has a repository to resolve against.
 
 Shared metadata lives in `Directory.Build.props` — authors, product, tags, output path, and the MIT
 `PackageLicenseExpression`. Deliberately not set there: `Version` (nbgv owns it), and
@@ -45,8 +44,8 @@ Shared metadata lives in `Directory.Build.props` — authors, product, tags, out
 **The plugin** (`plugin/`, published through `.claude-plugin/marketplace.json`) is the current
 path. It bundles a `.mcp.json` declaring both servers by PATH command with no environment at all,
 plus three skills — `teams-message`, `teams-watcher`, `mcp-reauth`. Installed with
-`/plugin marketplace add <clone>` then `/plugin install mcp-dotnet@mcp-dotnet`, and updated as one
-unit.
+`/plugin marketplace add jgbright/mcp-dotnet` (or a local clone's path) then
+`/plugin install mcp-dotnet@mcp-dotnet`, and updated as one unit.
 
 The servers are stdio children of the client, so configuration is inherited from user-scope
 environment variables. The plugin ships no organization values.
@@ -155,12 +154,12 @@ knowing before changing anything near it:
 - **A policy covers every package its owner owns.** A third server needs no new registration, which
   is the same reason the reserved `JasonBright.` prefix matters: a new id is a packaging decision,
   not an access one.
-- **On a private repository a new policy is provisional for seven days.** nuget.org has only the
-  strings typed into the policy until a publish arrives carrying GitHub's immutable repository and
-  owner ids, and binding to those is what defeats deleting a repository and recreating it under the
-  same name to inherit its publishing rights. The policy is fully usable in that window; if it goes
-  unused it deactivates, and the window can be restarted. The first successful push makes it
-  permanent.
+- **A new policy can be provisional for seven days**, which nuget.org documents as the usual case
+  for a private repository. It has only the strings typed into the policy until a publish arrives
+  carrying GitHub's immutable repository and owner ids, and binding to those is what defeats
+  deleting a repository and recreating it under the same name to inherit its publishing rights. The
+  policy is fully usable in that window; if it goes unused it deactivates, and the window can be
+  restarted. The first successful push makes it permanent.
 
 The one repository secret, `NUGET_USER`, is the nuget.org profile name the login action takes. It is
 an identifier rather than a credential — it authorizes nothing on its own.
