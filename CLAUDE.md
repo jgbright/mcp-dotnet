@@ -142,10 +142,11 @@ scope list to extend — it is a single `…/.default` resource scope, so there 
 reduce and no consent record to keep: a new capability means a new delegated permission on the app
 registration (and possibly an organization policy change), then `-- auth` again.
 
-**Mutations are gated.** Teams' two sending tools call `RequireSendEnabled()`
+**Mutations are gated.** Teams' sending and reaction tools call `RequireSendEnabled()`
 (`TEAMS_MCP_ALLOW_SEND=true`) — and in that server the gate is checked twice over, at the call and
 at sign-in, because it also decides whether the send scopes are requested at all (see "Teams' scope
-list follows the send gate" in `src/TeamsMcp/CLAUDE.md`). The Azure DevOps server's three write tools — `update_work_item`,
+list follows the send gate" in `src/TeamsMcp/CLAUDE.md`; the reaction tools ride those same send
+scopes, so they widen nothing). The Azure DevOps server's three write tools — `update_work_item`,
 `create_work_item`, `add_pull_request_comment` — call `AdoTools.RequireWriteEnabled()`
 (`ADO_MCP_ALLOW_WRITE=true`) before doing anything else, even validating arguments. Any new
 mutating tool calls the same helper rather than inventing another policy; `install` never writes

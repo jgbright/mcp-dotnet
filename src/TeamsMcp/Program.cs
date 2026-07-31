@@ -297,9 +297,10 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         re-delivers the last message every time. A wait that timed out still returns a cursor and is
         still the right thing to call again.
 
-        The sending tools (send_channel_message, send_chat_message) refuse unless
-        TEAMS_MCP_ALLOW_SEND=true in this server's environment. That refusal is configuration and will
-        not change on retry — report it and stop.
+        The sending and reaction tools (send_channel_message, send_chat_message,
+        react_to_chat_message, react_to_channel_message) refuse unless TEAMS_MCP_ALLOW_SEND=true in
+        this server's environment. That refusal is configuration and will not change on retry —
+        report it and stop.
 
         Every error carries a req=N and the path of this server's log file. Quote both when reporting a
         failure; they are what makes it diagnosable.

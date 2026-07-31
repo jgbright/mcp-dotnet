@@ -148,21 +148,65 @@ public class MapTests
     }
 
     [Fact]
-    public void Reactions_are_grouped_into_counts()
+    public void Reactions_are_grouped_by_emoji_and_attributed_to_who_reacted()
     {
         var msg = Message();
         msg.Reactions =
         [
-            new ChatMessageReaction { ReactionType = "like" },
-            new ChatMessageReaction { ReactionType = "like" },
-            new ChatMessageReaction { ReactionType = "heart" },
+            Reaction("👍", "Alice"),
+            Reaction("👍", "Jason Bright"),
+            Reaction("✅", "Mike"),
             new ChatMessageReaction { ReactionType = null },
         ];
 
         var reactions = TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Reactions;
 
-        Assert.Equal(new Dictionary<string, int> { ["like"] = 2, ["heart"] = 1 }, reactions);
+        Assert.Equal(new Dictionary<string, List<string>>
+        {
+            ["👍"] = ["Alice", "Jason Bright"],
+            ["✅"] = ["Mike"],
+        }, reactions);
     }
+
+    [Fact]
+    public void Reactor_without_a_display_name_falls_back_to_id_then_to_a_placeholder()
+    {
+        // Graph routinely returns reaction identities with only an id; the list's length must
+        // still be the reaction's count, so nobody is dropped.
+        var msg = Message();
+        msg.Reactions =
+        [
+            new ChatMessageReaction
+            {
+                ReactionType = "👍",
+                User = new ChatMessageReactionIdentitySet { User = new Identity { Id = "guid-1" } },
+            },
+            new ChatMessageReaction { ReactionType = "👍" },
+        ];
+
+        var reactions = TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Reactions;
+
+        Assert.Equal(["guid-1", "?"], reactions?["👍"]);
+    }
+
+    [Fact]
+    public void Custom_reaction_is_keyed_by_its_name_rather_than_the_literal_custom()
+    {
+        var msg = Message();
+        var custom = Reaction("custom", "Alice");
+        custom.DisplayName = "party parrot";
+        msg.Reactions = [custom];
+
+        var reactions = TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Reactions;
+
+        Assert.Equal(["Alice"], reactions?["party parrot"]);
+    }
+
+    private static ChatMessageReaction Reaction(string type, string who) => new()
+    {
+        ReactionType = type,
+        User = new ChatMessageReactionIdentitySet { User = new Identity { DisplayName = who } },
+    };
 
     [Fact]
     public void Replies_are_nested_oldest_first_only_when_requested()
@@ -399,6 +443,17 @@ public class DescribeResultTests
         Assert.Equal(
             " messageId=\"17\"",
             TeamsTools.Describe(new SentMessageDto("17", DateTimeOffset.UtcNow, "https://teams/x")));
+    }
+
+    [Fact]
+    public void Reaction_is_summarized_by_message_and_emoji()
+    {
+        Assert.Equal(
+            " messageId=\"17\" reaction=\"🤔\"",
+            TeamsTools.Describe(new ReactionDto("17", "🤔", null)));
+        Assert.Equal(
+            " messageId=\"17\" reaction=\"🤔\" removed=true",
+            TeamsTools.Describe(new ReactionDto("17", "🤔", true)));
     }
 
     [Fact]

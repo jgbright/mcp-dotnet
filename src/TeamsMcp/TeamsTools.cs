@@ -782,6 +782,105 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });
 
+    // A reaction is self-scoped: setting one that is already set changes nothing, and remove only
+    // ever takes off the signed-in user's own reaction, so the same call twice lands on the same
+    // state. Graph's setReaction takes the emoji itself (`reactionType` as unicode) and answers
+    // 204, so the confirmation DTO is built here rather than read back. Measured: Graph keeps one
+    // reaction per user per message — setting a different emoji MOVES the caller's reaction (the
+    // Teams client's newer multi-reaction pile-on is not exposed through the public API), and the
+    // 204 on a set that displaced another looks identical to one that did not.
+    [McpServerTool(Name = "react_to_chat_message", UseStructuredContent = true, Destructive = false, Idempotent = true)]
+    [Description("MUTATION: puts an emoji reaction on a chat message as the signed-in user; remove=true takes " +
+                 "it off again. `reaction` is the emoji itself, e.g. 🤔 or ✅. The user holds one reaction per " +
+                 "message through this API: setting a different emoji moves it rather than adding a second. " +
+                 "Disabled unless the environment variable TEAMS_MCP_ALLOW_SEND=true is set for this server. " +
+                 "`chat` is a chat id from list_chats; message ids come from read_chat_messages.")]
+    public Task<ReactionDto> ReactToChatMessage(
+        [Description("Chat id, e.g. 19:...@thread.v2")] string chat,
+        [Description("Id of the message to react to")] string message_id,
+        [Description("The reaction emoji, e.g. 🤔")] string reaction,
+        [Description("Remove the signed-in user's reaction instead of setting it (default false)")] bool remove = false,
+        CancellationToken ct = default) => Run("react_to_chat_message",
+        A("chat", chat) + A("message_id", message_id) + A("reaction", reaction) + A("remove", remove), async () =>
+    {
+        RequireSendEnabled();
+        var emoji = RequireReaction(reaction);
+        var client = await graph.GetClientAsync(ct);
+        var message = client.Chats[chat].Messages[message_id];
+        if (remove)
+        {
+            await message.UnsetReaction.PostAsync(
+                new Microsoft.Graph.Chats.Item.Messages.Item.UnsetReaction.UnsetReactionPostRequestBody
+                { ReactionType = emoji }, cancellationToken: ct);
+        }
+        else
+        {
+            await message.SetReaction.PostAsync(
+                new Microsoft.Graph.Chats.Item.Messages.Item.SetReaction.SetReactionPostRequestBody
+                { ReactionType = emoji }, cancellationToken: ct);
+        }
+        return new ReactionDto(message_id, emoji, remove ? true : null);
+    });
+
+    [McpServerTool(Name = "react_to_channel_message", UseStructuredContent = true, Destructive = false, Idempotent = true)]
+    [Description("MUTATION: puts an emoji reaction on a channel message as the signed-in user; remove=true " +
+                 "takes it off again. `reaction` is the emoji itself, e.g. 🤔 or ✅. The user holds one reaction " +
+                 "per message through this API: setting a different emoji moves it rather than adding a second. " +
+                 "Disabled unless the environment variable TEAMS_MCP_ALLOW_SEND=true is set for this server. " +
+                 "`team`/`channel` accept ids or display names. To react to a reply inside a thread, pass the " +
+                 "thread root's id as message_id and the reply's own id as reply_id (a reply's replyToId names " +
+                 "its root).")]
+    public Task<ReactionDto> ReactToChannelMessage(
+        [Description("Team id (GUID) or display name")] string team,
+        [Description("Channel id (19:...) or display name")] string channel,
+        [Description("Id of the message to react to (the thread root's id when reacting to a reply)")] string message_id,
+        [Description("The reaction emoji, e.g. 🤔")] string reaction,
+        [Description("Id of the reply to react to, when the target is a reply rather than the thread root")] string? reply_id = null,
+        [Description("Remove the signed-in user's reaction instead of setting it (default false)")] bool remove = false,
+        CancellationToken ct = default) => Run("react_to_channel_message",
+        A("team", team) + A("channel", channel) + A("message_id", message_id) + A("reaction", reaction) +
+        A("reply_id", reply_id) + A("remove", remove), async () =>
+    {
+        RequireSendEnabled();
+        var emoji = RequireReaction(reaction);
+        var client = await graph.GetClientAsync(ct);
+        var (teamId, _) = await ResolveTeamAsync(client, team, log, ct);
+        var channelId = await ResolveChannelAsync(client, teamId, channel, log, ct);
+        var message = client.Teams[teamId].Channels[channelId].Messages[message_id];
+        if (reply_id is null)
+        {
+            if (remove)
+            {
+                await message.UnsetReaction.PostAsync(
+                    new Microsoft.Graph.Teams.Item.Channels.Item.Messages.Item.UnsetReaction.UnsetReactionPostRequestBody
+                    { ReactionType = emoji }, cancellationToken: ct);
+            }
+            else
+            {
+                await message.SetReaction.PostAsync(
+                    new Microsoft.Graph.Teams.Item.Channels.Item.Messages.Item.SetReaction.SetReactionPostRequestBody
+                    { ReactionType = emoji }, cancellationToken: ct);
+            }
+        }
+        else
+        {
+            var reply = message.Replies[reply_id];
+            if (remove)
+            {
+                await reply.UnsetReaction.PostAsync(
+                    new Microsoft.Graph.Teams.Item.Channels.Item.Messages.Item.Replies.Item.UnsetReaction.UnsetReactionPostRequestBody
+                    { ReactionType = emoji }, cancellationToken: ct);
+            }
+            else
+            {
+                await reply.SetReaction.PostAsync(
+                    new Microsoft.Graph.Teams.Item.Channels.Item.Messages.Item.Replies.Item.SetReaction.SetReactionPostRequestBody
+                    { ReactionType = emoji }, cancellationToken: ct);
+            }
+        }
+        return new ReactionDto(reply_id ?? message_id, emoji, remove ? true : null);
+    });
+
     // ------------------------------------------------------------------- helpers
 
     private static void RequireSendEnabled()
@@ -790,9 +889,19 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         {
             throw new McpException(
                 "Sending is disabled. Set TEAMS_MCP_ALLOW_SEND=true in this server's environment to " +
-                "opt in to posting messages other people will see. That gate also decides whether " +
-                "sign-in asks for the send scopes, so a sign-in made without it needs `-- auth` again.");
+                "opt in to posting messages and reactions other people will see. That gate also decides " +
+                "whether sign-in asks for the send scopes, so a sign-in made without it needs `-- auth` again.");
         }
+    }
+
+    private static string RequireReaction(string reaction)
+    {
+        var emoji = reaction?.Trim();
+        if (string.IsNullOrEmpty(emoji))
+        {
+            throw new McpException("`reaction` must be the emoji to set, e.g. 🤔 or ✅.");
+        }
+        return emoji;
     }
 
     /// <summary>
@@ -898,6 +1007,8 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         SearchWaitResult s => A("hits", s.Hits.Count) + A("total", s.Total) +
             A("waitedSeconds", s.WaitedSeconds) + (s.TimedOut is true ? A("timedOut", true) : ""),
         SentMessageDto sent => A("messageId", sent.Id),
+        ReactionDto r => A("messageId", r.MessageId) + A("reaction", r.Reaction) +
+            (r.Removed is true ? A("removed", true) : ""),
         System.Collections.ICollection c => A("count", c.Count),
         _ => "",
     };
@@ -1031,10 +1142,23 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             .Select(a => new AttachmentDto(a.Name, a.ContentType))
             .ToList();
 
-        var reactions = (msg.Reactions ?? [])
-            .Where(r => r.ReactionType is not null)
-            .GroupBy(r => r.ReactionType!)
-            .ToDictionary(g => g.Key, g => g.Count());
+        // Keyed by the emoji (or classic type name), valued by who reacted: attribution is what
+        // lets a caller tell "somebody acknowledged this" from "I already reacted to this".
+        // Custom org-uploaded reactions arrive as reactionType "custom" with the name beside it.
+        var reactions = new Dictionary<string, List<string>>();
+        foreach (var r in msg.Reactions ?? [])
+        {
+            var key = r.ReactionType == "custom" ? r.DisplayName ?? "custom" : r.ReactionType;
+            if (key is null)
+            {
+                continue;
+            }
+            if (!reactions.TryGetValue(key, out var who))
+            {
+                reactions[key] = who = [];
+            }
+            who.Add(r.User?.User?.DisplayName ?? r.User?.User?.Id ?? "?");
+        }
 
         return new MessageDto(
             msg.Id,
@@ -1259,7 +1383,9 @@ public sealed record MessageDto(
     bool? Truncated,
     bool? Edited,
     List<AttachmentDto>? Attachments,
-    Dictionary<string, int>? Reactions,
+    // Reaction (emoji or classic type name) -> display names of who reacted. Names fall back to
+    // the user id, then "?", so the list's length is always the reaction's count.
+    Dictionary<string, List<string>>? Reactions,
     List<MessageDto>? Replies,
     // Set only when one call watches more than one conversation. A caller that named a single
     // chat already knows which one answered.
@@ -1298,3 +1424,9 @@ public sealed record SearchHitDto(
     string? WebUrl);
 
 public sealed record SentMessageDto(string? Id, DateTimeOffset? Created, string? WebUrl);
+
+/// <summary>
+/// Confirmation of a reaction change. Graph answers 204 to setReaction/unsetReaction, so this
+/// echoes what was done rather than reading anything back. <c>Removed</c> appears only when true.
+/// </summary>
+public sealed record ReactionDto(string? MessageId, string? Reaction, bool? Removed);
