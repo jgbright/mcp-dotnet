@@ -195,7 +195,10 @@ shaped the way it is.
   `[GeneratedRegex]` pipelines that deliberately preserve what an agent acts on: links become
   `text (url)`, images become alt text, table cells become `|`, list items become `- `. Markdown
   emphasis is only stripped at word boundaries so `snake_case` identifiers survive. Truncation
-  happens after conversion, at `body_limit`, flagged with `truncated: true`.
+  happens after conversion, at `body_limit`, flagged with `truncated: true`. The send direction
+  mirrors this: Teams' `format: "markdown"` converts to HTML server-side (`Markdown.ToHtml`),
+  with paragraph spacing explicit because Teams renders `<p>` with no margin and collapses
+  newlines in a text body — measured facts documented in `docs/teams-server.md` § Sending.
 - **Paging is manual and bounded.** Loops follow the service's own continuation (`OdataNextLink`
   with `WithUrl(...)`; `x-ms-continuationtoken`, `$top`/`$skip`, or one-over-the-limit for Azure
   DevOps), stop as soon as `limit` is reached (setting `hasMore`), and break early once results are

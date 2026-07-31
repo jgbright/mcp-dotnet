@@ -82,20 +82,28 @@ When the user asks for changes to a draft:
 
 ## Body format for Teams rendering
 
-`send_chat_message` and `send_channel_message` both take a `format` parameter: `text` (the default) or `html`.
+`send_chat_message` and `send_channel_message` both take a `format` parameter: `text` (the
+default), `markdown`, or `html`.
 
-**Plain text is the default and separates paragraphs correctly on its own.** A real blank line between two prose paragraphs renders as a paragraph break. Never insert `&nbsp;` or any other entity as a spacer: the body is sent as-is, so the entity arrives as its literal characters and is visible in the message.
+**Send anything with structure as `format: "markdown"`.** The server converts it to the HTML
+subset Teams renders, with paragraph spacing handled for you (Teams gives `<p>` no margin, so the
+converter spaces paragraphs explicitly). Headings, bold/italic, links, bare URLs, inline code,
+fenced blocks, lists, blockquotes and `---` rules all work; write the body as ordinary markdown
+and nothing else.
 
-**Pass `format: "html"` when the message needs a hyperlink or emphasis.** A text body escapes markup, so an `<a href="...">` written into it arrives as visible tag text rather than a clickable link. When opting in, write the whole body as HTML:
+**Plain text is only safe for a single paragraph.** Measured in both the desktop and web clients:
+newlines in a text body — including blank lines — collapse, so a multi-paragraph text message
+arrives as one dense block. Never insert `&nbsp;` or any other entity as a spacer in a text body:
+it is sent as-is and arrives as literal characters.
 
-```html
-<p>First prose paragraph ends here.</p>
-<p>Second paragraph, linking <a href="https://dev.azure.com/contoso/Project/_workitems/edit/1234">work item 1234</a>.</p>
-```
+**`format: "html"` remains for the rare body that needs markup markdown cannot express.** Teams
+renders a subset of HTML only, and adjacent `<p>` tags render with no gap between them — separate
+prose paragraphs with `<br/><br/>`, not bare `<p>` boundaries. Prefer markdown unless there is a
+concrete reason not to.
 
-Teams renders a subset of HTML — paragraphs, links, bold and italic, lists. Do not assume arbitrary markup, attributes, or styling survives.
-
-**Neither rule applies to the markdown file on disk.** Files use normal markdown conventions. What changes at send time is only whether the body goes out as plain text or as HTML.
+**None of this applies to the markdown file on disk.** Files use normal markdown conventions.
+What changes at send time is only which `format` the body goes out as — and since the send format
+is markdown, the file body and the sent body are now usually the same text.
 
 ## Destination discipline
 

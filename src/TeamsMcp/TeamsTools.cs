@@ -742,9 +742,10 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     public Task<SentMessageDto> SendChannelMessage(
         [Description("Team id (GUID) or display name")] string team,
         [Description("Channel id (19:...) or display name")] string channel,
-        [Description("Message body. Plain text unless format is html.")] string text,
-        [Description("Body format: 'text' (default) or 'html'. Teams renders a subset of HTML. " +
-                     "Use html for hyperlinks: <a href=\"https://...\">label</a>.")] string? format = null,
+        [Description("Message body. Plain text unless format says otherwise.")] string text,
+        [Description("Body format: 'text' (default), 'markdown', or 'html'. Use markdown for anything beyond " +
+                     "a single plain paragraph (Teams collapses newlines in a text body); it is converted " +
+                     "server-side and renders consistently. html is a last resort.")] string? format = null,
         CancellationToken ct = default) => Run("send_channel_message",
         A("team", team) + A("channel", channel) + A("format", format ?? "text")
             + TeamsMcpLog.ContentArg("text", text), async () =>
@@ -755,7 +756,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         var channelId = await ResolveChannelAsync(client, teamId, channel, log, ct);
         var created = await client.Teams[teamId].Channels[channelId].Messages.PostAsync(new ChatMessage
         {
-            Body = new ItemBody { ContentType = ParseFormat(format), Content = text },
+            Body = BuildBody(text, format),
         }, cancellationToken: ct);
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });
@@ -765,9 +766,10 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                  "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `chat` is a chat id from list_chats.")]
     public Task<SentMessageDto> SendChatMessage(
         [Description("Chat id, e.g. 19:...@thread.v2")] string chat,
-        [Description("Message body. Plain text unless format is html.")] string text,
-        [Description("Body format: 'text' (default) or 'html'. Teams renders a subset of HTML. " +
-                     "Use html for hyperlinks: <a href=\"https://...\">label</a>.")] string? format = null,
+        [Description("Message body. Plain text unless format says otherwise.")] string text,
+        [Description("Body format: 'text' (default), 'markdown', or 'html'. Use markdown for anything beyond " +
+                     "a single plain paragraph (Teams collapses newlines in a text body); it is converted " +
+                     "server-side and renders consistently. html is a last resort.")] string? format = null,
         CancellationToken ct = default) => Run("send_chat_message",
         A("chat", chat) + A("format", format ?? "text") + TeamsMcpLog.ContentArg("text", text), async () =>
     {
@@ -775,7 +777,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         var client = await graph.GetClientAsync(ct);
         var created = await client.Chats[chat].Messages.PostAsync(new ChatMessage
         {
-            Body = new ItemBody { ContentType = ParseFormat(format), Content = text },
+            Body = BuildBody(text, format),
         }, cancellationToken: ct);
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });
@@ -794,23 +796,30 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     }
 
     /// <summary>
-    /// Maps the <c>format</c> argument to a Graph body type. Absent means plain text. HTML is
-    /// opt-in because Teams escapes markup in a text body, so an HTML entity sent as text arrives
-    /// as its literal characters.
+    /// Builds the Graph message body from the <c>format</c> argument. Absent means plain text —
+    /// markup is opt-in because Teams escapes it in a text body, so an HTML entity sent as text
+    /// arrives as its literal characters. Markdown is converted here rather than passed through:
+    /// Teams renders markdown typed into its own composer, but the Graph API accepts only text
+    /// and html body types and shows raw markdown literally.
     /// </summary>
-    internal static BodyType ParseFormat(string? format)
+    internal static ItemBody BuildBody(string text, string? format)
     {
         if (string.IsNullOrWhiteSpace(format) || format.Equals("text", StringComparison.OrdinalIgnoreCase))
         {
-            return BodyType.Text;
+            return new ItemBody { ContentType = BodyType.Text, Content = text };
+        }
+
+        if (format.Equals("markdown", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ItemBody { ContentType = BodyType.Html, Content = Markdown.ToHtml(text) };
         }
 
         if (format.Equals("html", StringComparison.OrdinalIgnoreCase))
         {
-            return BodyType.Html;
+            return new ItemBody { ContentType = BodyType.Html, Content = text };
         }
 
-        throw new McpException($"Unknown format '{format}'. Valid values are 'text' and 'html'.");
+        throw new McpException($"Unknown format '{format}'. Valid values are 'text', 'markdown' and 'html'.");
     }
 
     private static int _sequence;

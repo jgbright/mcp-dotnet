@@ -150,9 +150,32 @@ scopes are requested at all. See [authentication.md](authentication.md#teams-the
 the refusal message says so explicitly, because "the gate is on but it still refuses" is otherwise a
 confusing state.
 
-`format` defaults to text. HTML is opt-in because Teams escapes markup in a text body, so an HTML
-entity sent as text arrives as its literal characters; `html` is what makes a hyperlink possible.
-An unknown value is an `McpException` rather than a silent fallback.
+`format` defaults to text. Markup is opt-in because Teams escapes it in a text body, so an HTML
+entity sent as text arrives as its literal characters. An unknown value is an `McpException`
+rather than a silent fallback.
+
+`markdown` is the format the tool descriptions steer toward for anything with structure, and it
+is converted to HTML server-side (`Markdown.ToHtml`) rather than passed through — the Graph API
+accepts only text and html body types and renders raw markdown literally. Converting server-side
+is also the design point: markdown constrains a caller to a few constructs that all render well,
+where hand-written HTML has enough flexibility to go wrong in ways only a screenshot catches.
+Three rendering facts, measured in both the desktop and web clients, shape the output:
+
+- **Newlines in a text body collapse** — including blank lines, so a multi-paragraph plain-text
+  message arrives as one dense block. Plain text is only fit for a single paragraph.
+- **`<p>` renders with no margin**, so adjacent paragraphs touch. The converter therefore merges
+  consecutive paragraphs into one `<p>` joined by `<br/><br/>` — a literal blank line on every
+  client, independent of client CSS — and puts an `&nbsp;` spacer paragraph above each heading
+  (the idiom the Teams composer itself emits for a blank line), except at the start or directly
+  under another heading.
+- **Lists, code blocks and blockquotes carry their own margins** and get no extra spacing.
+
+Headings map `#`–`###` to `h1`–`h3` (all render at modest chat-appropriate sizes); deeper levels
+fall back to a bold paragraph, which is also roughly what `h4`+ looks like anyway. Emphasis uses
+the same word-boundary regexes as the read-side converters, so `snake_case` identifiers survive;
+URLs and code spans are shielded before the emphasis pass for the same reason. Input text is
+HTML-escaped first, so markup in a markdown body arrives as literal characters — the only tags
+sent are the ones the converter emits.
 
 ## Tool inventory
 
