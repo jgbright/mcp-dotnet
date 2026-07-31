@@ -37,7 +37,10 @@ same shape.
 `Map` is where the output conventions land: deleted messages are counted and dropped, system
 messages are counted and dropped unless `include_system`, `messageType` is emitted only when it is
 not the default `Message`, replies are nested and ordered oldest-first when `include_replies`, and
-reactions collapse to a `{type: count}` dictionary.
+reactions collapse to a `{reaction: [who]}` dictionary — keyed by the emoji (or a classic type name
+like `like`; a custom org-uploaded reaction is keyed by its name), valued by the reactors' display
+names falling back to id then `?`, so the list's length is always the count. Attribution is what
+lets a caller tell "somebody acknowledged this" from "I already reacted to this".
 
 ## The waiters, and why they need a cursor
 
@@ -177,6 +180,33 @@ URLs and code spans are shielded before the emphasis pass for the same reason. I
 HTML-escaped first, so markup in a markdown body arrives as literal characters — the only tags
 sent are the ones the converter emits.
 
+## Reactions
+
+`react_to_chat_message` and `react_to_channel_message` are Graph's `setReaction`/`unsetReaction`
+actions behind the same `RequireSendEnabled()` gate as the sends — a reaction is visible to
+everyone in the conversation. Three service facts shape them:
+
+- **`reactionType` is the emoji itself**, passed as unicode (`{"reactionType": "🤔"}`), not an
+  enum: any emoji Teams can react with works, alongside the classic names. Graph answers
+  `204 No Content` both ways, so the result DTO echoes what was done rather than reading back.
+- **One reaction per user per message: a set moves, never stacks.** Measured 2026-07-31 against
+  the live service: setting a second emoji as the same user displaces the first, and the 204 looks
+  identical either way — the replacement is only visible on a read-back. The Teams *client* can
+  pile several reactions from one user onto a message, but that newer multi-reaction feature is
+  not exposed through public Graph. The tool descriptions say so, because a model that reacts 🤔
+  and later ✅ needs to know it moved its reaction rather than added one (which happens to be the
+  right behaviour for an acknowledge-then-done workflow).
+- **The delegated permissions are the send scopes already requested** — `ChatMessage.Send` covers
+  chat reactions and `ChannelMessage.Send` covers channel ones — so reacting adds no scope and no
+  re-consent.
+- **A channel reply is addressed through its thread root** (`messages/{root}/replies/{reply}`),
+  which is why the channel tool takes `reply_id` alongside `message_id` instead of accepting a
+  reply id alone: Graph has no reply-by-id endpoint without the root.
+
+`remove=true` unsets, and only ever the signed-in user's own reaction, which is what makes the
+tools idempotent (`Idempotent = true` where the sends are false): the same call twice lands on the
+same state.
+
 ## Tool inventory
 
 | Tool | Notes |
@@ -194,6 +224,8 @@ sent are the ones the converter emits.
 | `wait_for_any_message` | Polls `search_messages` |
 | `send_channel_message` | `TEAMS_MCP_ALLOW_SEND=true` |
 | `send_chat_message` | `TEAMS_MCP_ALLOW_SEND=true` |
+| `react_to_chat_message` | `TEAMS_MCP_ALLOW_SEND=true`; emoji via setReaction/unsetReaction |
+| `react_to_channel_message` | Same gate; `reply_id` reaches a reply through its thread root |
 
 ## Scopes
 

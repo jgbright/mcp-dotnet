@@ -72,29 +72,41 @@ public class ToolListingTests
         // neither hint fails here rather than shipping unannotated.
         var attribute = tool.GetCustomAttribute<McpServerToolAttribute>()!;
         var sends = Sends.Contains(attribute.Name!);
+        var reacts = Reacts.Contains(attribute.Name!);
 
-        Assert.Equal(!sends, attribute.ReadOnly);
+        Assert.Equal(!sends && !reacts, attribute.ReadOnly);
         if (sends)
         {
             // A send adds a message and edits nothing, but it posts again every time it is called.
             Assert.False(attribute.Destructive);
             Assert.False(attribute.Idempotent);
         }
+        if (reacts)
+        {
+            // A reaction is self-scoped: setting one that is set, or removing one's own again,
+            // lands on the same state, so a retry is safe where a re-send is not.
+            Assert.False(attribute.Destructive);
+            Assert.True(attribute.Idempotent);
+        }
     }
 
     [Theory]
     [MemberData(nameof(Tools))]
-    public void Every_sending_tool_says_so_in_its_description(MethodInfo tool)
+    public void Every_gated_tool_says_so_in_its_description(MethodInfo tool)
     {
         var attribute = tool.GetCustomAttribute<McpServerToolAttribute>()!;
         var description = tool.GetCustomAttribute<DescriptionAttribute>()?.Description ?? "";
 
         // The annotation is read by the client, the description by the model. A gated tool has to
         // name TEAMS_MCP_ALLOW_SEND, or its refusal reads as a transient failure.
-        Assert.Equal(Sends.Contains(attribute.Name!), description.Contains("TEAMS_MCP_ALLOW_SEND"));
+        Assert.Equal(
+            Sends.Contains(attribute.Name!) || Reacts.Contains(attribute.Name!),
+            description.Contains("TEAMS_MCP_ALLOW_SEND"));
     }
 
     private static readonly HashSet<string> Sends = ["send_channel_message", "send_chat_message"];
+
+    private static readonly HashSet<string> Reacts = ["react_to_chat_message", "react_to_channel_message"];
 
     [Theory]
     [MemberData(nameof(Tools))]

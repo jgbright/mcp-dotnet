@@ -1,13 +1,13 @@
 ---
 name: teams-message
-version: 2.1.0
+version: 2.2.0
 description: |
   Draft and send Microsoft Teams messages following the user's established rules
   for destination, formatting, humanization, and approval. Use whenever the user
   asks to draft, compose, send, resend, or update a Teams chat or channel
-  message. Also use when the user says "send me" / "send this to me" / "drop it
-  in Teams" — this skill knows how to look up the current user's self-chat
-  destination from local memory.
+  message, or to react to one with an emoji. Also use when the user says "send
+  me" / "send this to me" / "drop it in Teams" — this skill knows how to look up
+  the current user's self-chat destination from local memory.
 allowed-tools:
   - Read
   - Write
@@ -19,6 +19,8 @@ allowed-tools:
   - mcp__teams__send_chat_message
   - mcp__teams__send_file_to_chat
   - mcp__teams__create_chat
+  - mcp__teams__react_to_chat_message
+  - mcp__teams__react_to_channel_message
 ---
 
 # Teams Message Skill
@@ -125,6 +127,24 @@ Never default to a group chat. The user must explicitly name the group or channe
 
 If the user says "only to me", "just me", "don't send it to X", or equivalent, treat that as a hard constraint. It overrides any other inference. Send to the user's self-chat and nowhere else.
 
+## Reactions
+
+`react_to_chat_message` and `react_to_channel_message` put an emoji reaction on a message as the
+current user (`remove=true` takes it off). Reacting is lighter-weight than replying and is the
+right acknowledgement for "seen it" / "done" moments; a reaction on someone else's message is
+still visible to everyone in the conversation, so outside the user's self-chat it needs the same
+explicit approval as sending.
+
+Two facts to work with, both measured against the live service:
+
+- **The user holds one reaction per message through this API.** Setting a different emoji *moves*
+  the reaction rather than adding a second one (only the Teams client itself can stack several).
+  That makes progressions natural: an "I'm looking at it" reaction later becomes a "done" reaction
+  with a single call and no cleanup.
+- **Which emoji to use, and what each one signals, is personal wiring, not skill policy.** Look for
+  a `reference-teams-reactions.md` entry in the user's local memory (indexed in MEMORY.md); it
+  holds the user's own rubric. Without one, ask before reacting on the user's behalf.
+
 ## Approval gate summary
 
 | Request                                                     | Action                                                              |
@@ -140,6 +160,7 @@ If the user says "only to me", "just me", "don't send it to X", or equivalent, t
 This skill keeps user-specific values out of its body so it remains portable. Expect to find these in the user's local memory directory:
 
 - **`reference-teams-destinations.md`** — chat IDs for the current user's Teams destinations, including the self-chat. Required for the "send to me" path.
+- **`reference-teams-reactions.md`** — the user's reaction rubric: which emoji they react with, when, and what each signals. Required before reacting on the user's behalf.
 - **`feedback-draft-correspondence.md`** — general approval-gate guidance for outbound correspondence (Teams, email, Slack).
 - **`feedback-humanizer-scope.md`** — scope of when to apply the humanizer pass.
 - **`feedback-teams-citation.md`** — citing Teams sources in docs (distinct from sending a Teams message).
