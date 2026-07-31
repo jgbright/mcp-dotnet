@@ -4,13 +4,13 @@
   // The one file to bump, and only for a new major/minor. Nerdbank.GitVersioning derives the
   // patch from git height (commits since this line last changed), so an ordinary commit needs no
   // version edit and two commits can never claim the same version.
-  "version": "0.1",
+  "version": "0.2",
 
   // Git height starts at 1 on the commit that introduces a version, which would make the first
   // release 0.1.1. Offsetting by -1 starts the patch at 0, so a new major/minor ships as x.y.0.
   "versionHeightOffset": -1,
 
-  // Which refs get a clean version: on main, 0.1.4. Anywhere else, 0.1.4-g5f480c1095, a
+  // Which refs get a clean version: on main, 0.2.0. Anywhere else, 0.2.0-g5f480c1095, a
   // prerelease by construction, so a package built off a branch can never be mistaken for a
   // release. This decides suffixes only. There are no release branches and no
   // `nbgv prepare-release` flow here.
