@@ -210,9 +210,12 @@ shaped the way it is.
   newlines in a text body — measured facts documented in `docs/teams-server.md` § Sending.
 - **Paging is manual and bounded.** Loops follow the service's own continuation (`OdataNextLink`
   with `WithUrl(...)`; `x-ms-continuationtoken`, `$top`/`$skip`, or one-over-the-limit for Azure
-  DevOps), stop as soon as `limit` is reached (setting `hasMore`), and break early once results are
-  older than `since`. Scans that filter client-side (`list_chats`, `list_pull_requests`) cap how
-  much they examine and log a Warning when they hit that cap.
+  DevOps), stop as soon as `limit` is reached (setting `hasMore`), and break early once a whole
+  page holds nothing newer than `since` — **per page, not per record**. Graph orders Teams messages
+  by `lastModifiedDateTime`, so a reaction lifts an old message above genuinely newer ones and one
+  out-of-range record is never proof the range is exhausted (`MessagePagingTests`). Scans that
+  filter client-side (`list_chats`, `list_pull_requests`) cap how much they examine and log a
+  Warning when they hit that cap.
 - Tool parameter names use `snake_case` (`include_replies`, `body_limit`, `target_branch`) because
   that is what reaches the model; C# locals and DTO members stay PascalCase/camelCase.
 - **Every tool declares whether it changes anything.** A read tool sets `ReadOnly = true`; a

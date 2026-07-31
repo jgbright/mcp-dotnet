@@ -152,9 +152,9 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     /// <c>ChatMessageCollectionResponse</c> and the same <c>OdataNextLink</c>, so only the first
     /// request differs.
     /// </summary>
-    private delegate Task<ChatMessageCollectionResponse?> FirstPage(CancellationToken ct);
+    internal delegate Task<ChatMessageCollectionResponse?> FirstPage(CancellationToken ct);
 
-    private delegate Task<ChatMessageCollectionResponse?> NextPage(string url, CancellationToken ct);
+    internal delegate Task<ChatMessageCollectionResponse?> NextPage(string url, CancellationToken ct);
 
     private static (FirstPage First, NextPage Next) ChannelPager(
         GraphServiceClient client, string teamId, string channelId, bool includeReplies) =>
@@ -174,12 +174,19 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
          (url, ct) => client.Chats[chat].Messages.WithUrl(url).GetAsync(cancellationToken: ct));
 
     /// <summary>
-    /// Walks a message collection newest-first, mapping and skip-counting as it goes. Stops at
-    /// <paramref name="limit"/> results (which sets <c>hasMore</c>) or at the first message older
-    /// than <paramref name="floor"/>, after which nothing newer can appear. Shared by the read
-    /// tools and the waiters so both return the same shape.
+    /// Walks a message collection, mapping and skip-counting as it goes. Stops at
+    /// <paramref name="limit"/> results (which sets <c>hasMore</c>) or at the first page holding
+    /// nothing at or after <paramref name="floor"/>. Shared by the read tools and the waiters so
+    /// both return the same shape.
+    ///
+    /// <para>The stop is per page rather than per message because Graph orders these collections
+    /// by <c>lastModifiedDateTime</c>, not <c>createdDateTime</c>, and a reaction moves the former.
+    /// A single old message can therefore surface at the top of the listing with nothing new having
+    /// been said, so "older than the floor" is a reason to skip that message, never a reason to
+    /// conclude the newer ones are exhausted. A whole page of them still ends the scan, which is
+    /// what keeps a recent floor from walking the entire conversation.</para>
     /// </summary>
-    private static async Task<MessagesResult> PageMessagesAsync(
+    internal static async Task<MessagesResult> PageMessagesAsync(
         (FirstPage First, NextPage Next) pager, Watermark? floor, int limit,
         bool includeReplies, bool includeSystem, int bodyLimit, CancellationToken ct)
     {
@@ -190,6 +197,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         var page = await pager.First(ct);
         while (!done && page is not null)
         {
+            var reachedFloorOnThisPage = floor is null;
             foreach (var msg in page.Value ?? [])
             {
                 if (results.Count >= limit)
@@ -202,9 +210,12 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                 {
                     if (msg.CreatedDateTime < f.Ts)
                     {
-                        done = true; // newest-first: everything after this is older
-                        break;
+                        // Out of range, but not proof the range is exhausted: the listing is
+                        // ordered by lastModifiedDateTime, so a reaction can lift this above
+                        // messages that genuinely are newer. Skip it and read on.
+                        continue;
                     }
+                    reachedFloorOnThisPage = true;
                     // The boundary is inclusive, so a cursor also lists the ids already delivered
                     // at exactly that instant. Skipping them keeps the newest message from coming
                     // back on every poll.
@@ -219,7 +230,9 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                     results.Add(dto);
                 }
             }
-            if (done || page.OdataNextLink is null)
+            // A page with nothing at or after the floor is the end of the newer messages. One
+            // stray out-of-order message is not, which is the whole of the difference.
+            if (done || !reachedFloorOnThisPage || page.OdataNextLink is null)
             {
                 break;
             }
