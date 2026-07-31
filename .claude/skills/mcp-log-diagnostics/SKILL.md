@@ -24,14 +24,19 @@ Recipe:
 
 1. `dotnet run --project src/<server> -- selftest` — separates "auth is broken" from "a tool is
    broken", and writes to the same log file. It prints the log path on the first line.
-2. Read the top of the log: the `startup` lines report version, runtime, which env vars are set,
+2. `dotnet run --project src/<server> -- call <tool> key=value…` — reproduces one tool call
+   through the real server path (host, silent auth, `Run` wrapper, filters) without an MCP
+   client: result JSON on stdout, the server's own log lines on stderr, non-zero exit on a tool
+   error. Bare `call` lists the tools; arguments can also be one JSON object or `-` for JSON on
+   stdin. This is the step that turns "the model saw an error" into a command you can iterate on.
+3. Read the top of the log: the `startup` lines report version, runtime, which env vars are set,
    the gate (`sendEnabled` / `writeEnabled`), the log settings, and whether an authentication
    record exists.
-3. Grep an event name. The stable ones are `startup`, `auth.config`, `auth.record`,
+4. Grep an event name. The stable ones are `startup`, `auth.config`, `auth.record`,
    `auth.mismatch`, `auth.token`, `auth.fail`, `tool.start`, `tool.ok`, `tool.fail`, `resolve`,
    `page`, `poll`, `config`, `crash`, plus the HTTP pair, which differs by server: `graph.http`/`graph.http.fail` in
    the Teams server, `http`/`http.fail` in the Azure DevOps one.
-4. Grep `req=N`. Every tool call gets a correlation id, stamped by the logger from an `AsyncLocal`
+5. Grep `req=N`. Every tool call gets a correlation id, stamped by the logger from an `AsyncLocal`
    (`TeamsMcpLog.CurrentRequest` / `AdoMcpLog.CurrentRequest`) — so the tool's own events, every
    HTTP call it made, and any MCP SDK event underneath it all carry the same id. **Errors returned
    to the model include their `req=N` and the log path**, so an MCP error message leads straight to

@@ -54,12 +54,14 @@ dotnet nbgv get-version                             # what this checkout would s
 dotnet run --project src/TeamsMcp -- install        # register in the repository the cwd is inside
 dotnet run --project src/TeamsMcp -- auth           # one-time interactive sign-in; primes the token cache
 dotnet run --project src/TeamsMcp -- selftest       # silent-auth + Graph round-trip, raw errors to stdout
+dotnet run --project src/TeamsMcp -- call           # bare: list the tools; `call <tool> key=value…` invokes one
 dotnet run --project src/TeamsMcp                   # MCP server on stdio — needs an MCP client to drive it
 
 dotnet run --project src/AzureDevOpsMcp -- install
 dotnet run --project src/AzureDevOpsMcp -- auth
 dotnet run --project src/AzureDevOpsMcp -- selftest # silent-auth + connectionData + projects
 dotnet run --project src/AzureDevOpsMcp -- config   # validate + print the data files (deployment map)
+dotnet run --project src/AzureDevOpsMcp -- call     # bare: list the tools; `call <tool> key=value…` invokes one
 dotnet run --project src/AzureDevOpsMcp
 ```
 
@@ -72,8 +74,12 @@ reshaping code for testability.
 
 Anything that talks to Graph or Azure DevOps is still verified by hand: `selftest` exercises the
 same silent credential path each server uses, but in console mode where exceptions and output are
-visible. Verifying a tool change end-to-end means registering the server in an MCP client (see
-README) and calling it, or temporarily extending the `selftest` branch.
+visible. Verifying a tool change end-to-end means `-- call <tool> key=value…` — one shot of that
+tool through the real server path (same host, silent auth, `Run` wrapper and filters as server
+mode, over in-memory pipes), result JSON on stdout, logs on stderr, non-zero exit on a tool error.
+Arguments are KEY=VALUE pairs coerced against the tool's own input schema, one JSON object, or `-`
+to read that object from stdin; bare `call` lists the tools. Registering the server in an MCP
+client (see README) remains the check that the *client* sees what it should.
 
 **Packaging, versioning and CI are in the `mcp-release` skill** (`.claude/skills/mcp-release/`) —
 how both servers pack as .NET tools, why the package ids are owner-prefixed, the four nbgv
@@ -112,7 +118,9 @@ never are, and the startup banner reports env vars by presence and shape only.
 registers two `CompactLoggerProvider`s — a file sink and a **stderr** sink. Never add
 `Console.WriteLine`, a stdout sink, or `AddConsole()` (which defaults to stdout) to any code path
 that runs in server mode — it corrupts the JSON-RPC stream. The `auth` and `selftest` branches
-return before the host is built, so they may write to stdout freely.
+return before the host is built, so they may write to stdout freely. `call` builds the real host
+but moves its transport onto in-memory pipes (`BuildMcpHost`, the one place the transport is
+chosen), which is why it may print to stdout and server mode still may not.
 
 **Auth is split in two on purpose.** `-- auth` performs the only interactive flow (device code by
 default, `…_AUTH=browser` for the browser flow) and serializes an `AuthenticationRecord` to

@@ -125,10 +125,14 @@ Claude Code advertises.
 
 1. **`-- selftest`.** It separates an auth problem from a tool problem and prints raw errors to the
    console. For Azure DevOps, `-- config` does the same for the data files.
-2. **The `startup` lines at the top of the log.** Which build, which tenant/client shape, which
+2. **`-- call <tool> key=value…`.** Reproduces one tool call through the real server path — host,
+   silent auth, `Run` wrapper, filters — with the result on stdout and the server's log lines on
+   stderr, so a failure a model reported becomes a command to iterate on. It logs as `mode="call"`
+   to the same file the server writes.
+3. **The `startup` lines at the top of the log.** Which build, which tenant/client shape, which
    organization, whether sign-in has happened, whether the gates are on, where the data files are
    and whether they exist.
-3. **The failing `req=N`.** `grep "req=7"` gives the tool call, every HTTP request it made, and the
+4. **The failing `req=N`.** `grep "req=7"` gives the tool call, every HTTP request it made, and the
    exception — in order.
-4. **The `http.fail` line's `body=…`.** The service's own error message is almost always more
+5. **The `http.fail` line's `body=…`.** The service's own error message is almost always more
    specific than the mapped one.
