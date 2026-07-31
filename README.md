@@ -74,6 +74,25 @@ ado-mcp selftest
 Restart the MCP client and the tools are there. If something is wrong, run `selftest` first. It
 tells you whether the problem is sign-in or the tool.
 
+### Calling a tool from the command line
+
+`call` invokes one tool per run without an MCP client on the other end — the server is the real
+one, driven over in-memory pipes, so a call that works here works under MCP too. The result JSON
+is the only thing on stdout (logs go to stderr and the log file), and a tool error exits non-zero,
+so the output pipes cleanly into `ConvertFrom-Json` or `jq`.
+
+```powershell
+ado-mcp call                                       # no tool: list the tools
+ado-mcp call list_repos project=Core limit=5       # KEY=VALUE pairs, coerced by the tool's schema
+ado-mcp call list_repos '{"project":"Core"}'       # or one JSON object
+'{"project":"Core"}' | ado-mcp call list_repos -   # or that object on stdin, if quoting fights back
+teams-mcp call list_teams
+```
+
+The tool name resolves leniently, the way names do inside the tools: `call repos` finds
+`list_repos` (noting the correction on stderr), an ambiguous or unknown name fails listing the
+candidates, and a wrong argument fails before anything is sent, naming what the tool takes.
+
 ### Enabling writes
 
 Both servers are read-only out of the box. The tools that change something are always listed, and
@@ -444,8 +463,9 @@ adds successful HTTP calls, paging and name resolution. `Trace` adds the MCP SDK
 traffic.
 
 For fastest triage, in order: run `-- selftest`, which separates auth problems from tool problems.
-Then read the `startup` lines at the top of the log. Then find the failing HTTP line, which carries
-the service's own error body.
+Then reproduce the failing call with `-- call <tool> key=value…`, which drives the real server path
+with errors visible on the console. Then read the `startup` lines at the top of the log, and find
+the failing HTTP line, which carries the service's own error body.
 
 ## Cross-platform notes
 

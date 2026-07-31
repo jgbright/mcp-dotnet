@@ -36,6 +36,7 @@
     <!-- No Azure DevOps client SDK on purpose: the tools drive the REST API through a small typed
          HttpClient wrapper so that paging, requested fields and HTTP logging stay under our control. -->
     <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="System.CommandLine" Version="2.0.10" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
     <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
     <PackageReference Include="ModelContextProtocol.Extensions.Tasks" Version="2.0.0" />

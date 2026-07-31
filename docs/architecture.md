@@ -77,16 +77,35 @@ reconstructible from the log file alone.
 
 ## Process modes
 
-Both `Program.cs` files dispatch on `args[0]` **before** building the host. Those branches return
-early, so they may write to stdout freely; server mode may not.
+Both `Program.cs` files parse their verbs through System.CommandLine: each console verb is a
+subcommand, and the server itself is the root command's action, reached only when no verb is
+given. A mistyped verb is therefore a parse error on stderr with the valid commands suggested —
+not a silently started stdio server — and `--help` enumerates the verbs. The verb actions may
+write to stdout freely; server mode may not. Most verbs never build the host at all. One verb
+parses twice on purpose: `install` owns its option parsing (`Install.Options`, which the tests
+drive), so the System.CommandLine declarations for it only mirror that surface for help and
+error reporting, and the action hands the tokens back to `Install.Run`.
 
-| Mode | Teams | Azure DevOps | Writes stdout |
-| --- | --- | --- | --- |
-| `install` | yes | yes | yes |
-| `auth` | yes | yes | yes |
-| `selftest` | yes | yes | yes |
-| `config` | — | yes | yes |
-| *(no argument)* — MCP server on stdio | yes | yes | **never** |
+`call` is the exception that proves the stdout rule: it *does* build the host — the same one
+server mode runs, built by the shared `BuildMcpHost` local function — but transported over
+in-memory pipes rather than stdio, and drives it with an in-process MCP client. One tool call
+per run: bare `call` lists the tools, `call <tool>` takes KEY=VALUE pairs coerced against the
+tool's own `inputSchema`, one JSON object, or `-` for a JSON object on stdin (`Call.cs` holds
+that parsing and the result rendering; the tool name completes via a System.CommandLine
+completion source). The tool name resolves the way the servers' own name parameters do — exact
+first, then substring, candidates listed on ambiguity — with the correction noted on stderr. Because the transport is not stdout, the result JSON is the only thing
+written there — logs stay on stderr and the file — and a tool error exits non-zero, so the
+output pipes cleanly into `ConvertFrom-Json` or `jq`. A call that succeeds here has exercised
+the same path an MCP client would: host, silent auth, `Run` wrapper, serializer and filters.
+
+| Mode | Teams | Azure DevOps | Writes stdout | Builds the host |
+| --- | --- | --- | --- | --- |
+| `install` | yes | yes | yes | no |
+| `auth` | yes | yes | yes | no |
+| `selftest` | yes | yes | yes | no |
+| `config` | — | yes | yes | no |
+| `call` | yes | yes | yes — the result | yes, over pipes |
+| *(no argument)* — MCP server on stdio | yes | yes | **never** | yes |
 
 **stdout belongs to the MCP transport.** In server mode the default logging providers are cleared
 and two `CompactLoggerProvider`s are registered — a file sink and a **stderr** sink. A
@@ -106,6 +125,7 @@ corrupts the JSON-RPC stream.
 | `ToolListing.cs` | `ToolExecution.LongRunning`, `ToolResults.Trim`, `ToolListing.Stamp` |
 | `Logging.cs` | `TeamsMcpLog`, `Diagnostics`, `Ev`, the sinks and `CompactLogger` |
 | `Install.cs` | The `install` verb: repository discovery, client detection, config merge |
+| `Call.cs` | The `call` verb's pure half: schema-driven argument coercion, result rendering, tool names for completion |
 
 ### `src/AzureDevOpsMcp`
 
@@ -120,7 +140,7 @@ corrupts the JSON-RPC stream.
 | `DataFiles.cs` | `DataFile<T>`: the one mechanism for externally configured data |
 | `Search.cs` | The almsearch host and the shared search request body |
 | `Text.cs` | HTML and Markdown to plain text, truncation |
-| `ToolListing.cs`, `Logging.cs`, `Install.cs` | As above |
+| `ToolListing.cs`, `Logging.cs`, `Install.cs`, `Call.cs` | As above |
 
 ## State and concurrency
 
@@ -176,9 +196,10 @@ Three test files are worth knowing about because they enforce conventions rather
 
 Anything that talks to Graph or Azure DevOps is verified by hand. `-- selftest` exercises the same
 silent credential path each server uses, but in console mode where exceptions and output are
-visible. Verifying a tool change end to end means registering the server in an MCP client and
-calling it, or temporarily extending the `selftest` branch. `scripts/rebuild.ps1` is the inner loop
-for that.
+visible. Verifying a tool change end to end means `-- call <tool> key=value…`, which drives that
+one tool through the real server path without needing an MCP client on the other end; registering
+the server in an MCP client remains the check that the client sees what it should.
+`scripts/rebuild.ps1` is the inner loop for that.
 
 ## Extending
 

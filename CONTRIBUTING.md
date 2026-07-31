@@ -23,9 +23,10 @@ push is irreversible, and nuget.org authorizes it against a trusted publishing p
 `dotnet test` covers everything that does not need the remote service: body conversion and
 truncation, DTO mapping, name resolution, WIQL construction, exception mapping, the log format,
 and all of `install`. Anything that talks to Graph or Azure DevOps is verified by hand:
-`-- selftest` exercises the real silent-auth path in console mode, and a tool change is proven by
-registering the server in an MCP client and calling it. `scripts/rebuild.ps1` is the inner loop
-for that. It builds, tests, packs, and swaps the installed .NET tools in place, which plain
+`-- selftest` exercises the real silent-auth path in console mode, and a tool change is proven
+with `-- call <tool> key=value…`, which drives that one tool through the real server path with
+the result on stdout. Registering the server in an MCP client remains the check that the client
+sees what it should. `scripts/rebuild.ps1` is the inner loop for that. It builds, tests, packs, and swaps the installed .NET tools in place, which plain
 `dotnet tool update` cannot do because the dev version never moves.
 
 Tests reach the helpers they exercise as `internal` via `InternalsVisibleTo`. Prefer widening
@@ -38,7 +39,8 @@ A change that breaks one of these will be asked to change.
 - **stdout belongs to the MCP transport.** In anything that runs in server mode: no
   `Console.WriteLine`, no `AddConsole()`, no stdout logger. It corrupts the JSON-RPC stream. Logs
   go to the file sink and stderr. The `auth`, `selftest`, `install` and `config` verbs return
-  before the host is built and may print freely.
+  before the host is built and may print freely; `call` builds the host but moves its transport
+  onto in-memory pipes, which is what frees its stdout.
 - **The two servers share no code, on purpose.** The conventions (log format, `Run` wrapper, DTO
   style, `Install`) are duplicated. Do not extract a shared library on the strength of the
   similarity. The plan is to factor one out when a third server or a real divergence forces it.
