@@ -1832,6 +1832,14 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     private static int _sequence;
 
     /// <summary>
+    /// The next correlation id. <see cref="ToolErrors"/> allocates from the same sequence, so a
+    /// failure caught either side of <see cref="Run{T}"/> is indistinguishable in the log from one
+    /// caught inside it.
+    /// </summary>
+    internal static string NextRequest() =>
+        Interlocked.Increment(ref _sequence).ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
     /// Wraps every tool call: assigns the <c>req=N</c> correlation id that the REST handler and
     /// MCP SDK events are stamped with, times the call, and records arguments and outcome.
     /// Failures log the full exception while the model sees a short message plus the req id,
@@ -1839,7 +1847,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// </summary>
     internal async Task<T> Run<T>(string tool, string args, Func<Task<T>> action)
     {
-        var req = Interlocked.Increment(ref _sequence).ToString(CultureInfo.InvariantCulture);
+        var req = NextRequest();
         var previous = AdoMcpLog.CurrentRequest;
         AdoMcpLog.CurrentRequest = req;
         var sw = Stopwatch.StartNew();
@@ -1891,7 +1899,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     }
 
     /// <summary>Points the caller at the exact log lines for this call.</summary>
-    private static string LogRef(string req) => $"(details: grep \"req={req}\" in {AdoMcpLog.FilePath})";
+    internal static string LogRef(string req) => $"(details: grep \"req={req}\" in {AdoMcpLog.FilePath})";
 
     /// <summary>
     /// Summarizes a tool result for the log without dumping its content. Descriptions and comment

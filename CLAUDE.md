@@ -194,6 +194,17 @@ shaped the way it is.
   mutation disabled) passes through untouched and logs at Warning. New tools must go through `Run`,
   passing their arguments via `A(...)` — that is what makes a failed call reconstructible from the
   log.
+- **`Run` is the tool body, so `ToolErrors.Guard` covers what fails outside it.** Argument binding
+  happens above `Run` and throws *past* the call-tool filter, and the SDK's composed handler catches
+  it one frame higher and replaces the detail with `An error occurred invoking '<tool>'.` — no
+  `req=N`, no log line, nothing to act on. `Guard` (an `AddCallToolFilter`, wired beside
+  `ToolResults.Trim`) closes that three ways: it checks the supplied names against the tool's own
+  `inputSchema` before dispatch, the same check `Call.Coerce` makes for the command line; it catches
+  what escapes the tool; and it gives a `req=N` to any error result that arrives without one, since
+  anything already carrying one went through `Run`. `McpException` and `OperationCanceledException`
+  are rethrown untouched — which leaves an unknown tool or method name (`McpProtocolException`) as
+  the one failure class with no `req=N`, and `ServerInstructions` says so rather than promising
+  otherwise. This is one of the deliberately duplicated pieces: both servers carry their own copy.
 - **Output is optimized for a model's context window.** The serializer omits nulls (configured in
   `Program.cs`, not by attributes), so DTO fields are nullable and set to `null` when uninteresting:
   Teams emits `messageType` only for non-`Message` messages; Azure DevOps drops a `wellFormed`
