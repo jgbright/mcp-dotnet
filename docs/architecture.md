@@ -169,7 +169,11 @@ These hold across both servers. A change that breaks one will be asked to change
   mutating tool calls the existing gate helper — `TeamsTools.RequireSendEnabled` /
   `AdoTools.RequireWriteEnabled` — before anything else, including argument validation, and repeats
   the variable's name in its own `[Description]`. Gates are never written into a repository's
-  config by `install`.
+  config by `install`. There is exactly one second gate, `ADO_MCP_ALLOW_APPROVE` for
+  `approve_release`, which is required *in addition to* the write gate rather than instead of it,
+  because answering a release approval records the signed-in person as having authorized a
+  production deployment. That is a different permission, not a bigger one — "this call feels
+  risky" is not a reason to add a third.
 - **User-authored content is not logged by default.** `ContentArg` for message bodies, descriptions
   and comments; plain `Arg` for ids, counts, flags and addresses. See
   [observability.md](observability.md).

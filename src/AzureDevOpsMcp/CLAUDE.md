@@ -16,6 +16,38 @@ consequences worth knowing before debugging something odd:
   runs are read through the build API, which takes a run id without also needing its pipeline id,
   filters and pages properly, and carries the timeline.
 
+**Classic releases are a second service, not a second view of the pipelines API.** They answer on
+the `vsrm` host (`Deployments.VsrmBaseUrl`), and four things about them cost a wrong answer rather
+than an error if assumed away:
+- **A release environment has no `failed` status.** A deployment that failed reports as `rejected`
+  — the same status a turned-down approval produces — and only `operationStatus` (`PhaseFailed`
+  against `Rejected`) separates them. Verified against a real failed deployment, not inferred from
+  the docs. Both are surfaced, and `get_release`'s description says so, because a model that reads
+  `rejected` as "a person said no" will report the wrong cause.
+- **`$expand=tasks` is what makes the per-task detail arrive.** Without it `releaseDeployPhases` is
+  empty and a failed deployment looks like it ran no steps, so `ReadReleaseWireAsync` always asks
+  for it.
+- **A task's verdict has two spellings apiece** — `failed`/`failure`, `succeeded`/`success`, both
+  in Release Management's own enum. `Mapping.IsReleaseTaskFailure` matches both; matching one
+  silently halves the failures reported.
+- **A redeploy adds a `deploySteps` attempt rather than replacing the last one**, so the stage that
+  has since gone green still carries the failed first attempt. `Mapping.LatestAttempt` takes the
+  highest, and the DTO reports `attempt` only when it is not 1.
+
+Also: the *release* environment id and the *definition* environment id are different numbers for
+the same stage, and the deploy endpoint takes the former. `ResolveReleaseEnvironment` resolves
+against the release in hand and refuses a numeric id that release does not have, because `Resolve`
+passes a number straight through and the PATCH would otherwise land on another release's stage.
+
+**Approving is gated separately from writing, and that is not redundancy.** `approve_release` calls
+`RequireWriteEnabled()` and then `RequireApprovalEnabled()` (`ADO_MCP_ALLOW_APPROVE`). The write
+gate answers "may this server change things other people see"; an approval exists specifically to
+require a human, and answering one records the signed-in person as having authorized that
+deployment. Someone who enabled writes so an agent could file work items has not agreed to that.
+This is the one place a mutating tool consults a policy beyond `RequireWriteEnabled`, and the
+reason is the audit trail rather than the blast radius — do not fold it back into the write gate,
+and do not add a third gate for anything whose only argument is that it feels risky.
+
 **What the write tools reach is measured against what the read tools report**, because a field a
 model can see and cannot fix sends the work out through `az rest` instead. Every field
 `WorkItemDetailDto` carries is writable by one of the two work item tools; a new field added to

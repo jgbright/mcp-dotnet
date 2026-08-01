@@ -79,8 +79,7 @@ public class ToolListingTests
         Assert.Equal(!mutates, attribute.ReadOnly);
         if (mutates)
         {
-            // Only the tool that overwrites existing fields is destructive.
-            Assert.Equal(attribute.Name == "update_work_item", attribute.Destructive);
+            Assert.Equal(Destructive.Contains(attribute.Name!), attribute.Destructive);
             Assert.False(attribute.Idempotent);
         }
     }
@@ -97,8 +96,34 @@ public class ToolListingTests
         Assert.Equal(Writes.Contains(attribute.Name!), description.Contains("ADO_MCP_ALLOW_WRITE"));
     }
 
+    [Theory]
+    [MemberData(nameof(Tools))]
+    public void Only_the_approval_tool_names_the_approval_gate(MethodInfo tool)
+    {
+        // approve_release refuses on a second variable that no other tool consults, so its
+        // description has to name that one too — a model told only about ADO_MCP_ALLOW_WRITE would
+        // read the refusal as a bug in a server that plainly has writing turned on.
+        var attribute = tool.GetCustomAttribute<McpServerToolAttribute>()!;
+        var description = tool.GetCustomAttribute<DescriptionAttribute>()?.Description ?? "";
+
+        Assert.Equal(attribute.Name == "approve_release", description.Contains("ADO_MCP_ALLOW_APPROVE"));
+    }
+
     private static readonly HashSet<string> Writes =
-        ["create_work_item", "update_work_item", "add_pull_request_comment", "run_pipeline"];
+    [
+        "create_work_item", "update_work_item", "add_pull_request_comment", "run_pipeline",
+        "deploy_release", "approve_release",
+    ];
+
+    /// <summary>
+    /// The mutations that replace something rather than adding to it, which is what an MCP client
+    /// gates a confirmation prompt on. Queueing a run or filing a work item adds; overwriting a
+    /// work item's fields replaces them, and deploying a release replaces what is running in that
+    /// environment. approve_release is here because approving a pre-deploy gate is what lets that
+    /// deployment happen — the confirmation belongs on the call that causes it.
+    /// </summary>
+    private static readonly HashSet<string> Destructive =
+        ["update_work_item", "deploy_release", "approve_release"];
 
     [Theory]
     [MemberData(nameof(Tools))]
