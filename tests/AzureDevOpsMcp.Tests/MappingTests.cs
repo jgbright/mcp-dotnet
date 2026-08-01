@@ -638,4 +638,18 @@ public class FieldHelperTests
     {
         Assert.Equal(expected, Mapping.IsTerminalRunStatus(status));
     }
+
+    [Theory]
+    [InlineData("active", false)]
+    [InlineData("Active", false)]
+    [InlineData("completed", true)]
+    [InlineData("abandoned", true)]
+    // Unknown and absent are terminal: a waiter surprised by the service should return what it
+    // sees rather than poll a state it does not understand until the timeout.
+    [InlineData("notSet", true)]
+    [InlineData(null, true)]
+    public void Only_active_keeps_a_pull_request_waiter_polling(string? status, bool expected)
+    {
+        Assert.Equal(expected, Mapping.IsTerminalPullRequestStatus(status));
+    }
 }

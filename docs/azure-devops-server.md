@@ -19,7 +19,7 @@ What the wrapper provides:
 | `GetAsync<T>` | The common case |
 | `GetPageAsync<T>` | Returns the `x-ms-continuationtoken` header alongside the body |
 | `PostAsync<T>` | JSON bodies (WIQL, search) |
-| `PatchAsync<T>` | JSON Patch — see [writes](#work-item-writes) |
+| `PatchAsync<T>` | JSON Patch — see [writes](#writes) |
 | `GetTextAsync` | Build logs, which are not JSON |
 
 A relative path is resolved against the organization URL; an absolute one passes through, which is
@@ -93,6 +93,20 @@ listed nor counted.
 extra requests and are of no interest until there is a finished run to explain — then calls the same
 `ReadRunAsync` so waiting for a run and asking about one report identically.
 
+## Waiting on a pull request
+
+`wait_for_pull_request` is the run waiter's shape pointed at the other long-running thing a
+delivery flow blocks on. It polls **only the pull request** — the threads cost an extra request
+and are of no interest until there is an ended pull request to report — until the status leaves
+`active`. `completed` and `abandoned` are both terminal, and the returned status says which; an
+unrecognized status is treated as terminal too, so a waiter surprised by the service returns what
+it sees instead of polling until the timeout. It then calls the same `ReadPullRequestAsync` as
+`get_pull_request`, so waiting for a pull request and asking about one report identically.
+
+The waiters and `run_pipeline` are deliberately primitives, not a workflow: an agent chains
+"PR lands → kick CI → watch it → kick the follow-on build" itself, one composable call per step,
+and the server never models the flow.
+
 ## WIQL construction
 
 `list_work_items` takes either a full `wiql` query or filter arguments. When it builds the query
@@ -136,15 +150,20 @@ Details that are easy to get wrong:
   HTML-encoded. `Text.FromHighlight` strips the tags **before** decoding, so an encoded angle bracket
   in the text itself — routine in code — survives as text instead of being mistaken for markup.
 
-## Work item writes
+## Writes
 
-Three tools behind `ADO_MCP_ALLOW_WRITE=true`: `update_work_item`, `create_work_item`,
-`add_pull_request_comment`. Each calls `AdoTools.RequireWriteEnabled()` before anything else,
-including validating its own arguments, so the refusal is the same regardless of what was passed.
+Four tools behind `ADO_MCP_ALLOW_WRITE=true`: `update_work_item`, `create_work_item`,
+`add_pull_request_comment`, `run_pipeline`. Each calls `AdoTools.RequireWriteEnabled()` before
+anything else, including validating its own arguments, so the refusal is the same regardless of
+what was passed.
 
 Every write returns the post-write state in the read tools' DTO shapes, so no follow-up read is
-needed. Deleting things, voting on or completing pull requests, and triggering pipelines are not
-offered.
+needed. Deleting things, and voting on or completing pull requests, are not offered.
+
+`run_pipeline` queues a run, optionally on a branch, through the build API — the same API runs are
+read through — so the queued run comes back in `list_pipeline_runs`'s shape, carrying the id
+`wait_for_pipeline_run` takes. It sits behind the write gate because queuing consumes agents and
+can deploy things: a read-only registration must not be able to start builds.
 
 ### What the write tools reach is measured against what the read tools report
 
@@ -286,14 +305,15 @@ repository.** Extend the mechanism, or regenerate the data.
 | environment deployment records | 100 | Reported as "no succeeded deployment in the last 100 records" |
 | TFVC paths searched per deployable | 10 | `hasMore` + Warning |
 | work item ids per batch read | 200 | Batched — the endpoint 400s above this |
-| `wait_for_pipeline_run` timeout | 1–21600 s | Clamped; returns `timedOut: true` |
-| `wait_for_pipeline_run` interval | 5–600 s | Clamped |
+| waiter timeout (`wait_for_pipeline_run`, `wait_for_pull_request`) | 1–21600 s | Clamped; returns `timedOut: true` |
+| waiter interval (both waiters) | 5–600 s | Clamped |
 
 ## Tool inventory
 
-Read: `list_projects`, `list_repos`, `list_pull_requests`, `get_pull_request`, `list_work_items`,
-`get_work_item`, `list_pipelines`, `list_pipeline_runs`, `get_pipeline_run`, `wait_for_pipeline_run`,
-`search_code`, `search_work_items`, `search_wiki`, `deployment_status`.
+Read: `list_projects`, `list_repos`, `list_pull_requests`, `get_pull_request`,
+`wait_for_pull_request`, `list_work_items`, `get_work_item`, `list_pipelines`, `list_pipeline_runs`,
+`get_pipeline_run`, `wait_for_pipeline_run`, `search_code`, `search_work_items`, `search_wiki`,
+`deployment_status`.
 
 Write (`ADO_MCP_ALLOW_WRITE=true`): `update_work_item`, `create_work_item`,
-`add_pull_request_comment`.
+`add_pull_request_comment`, `run_pipeline`.

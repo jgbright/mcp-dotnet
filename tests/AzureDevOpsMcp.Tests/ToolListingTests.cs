@@ -98,7 +98,7 @@ public class ToolListingTests
     }
 
     private static readonly HashSet<string> Writes =
-        ["create_work_item", "update_work_item", "add_pull_request_comment"];
+        ["create_work_item", "update_work_item", "add_pull_request_comment", "run_pipeline"];
 
     [Theory]
     [MemberData(nameof(Tools))]

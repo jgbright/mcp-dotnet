@@ -101,7 +101,7 @@ they refuse at call time until their gate is set.
 | Gate | Enables |
 | --- | --- |
 | `TEAMS_MCP_ALLOW_SEND=true` | `send_channel_message`, `send_chat_message` |
-| `ADO_MCP_ALLOW_WRITE=true` | `create_work_item`, `update_work_item`, `add_pull_request_comment` |
+| `ADO_MCP_ALLOW_WRITE=true` | `create_work_item`, `update_work_item`, `add_pull_request_comment`, `run_pipeline` |
 
 Set them the same way as step 2, or in a hand-written config's `env` block. Two things to know:
 
@@ -310,6 +310,7 @@ Read:
 | `list_repos` | |
 | `list_pull_requests` | Whole project when `repo` is omitted |
 | `get_pull_request` | Finds the pull request from its id alone, with review threads |
+| `wait_for_pull_request` | Polls until the pull request completes or is abandoned, then reports like `get_pull_request`. A timeout returns it as it stands with `timedOut: true` |
 | `list_work_items` | WIQL or filter arguments, see below |
 | `get_work_item` | Description, relations, discussion |
 | `list_pipelines` | |
@@ -349,7 +350,7 @@ a `succeeded` merge status, an area path equal to the project.
 
 ### Mutations
 
-`update_work_item`, `create_work_item` and `add_pull_request_comment` require
+`update_work_item`, `create_work_item`, `add_pull_request_comment` and `run_pipeline` require
 `ADO_MCP_ALLOW_WRITE=true`. With the gate unset, each refuses with instructions before touching
 anything.
 
@@ -374,8 +375,12 @@ guess. `type` resolves against the project's own work item types.
 `add_pull_request_comment` starts a new thread, or replies on one when you pass a `thread_id` from
 `get_pull_request`.
 
+`run_pipeline` queues a run of a pipeline, optionally on a specific branch, and returns the queued
+run with the id that `wait_for_pipeline_run` takes — which is what lets an agent chain a delivery
+flow (wait for the PR to land, kick CI, watch it, kick the follow-on build) one call at a time.
+
 Every write returns the state after the write, so you never need a follow-up read. Deleting things,
-voting on or completing pull requests, and triggering pipelines are not offered.
+and voting on or completing pull requests, are not offered.
 
 ### Deployment map (`deployment_status`)
 

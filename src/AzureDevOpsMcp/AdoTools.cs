@@ -160,8 +160,21 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         A("id", id) + A("include_threads", include_threads) + A("include_system", include_system) +
         A("max_threads", max_threads) + A("body_limit", body_limit), async () =>
     {
-        max_threads = Math.Clamp(max_threads, 1, 500);
         var client = await ado.GetClientAsync(ct);
+        return await ReadPullRequestAsync(
+            client, id, include_threads, include_system, max_threads, body_limit, ct);
+    });
+
+    /// <summary>
+    /// Reads one pull request with its threads. Shared by <c>get_pull_request</c> and
+    /// <c>wait_for_pull_request</c> so waiting for a pull request and asking about one report it
+    /// identically.
+    /// </summary>
+    private async Task<PullRequestDetailDto> ReadPullRequestAsync(
+        AdoClient client, int id, bool include_threads, bool include_system, int max_threads,
+        int body_limit, CancellationToken ct)
+    {
+        max_threads = Math.Clamp(max_threads, 1, 500);
         // The organization-level endpoint finds a pull request from its id alone, so the caller does
         // not have to know which project or repository it lives in.
         var pr = await client.GetAsync<WirePullRequest>($"_apis/git/pullrequests/{id}?{Api}", ct);
@@ -206,6 +219,72 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             moreThreads ? true : null,
             counts.ToDto(),
             Mapping.PullRequestUrl(client.OrgUrl, pr));
+    }
+
+    [McpServerTool(Name = "wait_for_pull_request", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Wait for a pull request to reach a terminal state — completed " +
+                 "(merged) or abandoned — then report it exactly as get_pull_request does. Polls " +
+                 "until the pull request leaves `active` and returns as soon as it does. Running " +
+                 "out of `timeout_seconds` is not an error: the pull request is returned as it " +
+                 "stands with `timedOut: true`, so a still-open pull request is distinguishable " +
+                 "from an abandoned one. Returns {pullRequest, waitedSeconds, timedOut?}.")]
+    public Task<PullRequestWaitResult> WaitForPullRequest(
+        [Description("Pull request id")] int id,
+        [Description("Give up after this many seconds (default 1800, max 21600)")] int timeout_seconds = 1800,
+        [Description("Seconds between checks (default 15, min 5)")] int poll_seconds = 15,
+        [Description("Include the review threads once the wait ends (default true)")] bool include_threads = true,
+        [Description("Include system-generated comments such as pushes and votes (default false)")] bool include_system = false,
+        [Description("Maximum threads to return (default 50)")] int max_threads = 50,
+        [Description("Max characters per body; longer bodies get truncated:true (0 = unlimited, default 2000)")] int body_limit = 2000,
+        CancellationToken ct = default) => Run("wait_for_pull_request",
+        A("id", id) + A("timeout_seconds", timeout_seconds) + A("poll_seconds", poll_seconds) +
+        A("include_threads", include_threads) + A("include_system", include_system) +
+        A("max_threads", max_threads) + A("body_limit", body_limit), async () =>
+    {
+        // Bounded like wait_for_pipeline_run: a caller cannot ask it to wait forever, and it
+        // cannot poll hard enough to matter to the service.
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(timeout_seconds, 1, 21600));
+        var interval = TimeSpan.FromSeconds(Math.Clamp(poll_seconds, 5, 600));
+        var client = await ado.GetClientAsync(ct);
+
+        var sw = Stopwatch.StartNew();
+        var polls = 0;
+        while (true)
+        {
+            // Only the pull request is fetched while waiting. The threads cost an extra request
+            // and are of no interest until there is an ended pull request to report.
+            var pr = await client.GetAsync<WirePullRequest>($"_apis/git/pullrequests/{id}?{Api}", ct);
+            polls++;
+            if (Mapping.IsTerminalPullRequestStatus(pr.Status))
+            {
+                log.Line(LogLevel.Debug, Ev.Poll,
+                    "pull request ended" + A("id", id) + A("status", pr.Status) +
+                    A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
+                return new PullRequestWaitResult(
+                    await ReadPullRequestAsync(
+                        client, id, include_threads, include_system, max_threads, body_limit, ct),
+                    (int)sw.Elapsed.TotalSeconds,
+                    TimedOut: null);
+            }
+
+            var left = timeout - sw.Elapsed;
+            if (left <= TimeSpan.Zero)
+            {
+                log.Line(LogLevel.Information, Ev.Poll,
+                    "gave up waiting" + A("id", id) + A("status", pr.Status) +
+                    A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
+                return new PullRequestWaitResult(
+                    await ReadPullRequestAsync(
+                        client, id, include_threads, include_system, max_threads, body_limit, ct),
+                    (int)sw.Elapsed.TotalSeconds,
+                    TimedOut: true);
+            }
+
+            log.Line(LogLevel.Debug, Ev.Poll,
+                "still active" + A("id", id) + A("status", pr.Status) +
+                A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
+            await Task.Delay(interval < left ? interval : left, ct);
+        }
     });
 
     [McpServerTool(Name = "list_work_items", UseStructuredContent = true, ReadOnly = true)]
@@ -1326,6 +1405,39 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             ?? throw new McpException("Azure DevOps answered the thread creation with an empty thread.");
         return new PullRequestCommentResult(
             id, dto.Id, dto.Comments[0], Mapping.PullRequestUrl(client.OrgUrl, pr));
+    });
+
+    // Queuing a run consumes agents and can deploy things, so it sits behind the same write gate
+    // as the tools that edit work items — a "read-only" registration must not be able to start
+    // builds. Not destructive (it adds a run, overwrites nothing) and not idempotent (each call
+    // queues another).
+    [McpServerTool(Name = "run_pipeline", UseStructuredContent = true, Destructive = false, Idempotent = false)]
+    [Description("Write — requires ADO_MCP_ALLOW_WRITE=true in this server's environment. Queue a " +
+                 "run of a pipeline, optionally on a specific branch. Returns the queued run in " +
+                 "the same shape list_pipeline_runs uses; pass its id to wait_for_pipeline_run to " +
+                 "follow it to completion.")]
+    public Task<PipelineRunDto> RunPipeline(
+        [Description("Pipeline id (number) or name")] string pipeline,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Branch to run, e.g. main; omit for the pipeline's default branch")] string? branch = null,
+        CancellationToken ct = default) => Run("run_pipeline",
+        A("pipeline", pipeline) + A("project", project) + A("branch", branch), async () =>
+    {
+        RequireWriteEnabled();
+        var client = await ado.GetClientAsync(ct);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+        var resolvedPipeline = await ResolvePipelineAsync(client, resolvedProject.Id, pipeline, ct);
+        var definitionId = int.Parse(resolvedPipeline.Id, CultureInfo.InvariantCulture);
+
+        // Queued through the build API for the same reason runs are read through it: the response
+        // is the same WireBuild shape every run tool speaks, so the queued run comes back exactly
+        // as list_pipeline_runs would report it — including the id wait_for_pipeline_run takes.
+        object body = branch is null
+            ? new { definition = new { id = definitionId } }
+            : new { definition = new { id = definitionId }, sourceBranch = FullBranch(branch) };
+        var build = await client.PostAsync<WireBuild>(
+            $"{Escape(resolvedProject.Id)}/_apis/build/builds?{Api}", body, ct);
+        return Mapping.Run(build, client.OrgUrl, resolvedProject.Name);
     });
 
     // ------------------------------------------------------------------- helpers

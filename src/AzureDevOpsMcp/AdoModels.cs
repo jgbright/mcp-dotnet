@@ -315,6 +315,17 @@ public sealed record PipelineRunWaitResult(
     int WaitedSeconds,
     bool? TimedOut);
 
+/// <summary>
+/// The outcome of waiting for a pull request, shaped like <see cref="PipelineRunWaitResult"/>:
+/// the pull request is reported exactly as <c>get_pull_request</c> reports it, with the wait
+/// described alongside, and <c>TimedOut</c> present only when the wait gave up — a pull request
+/// that is still open is a different answer from one that was abandoned.
+/// </summary>
+public sealed record PullRequestWaitResult(
+    PullRequestDetailDto PullRequest,
+    int WaitedSeconds,
+    bool? TimedOut);
+
 public sealed record PipelineRunDetailDto(
     int Id,
     string? Name,
@@ -471,6 +482,16 @@ internal static class Mapping
     /// </summary>
     internal static bool IsTerminalRunStatus(string? status) =>
         status is null || status.Equals("completed", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether a pull request's <c>status</c> means it has stopped moving. <c>active</c> is the
+    /// only state a pull request leaves on its own — <c>completed</c> and <c>abandoned</c> are
+    /// both ends, just different ones, and the DTO's status says which. Anything unrecognized
+    /// (or absent) is treated as terminal, so a waiter surprised by the service returns what it
+    /// sees instead of polling a state it does not understand until the timeout.
+    /// </summary>
+    internal static bool IsTerminalPullRequestStatus(string? status) =>
+        !string.Equals(status, "active", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Fields worth asking for in list results. Anything else is padding in a model's context.</summary>
     internal static readonly string[] ListFields =

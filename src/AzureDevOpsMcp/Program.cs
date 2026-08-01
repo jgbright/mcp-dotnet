@@ -329,9 +329,9 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         no `skipped` and no results means nothing matched. `hasMore` means the limit was reached, not
         that the query was wrong.
 
-        The write tools (create_work_item, update_work_item, add_pull_request_comment) refuse unless
-        ADO_MCP_ALLOW_WRITE=true in this server's environment. That refusal is configuration and will
-        not change on retry — report it and stop.
+        The write tools (create_work_item, update_work_item, add_pull_request_comment, run_pipeline)
+        refuse unless ADO_MCP_ALLOW_WRITE=true in this server's environment. That refusal is
+        configuration and will not change on retry — report it and stop.
 
         Every error carries a req=N and the path of this server's log file. Quote both when reporting a
         failure; they are what makes it diagnosable.
@@ -350,13 +350,14 @@ IHost BuildMcpHost(Stream? input, Stream? output)
 
     mcp
         .WithToolsFromAssembly(serializerOptions: serializerOptions)
-        // Tasks (SEP-2663) exists here for one tool. wait_for_pipeline_run can run for half an hour,
-        // which is too long to hold a request open when the client can poll instead.
+        // Tasks (SEP-2663) exists here for the waiters. wait_for_pipeline_run and
+        // wait_for_pull_request can run for half an hour, which is too long to hold a request open
+        // when the client can poll instead.
         //
         // Every other tool stays Synchronous: they answer in a round trip or two, and turning a
-        // sub-second call into a task handle the caller has to chase makes it worse. The waiter is
+        // sub-second call into a task handle the caller has to chase makes it worse. The waiters are
         // Optional rather than Required, so a client that never negotiated the extension still gets
-        // an answer by blocking. That is why the tool bounds its own wait instead of relying on the
+        // an answer by blocking. That is why each tool bounds its own wait instead of relying on the
         // client to give up.
         .WithTasks(
             new InMemoryMcpTaskStore(),
