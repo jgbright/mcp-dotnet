@@ -146,9 +146,10 @@ registration (and possibly an organization policy change), then `-- auth` again.
 (`TEAMS_MCP_ALLOW_SEND=true`) — and in that server the gate is checked twice over, at the call and
 at sign-in, because it also decides whether the send scopes are requested at all (see "Teams' scope
 list follows the send gate" in `src/TeamsMcp/CLAUDE.md`; the reaction tools ride those same send
-scopes, so they widen nothing). The Azure DevOps server's three write tools — `update_work_item`,
-`create_work_item`, `add_pull_request_comment` — call `AdoTools.RequireWriteEnabled()`
-(`ADO_MCP_ALLOW_WRITE=true`) before doing anything else, even validating arguments. Any new
+scopes, so they widen nothing). The Azure DevOps server's four write tools — `update_work_item`,
+`create_work_item`, `add_pull_request_comment`, `run_pipeline` — call
+`AdoTools.RequireWriteEnabled()` (`ADO_MCP_ALLOW_WRITE=true`) before doing anything else, even
+validating arguments. Any new
 mutating tool calls the same helper rather than inventing another policy; `install` never writes
 either gate into a repository's config. Work item writes go over JSON Patch
 (`AdoClient.PatchAsync` — PATCH updates, POST creates, `application/json-patch+json` both ways,
@@ -240,8 +241,9 @@ shaped the way it is.
   structured payload is not a JSON object — a bare array is only legal in `structuredContent` from
   2026-07-28 on, and these servers still answer older clients. Wrapping the remaining bare-array
   tools in an envelope DTO would let them join, and would be the reason to do it.
-- **Waiting is a tool, not a held-open request.** `wait_for_pipeline_run`, `wait_for_channel_messages`
-  and `wait_for_chat_messages` poll and can run for the better part of an hour, so both servers
+- **Waiting is a tool, not a held-open request.** `wait_for_pipeline_run`, `wait_for_pull_request`,
+  `wait_for_channel_messages` and `wait_for_chat_messages` poll and can run for the better part of
+  an hour, so both servers
   enable the Tasks extension (`.WithTasks`, SEP-2663) with an `InMemoryMcpTaskStore` — correct for
   stdio, where the store dies with the client and there is nothing worth persisting. Only the
   waiters are task-capable: the `ExecutionModeSelector` marks them `Optional` and leaves every other

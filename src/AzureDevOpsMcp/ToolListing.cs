@@ -26,7 +26,7 @@ internal static class ToolExecution
     /// <c>ToolListingTests</c> checks every name here is a tool that exists, so a rename cannot
     /// quietly drop a waiter back to synchronous.
     /// </summary>
-    internal static readonly HashSet<string> LongRunning = ["wait_for_pipeline_run"];
+    internal static readonly HashSet<string> LongRunning = ["wait_for_pipeline_run", "wait_for_pull_request"];
 
     internal static bool IsLongRunning(IMcpServerPrimitive? primitive) =>
         primitive is McpServerTool tool && LongRunning.Contains(tool.ProtocolTool.Name);
