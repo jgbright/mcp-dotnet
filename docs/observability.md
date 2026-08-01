@@ -1,8 +1,10 @@
 # Observability
 
 The log file is the primary diagnostic surface. When a server runs under an MCP client nobody sees
-stderr, so everything is also written to a file — and every error returned to the model carries its
-`req=N` and the log path, so an MCP error message leads straight to the lines that explain it.
+stderr, so everything is also written to a file — and every error a tool call returns to the model
+carries its `req=N` and the log path, so an MCP error message leads straight to the lines that
+explain it. The one exception is a protocol-level refusal, an unknown tool or method name: it never
+reached a tool, so there is nothing to correlate and no `req=N` to give it.
 
 The [`mcp-log-diagnostics`](../.claude/skills/mcp-log-diagnostics/SKILL.md) skill is the operational
 side of this: paths, recipes, and what the log already answers without adding code. This document is

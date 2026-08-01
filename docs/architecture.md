@@ -58,8 +58,10 @@ flowchart TD
 
 ## The life of a tool call
 
-1. The client sends `tools/call`. The SDK deserializes arguments onto the method's parameters.
-2. `AddCallToolFilter` wraps the invocation (its work happens on the way out).
+1. The client sends `tools/call`. `AddCallToolFilter` wraps the invocation, and `ToolErrors.Guard`
+   is the first thing inside it: it checks the supplied argument names against the tool's own
+   `inputSchema` and refuses here, before anything runs, if they cannot bind.
+2. The SDK deserializes arguments onto the method's parameters.
 3. The tool body calls `Run(name, args, …)`, which allocates the next `req=N`, stashes it in an
    `AsyncLocal`, logs `tool.start` with the arguments, and starts a stopwatch.
 4. The body calls `context.GetClientAsync(ct)`. First call per process: read the authentication
@@ -69,7 +71,9 @@ flowchart TD
 6. `Run` logs `tool.ok` with a result summary, or maps the exception to an `McpException` and logs
    `tool.fail`.
 7. The SDK serializes the DTO with `DefaultIgnoreCondition = WhenWritingNull`, filling both
-   `content` and `structuredContent`; `ToolResults.Trim` drops the duplicated text copy.
+   `content` and `structuredContent`; `ToolResults.Trim` drops the duplicated text copy. On the way
+   out `Guard` also gives a `req=N` to any error result that arrived without one, since anything
+   carrying one already went through `Run`.
 
 Every HTTP request the call made carries the same `req=N`, because the correlation id is stamped by
 the logger from the `AsyncLocal` rather than passed down. That is what makes a failure

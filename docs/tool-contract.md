@@ -38,6 +38,35 @@ it.
 **A new tool must go through `Run`, passing its arguments via `A(…)`.** That is what makes a failed
 call reconstructible from the log.
 
+## What fails outside `Run`
+
+`Run` is the tool body, so a call that cannot bind its arguments never enters it. That failure is
+raised by the SDK's binder above `Run`, throws *past* the call-tool filter, and is caught one frame
+higher by the SDK's composed handler, which replaces it with `An error occurred invoking '<tool>'.`
+— no `req=N`, no log line naming the tool, and no hint that the parameter wanted was `release_id`
+rather than `releaseId`. The SDK's own literal carries the detail after a colon; what ships has a
+period and nothing after it.
+
+`ToolErrors.Guard` (an `AddCallToolFilter`, wired beside `ToolResults.Trim`) closes that, in the
+order the three cases fire:
+
+| Case | What `Guard` does |
+| --- | --- |
+| The supplied names cannot bind to the tool's `inputSchema` | Refuses **before dispatch**, naming the tool, the unknown argument, the missing required one, the full parameter list and what was supplied. An unknown name that is a real parameter in the wrong convention is called out as such — that is the case that produces both faults at once |
+| An exception escapes the tool | Caught here, where the detail still exists. Logged in full at `tool.fail`, returned with the same shape |
+| An error result arrives carrying no `req=` | Given one. Whatever produced it, it did not go through `Run` |
+
+`McpException` and `OperationCanceledException` are rethrown untouched: the first already carries
+`Run`'s own `req=N` and log reference and would only be buried under a second, and the second is not
+a failure. `McpProtocolException` derives from `McpException`, so an unknown tool or method name
+stays a JSON-RPC error rather than becoming a tool result claiming the call was dispatched — which
+makes it the one failure class with no `req=N`, and `ServerInstructions` says so.
+
+`Guard` allocates from the same static counter `Run` does, so a failure caught either side of `Run`
+is indistinguishable from one caught inside it when reading the log. The validation is the same
+check `Call.Coerce` already makes for the command line, which is where the good error message
+already existed. Both servers carry their own copy, per the deliberate-duplication rule.
+
 ## Output is optimized for a context window
 
 The serializer is configured once in `Program.cs` with

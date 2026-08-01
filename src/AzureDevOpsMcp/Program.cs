@@ -11,6 +11,7 @@ using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
 
 // The verbs parse through System.CommandLine: a mistyped verb is a loud parse error instead of a
 // silently started stdio server that looks hung. Zero arguments is the server itself, run as the
@@ -340,8 +341,13 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         environment, and approve_release needs ADO_MCP_ALLOW_APPROVE=true as well. Those refusals are
         configuration and will not change on retry — report it and stop.
 
-        Every error carries a req=N and the path of this server's log file. Quote both when reporting a
-        failure; they are what makes it diagnosable.
+        Every error a tool call returns carries a req=N and the path of this server's log file. Quote
+        both when reporting a failure; they are what makes it diagnosable. A protocol-level refusal —
+        an unknown tool or method name — carries neither, because it never reached a tool.
+
+        An error naming an argument the tool does not take has been rejected before the tool ran, so
+        nothing happened: read the parameter list it gives you and call again. Parameter names are
+        snake_case.
         """;
 
     var mcp = builder.Services
@@ -372,14 +378,22 @@ IHost BuildMcpHost(Stream? input, Stream? output)
                 ToolExecution.IsLongRunning(request.MatchedPrimitive)
                     ? McpTaskExecutionMode.Optional
                     : McpTaskExecutionMode.Synchronous)
-        // Both filters only trim what the SDK produced: tools/list is a cacheable result under
-        // 2026-07-28 and needs the caching hints stamped on it, and a tool result arrives carrying
-        // its payload twice once UseStructuredContent is on.
+        // The list filter only trims what the SDK produced: tools/list is a cacheable result under
+        // 2026-07-28 and needs the caching hints stamped on it. The call filter does the same for a
+        // result carrying its payload twice once UseStructuredContent is on, but it is also the only
+        // place that sees a call which failed before the tool body was entered — Run() is inside the
+        // body, and the SDK drops the detail one frame above here. ToolErrors.Guard is why such a
+        // failure still names the tool and carries a req=N.
         .WithRequestFilters(filters => filters
             .AddListToolsFilter(next => async (request, ct) =>
                 ToolListing.Stamp(await next(request, ct), request.Params?.Cursor))
             .AddCallToolFilter(next => async (request, ct) =>
-                ToolResults.Trim(await next(request, ct))));
+                ToolResults.Trim(await ToolErrors.Guard(
+                    () => next(request, ct),
+                    request.Params?.Name,
+                    request.Params?.Arguments?.Keys,
+                    (request.MatchedPrimitive as McpServerTool)?.ProtocolTool.InputSchema,
+                    request.Services?.GetService<ILoggerFactory>()?.CreateLogger<AdoTools>()))));
 
     return builder.Build();
 }
