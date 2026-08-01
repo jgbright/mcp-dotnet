@@ -30,8 +30,8 @@ Recipe:
    error. Bare `call` lists the tools; arguments can also be one JSON object or `-` for JSON on
    stdin. This is the step that turns "the model saw an error" into a command you can iterate on.
 3. Read the top of the log: the `startup` lines report version, runtime, which env vars are set,
-   the gate (`sendEnabled` / `writeEnabled`), the log settings, and whether an authentication
-   record exists.
+   the gates (`sendEnabled` / `writeEnabled`, plus `approvalEnabled` for `approve_release`), the
+   log settings, and whether an authentication record exists.
 4. Grep an event name. The stable ones are `startup`, `auth.config`, `auth.record`,
    `auth.mismatch`, `auth.token`, `auth.fail`, `tool.start`, `tool.ok`, `tool.fail`, `resolve`,
    `page`, `poll`, `config`, `crash`, plus the HTTP pair, which differs by server: `graph.http`/`graph.http.fail` in

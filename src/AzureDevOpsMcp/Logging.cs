@@ -134,12 +134,14 @@ public static class Diagnostics
             AdoMcpLog.Arg("ADO_MCP_ORG_URL", AdoContext.OrgUrlSetting ?? "<unset>") +
             AdoMcpLog.Arg("ADO_MCP_PROJECT", AdoContext.DefaultProject ?? "<unset>") +
             AdoMcpLog.Arg("ADO_MCP_ALLOW_WRITE", Describe("ADO_MCP_ALLOW_WRITE")) +
+            AdoMcpLog.Arg("ADO_MCP_ALLOW_APPROVE", Describe("ADO_MCP_ALLOW_APPROVE")) +
             AdoMcpLog.Arg("ADO_MCP_AUTH", Describe("ADO_MCP_AUTH")) +
             // Data-file paths are addresses. Whether each file exists decides whether its tool
             // works or only explains itself.
             AdoMcpLog.Arg("deployments", Deployments.ConfiguredPath) +
             AdoMcpLog.Arg("deploymentsExists", File.Exists(Deployments.ConfiguredPath)) +
             AdoMcpLog.Arg("writeEnabled", AdoContext.WriteEnabled) +
+            AdoMcpLog.Arg("approvalEnabled", AdoContext.ApprovalEnabled) +
             AdoMcpLog.Arg("logLevel", AdoMcpLog.Level.ToString()) +
             AdoMcpLog.Arg("logContent", AdoMcpLog.Content) +
             AdoMcpLog.Arg("logFile", AdoMcpLog.FilePath));

@@ -141,8 +141,10 @@ internal static class Install
 
     /// <summary>
     /// The env block: identity by reference, addresses by value, then whatever <c>--set</c> says.
-    /// ADO_MCP_ALLOW_WRITE is never written. The mutation gate is opt-in per environment, so an
-    /// install must not decide it for a repository.
+    /// Neither ADO_MCP_ALLOW_WRITE nor ADO_MCP_ALLOW_APPROVE is ever written: the entries are an
+    /// allow-list, not a copy of the environment. Both gates are opt-in per environment, so an
+    /// install must not decide either for a repository — this file usually ends up committed, and
+    /// whoever clones it did not consent to what it would switch on.
     /// </summary>
     internal static List<KeyValuePair<string, string>> EnvEntries(
         Client client, IEnumerable<KeyValuePair<string, string>> overrides, Func<string, string?> env)

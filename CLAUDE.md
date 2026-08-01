@@ -142,16 +142,25 @@ scope list to extend — it is a single `…/.default` resource scope, so there 
 reduce and no consent record to keep: a new capability means a new delegated permission on the app
 registration (and possibly an organization policy change), then `-- auth` again.
 
-**Mutations are gated.** Teams' sending and reaction tools call `RequireSendEnabled()`
+**Mutations are gated, and one of them twice.** Teams' sending and reaction tools call `RequireSendEnabled()`
 (`TEAMS_MCP_ALLOW_SEND=true`) — and in that server the gate is checked twice over, at the call and
 at sign-in, because it also decides whether the send scopes are requested at all (see "Teams' scope
 list follows the send gate" in `src/TeamsMcp/CLAUDE.md`; the reaction tools ride those same send
-scopes, so they widen nothing). The Azure DevOps server's four write tools — `update_work_item`,
-`create_work_item`, `add_pull_request_comment`, `run_pipeline` — call
+scopes, so they widen nothing). The Azure DevOps server's six write tools — `update_work_item`,
+`create_work_item`, `add_pull_request_comment`, `run_pipeline`, `deploy_release`,
+`approve_release` — call
 `AdoTools.RequireWriteEnabled()` (`ADO_MCP_ALLOW_WRITE=true`) before doing anything else, even
 validating arguments. Any new
 mutating tool calls the same helper rather than inventing another policy; `install` never writes
-either gate into a repository's config. Work item writes go over JSON Patch
+any gate into a repository's config.
+
+`approve_release` is the one exception, and a deliberate one: it calls `RequireApprovalEnabled()`
+(`ADO_MCP_ALLOW_APPROVE=true`) **as well as**, never instead of, the write gate. Writing says an
+agent may change what other people see; answering a release approval acts as the signed-in human
+in a control that exists to require one, and the audit trail names that person as having
+authorized the deployment. The two are different permissions, so one variable cannot honestly
+carry both. This is not a precedent for per-tool gates — the argument is the audit trail, not that
+the call feels risky. See `src/AzureDevOpsMcp/CLAUDE.md`. Work item writes go over JSON Patch
 (`AdoClient.PatchAsync` — PATCH updates, POST creates, `application/json-patch+json` both ways,
 built in `Writes.cs`), and each write returns the post-write state in the read tools' DTO shapes
 so no follow-up read is needed. On a write, an ambiguous name (`assigned_to` through the vssps
@@ -242,6 +251,7 @@ shaped the way it is.
   2026-07-28 on, and these servers still answer older clients. Wrapping the remaining bare-array
   tools in an envelope DTO would let them join, and would be the reason to do it.
 - **Waiting is a tool, not a held-open request.** `wait_for_pipeline_run`, `wait_for_pull_request`,
+  `wait_for_release`,
   `wait_for_channel_messages` and `wait_for_chat_messages` poll and can run for the better part of
   an hour, so both servers
   enable the Tasks extension (`.WithTasks`, SEP-2663) with an `InMemoryMcpTaskStore` — correct for

@@ -22,6 +22,7 @@ internal static class TestEnvironment
         Environment.SetEnvironmentVariable("ADO_MCP_LOG_LEVEL", null);
         Environment.SetEnvironmentVariable("ADO_MCP_LOG_CONTENT", null);
         Environment.SetEnvironmentVariable("ADO_MCP_ALLOW_WRITE", null);
+        Environment.SetEnvironmentVariable("ADO_MCP_ALLOW_APPROVE", null);
         Environment.SetEnvironmentVariable("ADO_MCP_ORG_URL", null);
         Environment.SetEnvironmentVariable("ADO_MCP_PROJECT", null);
         Environment.SetEnvironmentVariable("ADO_MCP_LOG_DIR",

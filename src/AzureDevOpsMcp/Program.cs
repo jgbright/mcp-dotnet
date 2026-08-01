@@ -329,8 +329,15 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         no `skipped` and no results means nothing matched. `hasMore` means the limit was reached, not
         that the query was wrong.
 
-        The write tools (create_work_item, update_work_item, add_pull_request_comment, run_pipeline)
-        refuse unless ADO_MCP_ALLOW_WRITE=true in this server's environment. That refusal is
+        Azure DevOps has two unrelated kinds of pipeline and this server keeps them apart by name. The
+        *_pipeline* tools mean build/YAML pipelines and their runs. The *_release* tools mean classic
+        release pipelines: a release definition has environments (stages), a release is one instance of
+        it, and each environment deploys separately. A release definition never appears in
+        list_pipelines, so "not found" there is not evidence it does not exist.
+
+        The write tools (create_work_item, update_work_item, add_pull_request_comment, run_pipeline,
+        deploy_release, approve_release) refuse unless ADO_MCP_ALLOW_WRITE=true in this server's
+        environment, and approve_release needs ADO_MCP_ALLOW_APPROVE=true as well. Those refusals are
         configuration and will not change on retry — report it and stop.
 
         Every error carries a req=N and the path of this server's log file. Quote both when reporting a

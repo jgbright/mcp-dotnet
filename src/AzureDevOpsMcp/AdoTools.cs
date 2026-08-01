@@ -38,6 +38,12 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// </summary>
     private const int WriteEchoBodyLimit = 4000;
 
+    /// <summary>
+    /// A release description is a line or two that Azure DevOps generated ("Triggered by Build
+    /// 42"), so it gets a fixed cap rather than a `body_limit` argument nobody would set.
+    /// </summary>
+    private const int ReleaseDescriptionLimit = 1000;
+
     /// <summary>Shorthand for the logging helper. Every tool logs its arguments through it.</summary>
     private static string A(string name, object? value) => AdoMcpLog.Arg(name, value);
 
@@ -587,6 +593,226 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         }
     });
 
+    // ------------------------------------------------------- classic release tools
+    //
+    // Release Management answers on its own host (Deployments.VsrmBaseUrl) and has its own
+    // vocabulary, kept here rather than translated: a *release definition* is the classic pipeline,
+    // a *release* is one instance of it, and its stages are *environments*. The build/YAML tools
+    // above own the word "pipeline" and never mean a classic one.
+
+    [McpServerTool(Name = "list_release_definitions", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. List the classic release pipelines (release definitions) of a project, " +
+                 "with the environments each deploys to, in the order they deploy. These are not the " +
+                 "build/YAML pipelines list_pipelines returns; the two are separate things in Azure " +
+                 "DevOps. The returned id or name is what list_releases takes.")]
+    public Task<List<ReleaseDefinitionDto>> ListReleaseDefinitions(
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Maximum definitions to return (default 200)")] int limit = 200,
+        CancellationToken ct = default) => Run("list_release_definitions",
+        A("project", project) + A("limit", limit), async () =>
+    {
+        limit = Math.Clamp(limit, 1, 1000);
+        var client = await ado.GetClientAsync(ct);
+        var resolved = await ResolveProjectAsync(client, project, ct);
+        var definitions = await ListReleaseDefinitionsInternal(
+            client, Deployments.VsrmBaseUrl(client.OrgUrl), resolved.Id, limit, ct);
+        return definitions.Select(d => Mapping.ReleaseDefinition(d, client.OrgUrl, resolved.Name)).ToList();
+    });
+
+    [McpServerTool(Name = "list_releases", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. List the releases of one classic release definition, newest first, each " +
+                 "with the status of every environment it has. This is how to see what is deployed " +
+                 "where. `definition` may be a numeric id or a name. Returns {releases, hasMore?}.")]
+    public Task<ReleasesResult> ListReleases(
+        [Description("Release definition id (number) or name")] string definition,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Only releases created at/after this ISO-8601 timestamp")] string? since = null,
+        [Description("Only releases with this status: active, draft, abandoned")] string? status = null,
+        [Description("Maximum releases to return (default 20, max 200)")] int limit = 20,
+        CancellationToken ct = default) => Run("list_releases",
+        A("definition", definition) + A("project", project) + A("since", since) +
+        A("status", status) + A("limit", limit), async () =>
+    {
+        limit = Math.Clamp(limit, 1, 200);
+        var client = await ado.GetClientAsync(ct);
+        var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+        var resolved = await ResolveReleaseDefinitionAsync(client, vsrm, resolvedProject, definition, ct);
+        var sinceTs = ParseTimestamp(since, nameof(since));
+
+        // One over the limit, so `hasMore` is answered without a second round trip.
+        var path = $"{vsrm}/{Escape(resolvedProject.Id)}/_apis/release/releases?{Api}" +
+                   $"&definitionId={Uri.EscapeDataString(resolved.Id)}" +
+                   $"&$expand=environments&queryOrder=descending&$top={limit + 1}" +
+                   (status is null ? "" : $"&statusFilter={Uri.EscapeDataString(status)}") +
+                   (sinceTs is null ? "" : $"&minCreatedTime={Uri.EscapeDataString(sinceTs.Value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture))}");
+        var page = await client.GetAsync<ListResponse<WireRelease>>(path, ct);
+
+        var releases = page.Value ?? [];
+        var hasMore = releases.Count > limit;
+        return new ReleasesResult(
+            releases.Take(limit).Select(r => Mapping.Release(r, client.OrgUrl, resolvedProject.Name)).ToList(),
+            hasMore ? true : null);
+    });
+
+    [McpServerTool(Name = "get_release", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Read one release: what it shipped, and for every environment its status, " +
+                 "the approvals it is waiting on, and every failed task with the phase and job it " +
+                 "belongs to. Set include_logs=true to also get the tail of each failed task's log, " +
+                 "which is where the actual error text is. A stage sitting at `queued` with a " +
+                 "`pendingApprovals` entry is waiting for a person, not broken. An environment has " +
+                 "no `failed` status: a deployment that failed reports as `rejected` with " +
+                 "`operationStatus: PhaseFailed`, which is what tells it apart from an approval " +
+                 "somebody turned down. " +
+                 "`skipped.succeeded` counts the tasks that are not reported because they passed.")]
+    public Task<ReleaseDetailDto> GetRelease(
+        [Description("Release id (the number in the release name's URL, not the definition id)")] int release_id,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Fetch the tail of each failed task's log (default false; costs one request per task)")] bool include_logs = false,
+        [Description("Lines of log to keep per failed task (default 40)")] int log_tail_lines = 40,
+        [Description("Maximum failed tasks to report per environment (default 5)")] int max_failed = 5,
+        [Description("Maximum error messages per failed task (default 5)")] int max_errors = 5,
+        CancellationToken ct = default) => Run("get_release",
+        A("release_id", release_id) + A("project", project) + A("include_logs", include_logs) +
+        A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors),
+        async () =>
+    {
+        var client = await ado.GetClientAsync(ct);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+        return await ReadReleaseAsync(
+            client, Deployments.VsrmBaseUrl(client.OrgUrl), resolvedProject, release_id,
+            include_logs, log_tail_lines, max_failed, max_errors, ct);
+    });
+
+    /// <summary>
+    /// Reads one release and explains every stage. Shared by <c>get_release</c>,
+    /// <c>wait_for_release</c> and both write tools, so however a caller arrives at a release it
+    /// is reported identically.
+    /// </summary>
+    private async Task<ReleaseDetailDto> ReadReleaseAsync(
+        AdoClient client, string vsrm, Named project, int releaseId, bool includeLogs,
+        int logTailLines, int maxFailed, int maxErrors, CancellationToken ct)
+    {
+        maxFailed = Math.Clamp(maxFailed, 1, 50);
+        maxErrors = Math.Clamp(maxErrors, 1, 50);
+        logTailLines = Math.Clamp(logTailLines, 0, 500);
+
+        var release = await ReadReleaseWireAsync(client, vsrm, project, releaseId, ct);
+        var counts = new SkipCounter();
+        var environments = new List<ReleaseEnvironmentDetailDto>();
+
+        foreach (var env in (release.Environments ?? []).OrderBy(e => e.Rank ?? 0))
+        {
+            var failed = Mapping.ReleaseFailedSteps(env, maxErrors, counts);
+            var reported = failed.Take(maxFailed).Select(f => f.Step).ToList();
+            if (includeLogs && logTailLines > 0)
+            {
+                for (var i = 0; i < reported.Count; i++)
+                {
+                    if (failed[i].LogUrl is not { } url)
+                    {
+                        continue;
+                    }
+                    var (tail, truncated) = Mapping.LogTail(await client.GetTextAsync(url, ct), logTailLines);
+                    reported[i] = reported[i] with { LogTail = tail, Truncated = truncated };
+                }
+            }
+
+            environments.Add(Mapping.ReleaseEnvironment(env, reported));
+        }
+
+        return Mapping.ReleaseDetail(
+            release, environments, counts.ToDto(), ReleaseDescriptionLimit, client.OrgUrl, project.Name);
+    }
+
+    /// <summary>
+    /// The release itself. <c>$expand=tasks</c> is what makes the per-task detail arrive; without
+    /// it every deployment looks like it ran no steps at all.
+    /// </summary>
+    private static async Task<WireRelease> ReadReleaseWireAsync(
+        AdoClient client, string vsrm, Named project, int releaseId, CancellationToken ct) =>
+        await client.GetAsync<WireRelease>(
+            $"{vsrm}/{Escape(project.Id)}/_apis/release/releases/{releaseId}?{Api}&$expand=tasks", ct);
+
+    [McpServerTool(Name = "wait_for_release", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Wait for one environment of a release to finish deploying, then report " +
+                 "the release exactly as get_release does. Polls until that environment stops " +
+                 "moving — anything other than notStarted, queued, scheduled or inProgress — and " +
+                 "returns as soon as it does; note that a deployment that failed reports as " +
+                 "`rejected`, not `failed`. An environment nobody has triggered stays at " +
+                 "notStarted and an environment held by an approval stays queued, so waiting on " +
+                 "either runs to the timeout — check `pendingApprovals` first. Running out of " +
+                 "`timeout_seconds` is not an error: the release is returned as it stands with " +
+                 "`timedOut: true`. Returns {release, environment, waitedSeconds, timedOut?}.")]
+    public Task<ReleaseWaitResult> WaitForRelease(
+        [Description("Release id")] int release_id,
+        [Description("Environment (stage) name or id within the release, e.g. Production")] string environment,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Give up after this many seconds (default 1800, max 21600)")] int timeout_seconds = 1800,
+        [Description("Seconds between checks (default 15, min 5)")] int poll_seconds = 15,
+        [Description("Fetch the tail of each failed task's log once it finishes (default true)")] bool include_logs = true,
+        [Description("Lines of log to keep per failed task (default 40)")] int log_tail_lines = 40,
+        [Description("Maximum failed tasks to report per environment (default 5)")] int max_failed = 5,
+        [Description("Maximum error messages per failed task (default 5)")] int max_errors = 5,
+        CancellationToken ct = default) => Run("wait_for_release",
+        A("release_id", release_id) + A("environment", environment) + A("project", project) +
+        A("timeout_seconds", timeout_seconds) + A("poll_seconds", poll_seconds) +
+        A("include_logs", include_logs) + A("log_tail_lines", log_tail_lines) +
+        A("max_failed", max_failed) + A("max_errors", max_errors), async () =>
+    {
+        // Bounded like every other loop in this server: a caller cannot ask it to wait forever, and
+        // it cannot poll hard enough to matter to the service.
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(timeout_seconds, 1, 21600));
+        var interval = TimeSpan.FromSeconds(Math.Clamp(poll_seconds, 5, 600));
+        var client = await ado.GetClientAsync(ct);
+        var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+
+        // Resolved once, against the first read: the environment being waited for cannot change
+        // identity mid-wait, and re-resolving each poll would turn a renamed stage into a failure
+        // halfway through.
+        var first = await ReadReleaseWireAsync(client, vsrm, resolvedProject, release_id, ct);
+        var env = ResolveReleaseEnvironment(first, environment);
+
+        var sw = Stopwatch.StartNew();
+        var polls = 0;
+        var release = first;
+        while (true)
+        {
+            polls++;
+            var current = (release.Environments ?? []).FirstOrDefault(e => e.Id.ToString(CultureInfo.InvariantCulture) == env.Id);
+            if (Mapping.IsTerminalEnvironmentStatus(current?.Status))
+            {
+                log.Line(LogLevel.Debug, Ev.Poll,
+                    "release environment finished" + A("release_id", release_id) +
+                    A("environment", env.Name) + A("status", current?.Status) +
+                    A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
+                return new ReleaseWaitResult(
+                    await ReadReleaseAsync(client, vsrm, resolvedProject, release_id, include_logs,
+                        log_tail_lines, max_failed, max_errors, ct),
+                    env.Name, (int)sw.Elapsed.TotalSeconds, TimedOut: null);
+            }
+
+            var left = timeout - sw.Elapsed;
+            if (left <= TimeSpan.Zero)
+            {
+                log.Line(LogLevel.Information, Ev.Poll,
+                    "gave up waiting" + A("release_id", release_id) + A("environment", env.Name) +
+                    A("status", current?.Status) + A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
+                return new ReleaseWaitResult(
+                    await ReadReleaseAsync(client, vsrm, resolvedProject, release_id, include_logs,
+                        log_tail_lines, max_failed, max_errors, ct),
+                    env.Name, (int)sw.Elapsed.TotalSeconds, TimedOut: true);
+            }
+
+            log.Line(LogLevel.Debug, Ev.Poll,
+                "still deploying" + A("release_id", release_id) + A("environment", env.Name) +
+                A("status", current?.Status) + A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
+            await Task.Delay(interval < left ? interval : left, ct);
+            release = await ReadReleaseWireAsync(client, vsrm, resolvedProject, release_id, ct);
+        }
+    });
+
     // ---------------------------------------------------------------- search tools
     //
     // The Search service answers on its own host (Search.BaseUrl) with POST bodies. All three
@@ -915,7 +1141,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             v.Changeset, v.Commit, v.Branch, v.Repository, v.Paths,
             v.UndeployedCount, v.Undeployed, v.UndeployedCommits,
             v.HasMore, v.Contains, v.Affects, null,
-            $"{client.OrgUrl}/{Escape(project.Name)}/_releaseProgress?_a=release-pipeline-progress&releaseId={releaseRef.Id}");
+            Mapping.ReleaseUrl(client.OrgUrl, project.Name, releaseRef.Id));
     }
 
     /// <summary>
@@ -1440,6 +1666,136 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         return Mapping.Run(build, client.OrgUrl, resolvedProject.Name);
     });
 
+    // Deploying a stage is the button that ships something. It is Destructive because it replaces
+    // what is running in that environment — the annotation is what an MCP client gates its
+    // confirmation prompt on, and this is the call that most deserves one. Not idempotent: each
+    // call queues another deployment.
+    [McpServerTool(Name = "deploy_release", UseStructuredContent = true, Destructive = true, Idempotent = false)]
+    [Description("Write — requires ADO_MCP_ALLOW_WRITE=true in this server's environment. Start " +
+                 "deploying one environment of an existing release, which is the same action as the " +
+                 "Deploy button in the release UI: it ships that release to that environment. This " +
+                 "does not create a release — pass the id of one that exists. If the environment " +
+                 "has a pre-deploy approval, the deployment waits for it rather than starting. " +
+                 "Returns the release in get_release's shape, so the environment's new status is in " +
+                 "the result; pass the same ids to wait_for_release to follow it to completion.")]
+    public Task<ReleaseDetailDto> DeployRelease(
+        [Description("Release id")] int release_id,
+        [Description("Environment (stage) name or id within the release, e.g. Production")] string environment,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Comment recorded against the deployment")] string? comment = null,
+        CancellationToken ct = default) => Run("deploy_release",
+        A("release_id", release_id) + A("environment", environment) + A("project", project) +
+        AdoMcpLog.ContentArg("comment", comment), async () =>
+    {
+        RequireWriteEnabled();
+        var client = await ado.GetClientAsync(ct);
+        var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+
+        // The release is read before it is written: the environment argument is a name against
+        // this release's own stages, and an unknown one must fail listing them rather than
+        // PATCHing an id that means something else.
+        var release = await ReadReleaseWireAsync(client, vsrm, resolvedProject, release_id, ct);
+        var env = ResolveReleaseEnvironment(release, environment);
+
+        await client.PatchJsonAsync<WireReleaseEnvironment>(
+            $"{vsrm}/{Escape(resolvedProject.Id)}/_apis/release/releases/{release_id}" +
+            $"/environments/{Uri.EscapeDataString(env.Id)}?{Api}",
+            comment is null ? new { status = "inProgress" } : new { status = "inProgress", comment },
+            ct);
+        log.Line(LogLevel.Information, Ev.ToolOk,
+            "deployment started" + A("release_id", release_id) + A("environment", env.Name));
+
+        // Re-read rather than mapping the PATCH response: it answers with the one environment,
+        // and the post-write state a caller wants is the release as get_release would report it.
+        return await ReadReleaseAsync(
+            client, vsrm, resolvedProject, release_id,
+            includeLogs: false, logTailLines: 0, maxFailed: 5, maxErrors: 5, ct);
+    });
+
+    // Approving is not covered by the write gate (see AdoContext.ApprovalEnabled): it acts as the
+    // signed-in person in a control that exists to require a person. Destructive for the same
+    // reason deploy_release is — approving a pre-deploy gate is what lets the deployment proceed.
+    [McpServerTool(Name = "approve_release", UseStructuredContent = true, Destructive = true, Idempotent = false)]
+    [Description("Write — requires BOTH ADO_MCP_ALLOW_WRITE=true and ADO_MCP_ALLOW_APPROVE=true in " +
+                 "this server's environment; approving is gated separately from every other write " +
+                 "because it records the signed-in person as having authorized the deployment. " +
+                 "Approve (or with reject=true, reject) the approval an environment of a release is " +
+                 "waiting on. Use get_release first: its `pendingApprovals` says whether one is " +
+                 "waiting and carries the approval id. An environment with no pending approval, or " +
+                 "one whose approval is assigned to somebody else, fails rather than doing " +
+                 "something else. Returns {approval, release}.")]
+    public Task<ReleaseApprovalResult> ApproveRelease(
+        [Description("Release id")] int release_id,
+        [Description("Environment (stage) name or id within the release, e.g. Production")] string environment,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Comment recorded with the approval; say why on anything non-routine")] string? comment = null,
+        [Description("Reject instead of approving (default false)")] bool reject = false,
+        [Description("Which approval, when the environment is waiting on more than one")] int? approval_id = null,
+        CancellationToken ct = default) => Run("approve_release",
+        A("release_id", release_id) + A("environment", environment) + A("project", project) +
+        A("reject", reject) + A("approval_id", approval_id) + AdoMcpLog.ContentArg("comment", comment),
+        async () =>
+    {
+        RequireWriteEnabled();
+        RequireApprovalEnabled();
+        var client = await ado.GetClientAsync(ct);
+        var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+
+        var release = await ReadReleaseWireAsync(client, vsrm, resolvedProject, release_id, ct);
+        var env = ResolveReleaseEnvironment(release, environment);
+        var wireEnv = (release.Environments ?? [])
+            .First(e => e.Id.ToString(CultureInfo.InvariantCulture) == env.Id);
+        var approval = ChooseApproval(Mapping.PendingApprovals(wireEnv), approval_id, env.Name, release.Name);
+
+        var updated = await client.PatchJsonAsync<WireReleaseApproval>(
+            $"{vsrm}/{Escape(resolvedProject.Id)}/_apis/release/approvals/{approval.Id}?{Api}",
+            new { status = reject ? "rejected" : "approved", comments = comment },
+            ct);
+        log.Line(LogLevel.Information, Ev.ToolOk,
+            (reject ? "release rejected" : "release approved") + A("release_id", release_id) +
+            A("environment", env.Name) + A("approval_id", approval.Id) + A("status", updated.Status));
+
+        return new ReleaseApprovalResult(
+            Mapping.Approval(updated),
+            await ReadReleaseAsync(
+                client, vsrm, resolvedProject, release_id,
+                includeLogs: false, logTailLines: 0, maxFailed: 5, maxErrors: 5, ct));
+    });
+
+    /// <summary>
+    /// Which pending approval to act on. One is unambiguous; several (parallel approvers, or a pre-
+    /// and a post-deploy approval at once) is a choice the caller has to make, listed rather than
+    /// guessed — the same rule <see cref="Resolve"/> follows, for the same reason: this one signs
+    /// something.
+    /// </summary>
+    internal static WireReleaseApproval ChooseApproval(
+        List<WireReleaseApproval> pending, int? approvalId, string environment, string? release)
+    {
+        var where = $"'{environment}'" + (release is null ? "" : $" of release '{release}'");
+        if (approvalId is { } asked)
+        {
+            return pending.FirstOrDefault(a => a.Id == asked)
+                ?? throw new McpException(
+                    $"No pending approval with id {asked} on {where}. " + Available(pending));
+        }
+        return pending switch
+        {
+            [] => throw new McpException(
+                $"Nothing is waiting for approval on {where}. An environment only has a pending " +
+                "approval while it is held at one; get_release reports which do."),
+            [var single] => single,
+            _ => throw new McpException(
+                $"{where} is waiting on {pending.Count} approvals. Pass `approval_id`. " + Available(pending)),
+        };
+
+        static string Available(List<WireReleaseApproval> pending) => pending.Count == 0
+            ? "Nothing is pending there."
+            : "Pending: " + string.Join(", ", pending.Select(a =>
+                $"{a.Id} ({a.ApprovalType}, {a.Approver?.DisplayName ?? a.Approver?.UniqueName ?? "unassigned"})"));
+    }
+
     // ------------------------------------------------------------------- helpers
 
     /// <summary>
@@ -1453,6 +1809,23 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             throw new McpException(
                 "Writing is disabled. Set ADO_MCP_ALLOW_WRITE=true in this server's environment to " +
                 "opt in to changes other people will see.");
+        }
+    }
+
+    /// <summary>
+    /// The second gate, which only <c>approve_release</c> calls, and only after
+    /// <see cref="RequireWriteEnabled"/>. It is separate because turning on writing says an agent
+    /// may change Azure DevOps, while this says it may sign a human's name to a production
+    /// deployment. See <see cref="AdoContext.ApprovalEnabled"/>.
+    /// </summary>
+    internal static void RequireApprovalEnabled()
+    {
+        if (!AdoContext.ApprovalEnabled)
+        {
+            throw new McpException(
+                "Acting on release approvals is disabled. Set ADO_MCP_ALLOW_APPROVE=true in this " +
+                "server's environment to opt in; ADO_MCP_ALLOW_WRITE does not cover approvals, " +
+                "because an approval records you as having authorized the deployment.");
         }
     }
 
@@ -1740,6 +2113,40 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             "pipeline", log);
     }
 
+    private async Task<Named> ResolveReleaseDefinitionAsync(
+        AdoClient client, string vsrm, Named project, string definition, CancellationToken ct)
+    {
+        var definitions = await ListReleaseDefinitionsInternal(client, vsrm, project.Id, limit: 1000, ct);
+        return Resolve(
+            definition, IsNumber,
+            definitions.Where(d => d.Name is not null)
+                .Select(d => new Named(d.Id.ToString(CultureInfo.InvariantCulture), d.Name!)).ToList(),
+            "release definition", log);
+    }
+
+    /// <summary>
+    /// An environment against the release that holds it. The id this returns is the *release*
+    /// environment id, which is what the deploy endpoint addresses — not the definition
+    /// environment id, which is stable across releases and would silently target the wrong stage.
+    /// A numeric argument is taken as the former, since that is the id every result carries.
+    /// </summary>
+    internal Named ResolveReleaseEnvironment(WireRelease release, string environment)
+    {
+        var candidates = (release.Environments ?? [])
+            .OrderBy(e => e.Rank ?? 0)
+            .Where(e => e.Name is not null)
+            .Select(e => new Named(e.Id.ToString(CultureInfo.InvariantCulture), e.Name!))
+            .ToList();
+        var resolved = Resolve(environment, IsNumber, candidates, "environment", log);
+        // Resolve passes a number straight through, so it can name an environment this release
+        // does not have. Say so rather than PATCHing an id that belongs to another release.
+        return candidates.FirstOrDefault(c => c.Id == resolved.Id) is { Name: not null } match
+            ? match
+            : throw new McpException(
+                $"Release '{release.Name}' has no environment with id {resolved.Id}. " +
+                $"Available: {string.Join(", ", candidates.Select(c => $"{c.Name} ({c.Id})"))}");
+    }
+
     private async Task<Named> ResolveTypeAsync(
         AdoClient client, string projectId, string type, CancellationToken ct)
     {
@@ -1858,6 +2265,35 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             if (token is not null && results.Count < limit)
             {
                 log.Line(LogLevel.Debug, Ev.Page, "list_pipelines next page" + A("so far", results.Count));
+            }
+        }
+        while (token is not null && results.Count < limit);
+        return results.Count > limit ? results[..limit] : results;
+    }
+
+    /// <summary>
+    /// The project's classic release definitions, with their environments. Expanding the
+    /// environments is what makes the listing worth having — a definition's stages are the
+    /// argument every other release tool takes — and it is the same request
+    /// <c>deployment_status</c> makes to resolve a deployable.
+    /// </summary>
+    private async Task<List<WireReleaseDefinition>> ListReleaseDefinitionsInternal(
+        AdoClient client, string vsrm, string projectId, int limit, CancellationToken ct)
+    {
+        var results = new List<WireReleaseDefinition>();
+        string? token = null;
+        do
+        {
+            var path = $"{vsrm}/{Escape(projectId)}/_apis/release/definitions?{Api}" +
+                       $"&$expand=environments&$top=100" +
+                       (token is null ? "" : $"&continuationToken={Uri.EscapeDataString(token)}");
+            var (page, next) = await client.GetPageAsync<ListResponse<WireReleaseDefinition>>(path, ct);
+            results.AddRange(page.Value ?? []);
+            token = next;
+            if (token is not null && results.Count < limit)
+            {
+                log.Line(LogLevel.Debug, Ev.Page,
+                    "list_release_definitions next page" + A("so far", results.Count));
             }
         }
         while (token is not null && results.Count < limit);

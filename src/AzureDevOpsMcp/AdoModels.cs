@@ -108,7 +108,8 @@ internal sealed record WireTfvcChangesetRef(
 
 internal sealed record WireReleaseDefEnvironment(int Id, string? Name, int? Rank);
 
-internal sealed record WireReleaseDefinition(int Id, string? Name, List<WireReleaseDefEnvironment>? Environments);
+internal sealed record WireReleaseDefinition(
+    int Id, string? Name, List<WireReleaseDefEnvironment>? Environments, string? Path = null);
 
 internal sealed record WireReleaseEnvRef(int? DefinitionEnvironmentId, string? Name);
 
@@ -125,7 +126,52 @@ internal sealed record WireArtifactDefinitionReference(WireArtifactPart? Definit
 internal sealed record WireReleaseArtifact(
     string? Alias, string? Type, bool? IsPrimary, WireArtifactDefinitionReference? DefinitionReference);
 
-internal sealed record WireRelease(int Id, string? Name, List<WireReleaseArtifact>? Artifacts);
+// A release read whole. `environments` arrives on the listing under $expand=environments and on a
+// single release always; the per-task detail inside deploySteps needs $expand=tasks, without which
+// releaseDeployPhases comes back empty and a failed deployment looks unexplained. The fields after
+// Artifacts are defaulted so deployment_status, which asks for none of them, still constructs.
+internal sealed record WireRelease(
+    int Id, string? Name, List<WireReleaseArtifact>? Artifacts,
+    string? Status = null, string? Reason = null, string? Description = null,
+    DateTimeOffset? CreatedOn = null, WireIdentity? CreatedBy = null,
+    List<WireReleaseEnvironment>? Environments = null, WireReleaseRef? ReleaseDefinition = null);
+
+internal sealed record WireReleaseEnvironment(
+    int Id, string? Name, string? Status, int? Rank, int? DefinitionEnvironmentId,
+    string? TriggerReason, List<WireDeploymentAttempt>? DeploySteps,
+    List<WireReleaseApproval>? PreDeployApprovals, List<WireReleaseApproval>? PostDeployApprovals);
+
+/// <summary>
+/// One try at deploying a stage. A redeploy adds an attempt rather than replacing the last one,
+/// so what happened "this time" is the highest <c>attempt</c>, not the first in the list.
+/// </summary>
+internal sealed record WireDeploymentAttempt(
+    int Attempt, int? DeploymentId, string? Status, string? OperationStatus,
+    DateTimeOffset? QueuedOn, DateTimeOffset? LastModifiedOn, string? Reason,
+    WireIdentity? RequestedFor, List<WireReleaseDeployPhase>? ReleaseDeployPhases);
+
+internal sealed record WireReleaseDeployPhase(
+    string? Name, string? PhaseType, int? Rank, string? Status, DateTimeOffset? StartedOn,
+    List<WireDeploymentJob>? DeploymentJobs);
+
+/// <summary>The job itself plus the tasks inside it, both as the same ReleaseTask shape.</summary>
+internal sealed record WireDeploymentJob(WireReleaseTask? Job, List<WireReleaseTask>? Tasks);
+
+internal sealed record WireReleaseTask(
+    int Id, string? Name, string? Status, int? Rank, string? AgentName,
+    DateTimeOffset? StartTime, DateTimeOffset? FinishTime, string? LogUrl,
+    List<WireReleaseIssue>? Issues);
+
+/// <summary>
+/// Not <see cref="WireIssue"/>: the build timeline spells this field <c>type</c> and Release
+/// Management spells it <c>issueType</c>, so one record cannot bind both.
+/// </summary>
+internal sealed record WireReleaseIssue(string? IssueType, string? Message);
+
+internal sealed record WireReleaseApproval(
+    int Id, string? Status, string? ApprovalType, WireIdentity? Approver, WireIdentity? ApprovedBy,
+    DateTimeOffset? CreatedOn, DateTimeOffset? ModifiedOn, string? Comments, bool? IsAutomated,
+    int? Rank, int? Attempt, WireReleaseRef? Release, WireReleaseRef? ReleaseEnvironment);
 
 internal sealed record WireBuildRepository(string? Type, string? Name, Dictionary<string, string>? Properties);
 
@@ -359,6 +405,103 @@ public sealed record FailedStepDto(
 /// address, not something the model should see.
 /// </summary>
 internal sealed record FailedStep(FailedStepDto Step, string? LogUrl);
+
+// ------------------------------------------------------- classic release pipelines
+//
+// Kept in the vocabulary of the API and the deployment map: a *release definition* is the classic
+// pipeline, a *release* is one instance of it, and its stages are *environments*. The build/YAML
+// tools own the word "pipeline" in this server and never mean a classic one, which is the
+// distinction ServerInstructions spells out for the model.
+
+public sealed record ReleaseDefinitionDto(
+    int Id, string? Name, string? Folder, List<string>? Environments, string? WebUrl);
+
+/// <summary>A release in a listing: what it is and where each of its stages stands.</summary>
+public sealed record ReleaseDto(
+    int Id,
+    string? Name,
+    string? Status,
+    DateTimeOffset? Created,
+    string? CreatedBy,
+    string? Reason,
+    List<ReleaseEnvironmentDto>? Environments,
+    string? WebUrl);
+
+public sealed record ReleaseEnvironmentDto(int Id, string? Name, string? Status);
+
+/// <summary>Envelope for release listings, shaped like <see cref="PipelineRunsResult"/>.</summary>
+public sealed record ReleasesResult(List<ReleaseDto> Releases, bool? HasMore);
+
+/// <summary>
+/// One release read whole: what it shipped (the artifacts), and per stage, where it stands, what
+/// is waiting on a human, and what failed.
+/// </summary>
+public sealed record ReleaseDetailDto(
+    int Id,
+    string? Name,
+    string? Definition,
+    string? Status,
+    DateTimeOffset? Created,
+    string? CreatedBy,
+    string? Reason,
+    string? Description,
+    List<ReleaseArtifactDto>? Artifacts,
+    List<ReleaseEnvironmentDetailDto> Environments,
+    SkippedDto? Skipped,
+    string? WebUrl);
+
+/// <summary>
+/// What a release carries. For the usual Build artifact, <c>version</c> is the build number and
+/// <c>buildId</c> is the run id, which is what get_pipeline_run takes.
+/// </summary>
+public sealed record ReleaseArtifactDto(
+    string? Alias, string? Type, string? Definition, string? Version, int? BuildId, bool? Primary);
+
+/// <summary>
+/// One stage of a release. <c>pendingApprovals</c> is the reason a stage can sit at
+/// <c>queued</c> indefinitely with nothing wrong, and each entry carries the id
+/// <c>approve_release</c> takes.
+/// </summary>
+public sealed record ReleaseEnvironmentDetailDto(
+    int Id,
+    string? Name,
+    string? Status,
+    string? OperationStatus,
+    int? Attempt,
+    DateTimeOffset? Started,
+    DateTimeOffset? Finished,
+    string? RequestedFor,
+    List<PendingApprovalDto>? PendingApprovals,
+    List<FailedStepDto>? FailedSteps);
+
+public sealed record PendingApprovalDto(int Id, string? Type, string? Approver, DateTimeOffset? Created);
+
+/// <summary>
+/// The outcome of waiting for one stage of a release, shaped like the other waiters: the release
+/// is reported exactly as <c>get_release</c> reports it, <c>environment</c> names the stage that
+/// was waited on, and <c>timedOut</c> appears only when the wait gave up — a stage still queued
+/// behind an approval is a different answer from one that was rejected.
+/// </summary>
+public sealed record ReleaseWaitResult(
+    ReleaseDetailDto Release,
+    string Environment,
+    int WaitedSeconds,
+    bool? TimedOut);
+
+/// <summary>
+/// What <c>approve_release</c> did, with the release as it stands afterwards so the caller can
+/// see whether the deployment it unblocked has started.
+/// </summary>
+public sealed record ReleaseApprovalResult(ApprovalDto Approval, ReleaseDetailDto Release);
+
+public sealed record ApprovalDto(
+    int Id,
+    string? Status,
+    string? Type,
+    string? Environment,
+    string? ApprovedBy,
+    string? Comments,
+    DateTimeOffset? Modified);
 
 // Search envelopes always carry `total`, the service's overall match count, so an empty result
 // list still says whether nothing matched (0) or the caller's limit cut the list short (paired
@@ -792,6 +935,219 @@ internal static class Mapping
         return (string.Join("\n", kept), all.Length > lines ? true : null);
     }
 
+    // ------------------------------------------------------- classic release pipelines
+
+    internal static ReleaseDefinitionDto ReleaseDefinition(
+        WireReleaseDefinition d, string orgUrl, string? project) => new(
+        d.Id,
+        d.Name,
+        // Release definitions live in folders spelled "\", the same as a pipeline's root folder.
+        string.Equals(d.Path, "\\", StringComparison.Ordinal) ? null : d.Path,
+        // In rank order, because that is the order they deploy in and the order a caller will
+        // reason about them. Names, not ids: the other release tools resolve either.
+        (d.Environments ?? []).OrderBy(e => e.Rank ?? 0).Select(e => e.Name).OfType<string>().ToList()
+            is { Count: > 0 } environments ? environments : null,
+        ReleaseDefinitionUrl(orgUrl, project, d.Id));
+
+    internal static ReleaseDto Release(WireRelease r, string orgUrl, string? project) => new(
+        r.Id,
+        r.Name,
+        // "active" is the state of every release that was not abandoned or left as a draft.
+        string.Equals(r.Status, "active", StringComparison.OrdinalIgnoreCase) ? null : r.Status,
+        r.CreatedOn,
+        r.CreatedBy?.DisplayName,
+        r.Reason,
+        (r.Environments ?? []).OrderBy(e => e.Rank ?? 0)
+            .Select(e => new ReleaseEnvironmentDto(e.Id, e.Name, e.Status))
+            .ToList() is { Count: > 0 } environments ? environments : null,
+        ReleaseUrl(orgUrl, project, r.Id));
+
+    internal static ReleaseArtifactDto ReleaseArtifact(WireReleaseArtifact a)
+    {
+        var version = a.DefinitionReference?.Version;
+        return new ReleaseArtifactDto(
+            a.Alias,
+            a.Type,
+            a.DefinitionReference?.Definition?.Name,
+            version?.Name,
+            // The version id of a Build artifact is the build/run id, as a string on the wire.
+            string.Equals(a.Type, "Build", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(version?.Id, CultureInfo.InvariantCulture, out var buildId) ? buildId : null,
+            a.IsPrimary is true ? true : null);
+    }
+
+    /// <summary>
+    /// The deployment attempt to report: the highest-numbered one. A redeploy adds an attempt
+    /// rather than replacing the previous one, so the first entry can be a failure that has since
+    /// been retried successfully.
+    /// </summary>
+    internal static WireDeploymentAttempt? LatestAttempt(WireReleaseEnvironment env) =>
+        (env.DeploySteps ?? []).OrderByDescending(d => d.Attempt).FirstOrDefault();
+
+    /// <summary>
+    /// Why a stage failed: the failed tasks of its latest attempt, with the phase and job they sit
+    /// under. Tasks that passed are counted rather than listed, exactly as
+    /// <see cref="FailedSteps"/> does for a build timeline, and tasks that never ran are neither.
+    /// The tasks only arrive when the release was read with <c>$expand=tasks</c>.
+    /// </summary>
+    internal static List<FailedStep> ReleaseFailedSteps(
+        WireReleaseEnvironment env, int maxErrors, SkipCounter counts)
+    {
+        var failed = new List<FailedStep>();
+        if (LatestAttempt(env) is not { } attempt)
+        {
+            return failed;
+        }
+        foreach (var phase in (attempt.ReleaseDeployPhases ?? []).OrderBy(p => p.Rank ?? 0))
+        {
+            foreach (var job in phase.DeploymentJobs ?? [])
+            {
+                foreach (var task in (job.Tasks ?? []).OrderBy(t => t.Rank ?? 0))
+                {
+                    if (!IsReleaseTaskFailure(task.Status))
+                    {
+                        if (IsReleaseTaskSuccess(task.Status))
+                        {
+                            counts.Succeeded++;
+                        }
+                        continue;
+                    }
+                    var errors = (task.Issues ?? [])
+                        .Where(i => string.Equals(i.IssueType, "error", StringComparison.OrdinalIgnoreCase))
+                        .Select(i => i.Message)
+                        .OfType<string>()
+                        .Take(maxErrors)
+                        .ToList();
+                    failed.Add(new FailedStep(
+                        new FailedStepDto(
+                            phase.Name, job.Job?.Name, task.Name, task.Status,
+                            errors.Count > 0 ? errors : null, null, null),
+                        task.LogUrl));
+                }
+            }
+        }
+        return failed;
+    }
+
+    /// <summary>
+    /// Release Management reports a task's verdict under two spellings apiece — <c>failed</c> and
+    /// <c>failure</c>, <c>succeeded</c> and <c>success</c> — and both appear in its own enum, so
+    /// matching only the familiar one silently drops half the failures.
+    /// </summary>
+    internal static bool IsReleaseTaskFailure(string? status) =>
+        status is not null &&
+        (status.Equals("failed", StringComparison.OrdinalIgnoreCase) ||
+         status.Equals("failure", StringComparison.OrdinalIgnoreCase) ||
+         status.Equals("canceled", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Not the negation of <see cref="IsReleaseTaskFailure"/>: skipped and pending tasks are
+    /// neither, and counting them as passing would overstate what the deployment did.
+    /// <c>partiallySucceeded</c> is the release side's <c>succeededWithIssues</c>.
+    /// </summary>
+    internal static bool IsReleaseTaskSuccess(string? status) =>
+        status is not null &&
+        (status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) ||
+         status.Equals("success", StringComparison.OrdinalIgnoreCase) ||
+         status.Equals("partiallySucceeded", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The approvals a stage is actually waiting on: pending, and not the automated placeholders
+    /// Azure DevOps records for stages that need no approval at all.
+    /// </summary>
+    internal static List<WireReleaseApproval> PendingApprovals(WireReleaseEnvironment env) =>
+        ((env.PreDeployApprovals ?? []).Concat(env.PostDeployApprovals ?? []))
+        .Where(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase))
+        .Where(a => a.IsAutomated is not true)
+        .OrderBy(a => a.Rank ?? 0)
+        .ToList();
+
+    internal static PendingApprovalDto PendingApproval(WireReleaseApproval a) =>
+        new(a.Id, a.ApprovalType, a.Approver?.DisplayName ?? a.Approver?.UniqueName, a.CreatedOn);
+
+    internal static ApprovalDto Approval(WireReleaseApproval a) => new(
+        a.Id,
+        a.Status,
+        a.ApprovalType,
+        a.ReleaseEnvironment?.Name,
+        a.ApprovedBy?.DisplayName ?? a.ApprovedBy?.UniqueName,
+        a.Comments,
+        a.ModifiedOn);
+
+    /// <summary>
+    /// One stage, given the failed steps already resolved for it (the tool fetches their logs, so
+    /// that part cannot be pure). Everything decided here is a judgement about what is worth
+    /// saying, which is why it does not live in the tool.
+    /// </summary>
+    internal static ReleaseEnvironmentDetailDto ReleaseEnvironment(
+        WireReleaseEnvironment env, List<FailedStepDto> failedSteps)
+    {
+        var attempt = LatestAttempt(env);
+        var pending = PendingApprovals(env).Select(PendingApproval).ToList();
+        return new ReleaseEnvironmentDetailDto(
+            env.Id,
+            env.Name,
+            env.Status,
+            // Load-bearing everywhere except on a stage that went green, where it only ever says
+            // "Approved". An environment has no `failed` status — a deployment that failed reports
+            // as `rejected` with operationStatus PhaseFailed, so dropping this would make a broken
+            // deployment indistinguishable from one a person turned down. It also separates "an
+            // agent is running it" from "it is held at a manual intervention", both inProgress.
+            string.Equals(env.Status, "succeeded", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : attempt?.OperationStatus,
+            // A first attempt is the usual case and says nothing. A later one says somebody retried.
+            attempt is { Attempt: > 1 } ? attempt.Attempt : null,
+            attempt?.QueuedOn,
+            // lastModifiedOn is a finish time only once the stage has finished; while it is running
+            // it is just "when something last happened", which is not what the field claims.
+            attempt is not null && IsTerminalEnvironmentStatus(env.Status) ? attempt.LastModifiedOn : null,
+            attempt?.RequestedFor?.DisplayName,
+            pending.Count > 0 ? pending : null,
+            failedSteps.Count > 0 ? failedSteps : null);
+    }
+
+    /// <summary>
+    /// The release around its stages. <paramref name="descriptionLimit"/> caps the one free-text
+    /// field; an absent description arrives as <c>""</c> rather than as a missing field, and the
+    /// serializer only drops nulls.
+    /// </summary>
+    internal static ReleaseDetailDto ReleaseDetail(
+        WireRelease r, List<ReleaseEnvironmentDetailDto> environments, SkippedDto? skipped,
+        int descriptionLimit, string orgUrl, string? project) => new(
+        r.Id,
+        r.Name,
+        r.ReleaseDefinition?.Name,
+        string.Equals(r.Status, "active", StringComparison.OrdinalIgnoreCase) ? null : r.Status,
+        r.CreatedOn,
+        r.CreatedBy?.DisplayName,
+        r.Reason,
+        r.Description is { Length: > 0 } description
+            ? Text.Truncate(description, descriptionLimit).Body
+            : null,
+        (r.Artifacts ?? []).Select(ReleaseArtifact).ToList() is { Count: > 0 } artifacts ? artifacts : null,
+        environments,
+        skipped,
+        ReleaseUrl(orgUrl, project, r.Id));
+
+    /// <summary>
+    /// Whether a stage's status means it has stopped moving. <c>notStarted</c> is not terminal:
+    /// it is what a stage that nobody has triggered yet reports, and a caller waiting for an
+    /// automatic promotion into it is waiting for exactly that transition. An unrecognized status
+    /// is treated as terminal, so a waiter surprised by the service returns what it sees rather
+    /// than polling a state it does not understand until the timeout.
+    /// </summary>
+    internal static bool IsTerminalEnvironmentStatus(string? status) => status switch
+    {
+        null => true,
+        _ when status.Equals("notStarted", StringComparison.OrdinalIgnoreCase) => false,
+        _ when status.Equals("inProgress", StringComparison.OrdinalIgnoreCase) => false,
+        _ when status.Equals("queued", StringComparison.OrdinalIgnoreCase) => false,
+        _ when status.Equals("scheduled", StringComparison.OrdinalIgnoreCase) => false,
+        _ when status.Equals("undefined", StringComparison.OrdinalIgnoreCase) => false,
+        _ => true,
+    };
+
     // ----------------------------------------------------------------- search results
 
     /// <summary>Snippets a code result keeps. `matches` still reports how many places matched.</summary>
@@ -1012,6 +1368,19 @@ internal static class Mapping
 
     internal static string? RunUrl(string orgUrl, string? project, int id) =>
         project is null ? null : $"{orgUrl}/{Escape(project)}/_build/results?buildId={id}";
+
+    /// <summary>
+    /// The release progress view, which is the page that shows the stages and their approvals —
+    /// not _releaseDefinition, which is the editor. Release links stay on the dev.azure.com host:
+    /// only the API moved to vsrm.
+    /// </summary>
+    internal static string? ReleaseUrl(string orgUrl, string? project, int releaseId) =>
+        project is null
+            ? null
+            : $"{orgUrl}/{Escape(project)}/_releaseProgress?_a=release-pipeline-progress&releaseId={releaseId}";
+
+    internal static string? ReleaseDefinitionUrl(string orgUrl, string? project, int definitionId) =>
+        project is null ? null : $"{orgUrl}/{Escape(project)}/_release?definitionId={definitionId}";
 
     /// <summary>A $/-rooted path is TFVC and browses under _versionControl. Anything else is git.</summary>
     internal static string? CodeUrl(string orgUrl, string project, WireCodeResult r) =>

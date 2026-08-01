@@ -101,7 +101,8 @@ they refuse at call time until their gate is set.
 | Gate | Enables |
 | --- | --- |
 | `TEAMS_MCP_ALLOW_SEND=true` | `send_channel_message`, `send_chat_message` |
-| `ADO_MCP_ALLOW_WRITE=true` | `create_work_item`, `update_work_item`, `add_pull_request_comment`, `run_pipeline` |
+| `ADO_MCP_ALLOW_WRITE=true` | `create_work_item`, `update_work_item`, `add_pull_request_comment`, `run_pipeline`, `deploy_release` |
+| `ADO_MCP_ALLOW_APPROVE=true` | `approve_release`, and only alongside `ADO_MCP_ALLOW_WRITE=true` |
 
 Set them the same way as step 2, or in a hand-written config's `env` block. Two things to know:
 
@@ -276,6 +277,7 @@ to a repository. `--set TEAMS_MCP_ALLOW_SEND=true` puts it in the file anyway.
 | `ADO_MCP_ORG_URL` | Organization URL, e.g. `https://dev.azure.com/contoso` |
 | `ADO_MCP_PROJECT` | Optional. Default project when a tool's `project` argument is omitted |
 | `ADO_MCP_ALLOW_WRITE` | Opt-in gate for the write tools. Anything but `true` refuses writes |
+| `ADO_MCP_ALLOW_APPROVE` | Second opt-in gate, for `approve_release` only. Acting on a release approval needs this *and* `ADO_MCP_ALLOW_WRITE` |
 | `ADO_MCP_DEPLOYMENTS` | Optional. Deployment map path, default `%LOCALAPPDATA%\ado-mcp\deployments.json` |
 | `ADO_MCP_AUTH` | `devicecode` (default) or `browser`, used only by `-- auth` |
 | `ADO_MCP_LOG_LEVEL` | `Trace`/`Debug`/`Information` (default)/`Warning`/`Error`/`None` |
@@ -317,14 +319,29 @@ Read:
 | `list_pipeline_runs` | |
 | `get_pipeline_run` | Reports each failed task with its stage, job, errors and log tail |
 | `wait_for_pipeline_run` | Polls until the run finishes, then reports like `get_pipeline_run`. A timeout returns the run as it stands with `timedOut: true` |
+| `list_release_definitions` | Classic release pipelines, with the environments each deploys to |
+| `list_releases` | Releases of one definition, newest first, with every environment's status |
+| `get_release` | Artifacts, pending approvals, and each failed task with its phase, job, errors and log tail |
+| `wait_for_release` | Polls one environment until it stops moving, then reports like `get_release` |
 | `search_code` | Needs the Code Search extension, see below |
 | `search_work_items` | Full text. `list_work_items` is the structured query |
 | `search_wiki` | |
 | `deployment_status` | Config-driven, see the deployment map section |
 
-`project`, `repo`, `pipeline` and `team` accept an id or a name. Names match case-insensitively,
-exact first and then substring. An ambiguous or unknown name fails with the candidates listed.
-`project` defaults to `ADO_MCP_PROJECT`.
+`project`, `repo`, `pipeline`, `team`, `definition` and `environment` accept an id or a name. Names
+match case-insensitively, exact first and then substring. An ambiguous or unknown name fails with
+the candidates listed. `project` defaults to `ADO_MCP_PROJECT`.
+
+**The `_pipeline` tools and the `_release` tools are about different things.** Azure DevOps has two
+kinds of pipeline and they share nothing: `list_pipelines` returns build/YAML pipelines, and
+`list_release_definitions` returns classic release pipelines. A release definition has environments
+(stages), a release is one instance of it, and each environment deploys separately. A release
+definition never appears in `list_pipelines`.
+
+One quirk of the classic release API is worth knowing before reading a result: a release
+environment has no `failed` status. **A deployment that failed reports as `rejected`**, the same
+status an approval somebody turned down produces, and `operationStatus` (`PhaseFailed` against
+`Rejected`) is what tells them apart. `get_release` reports both.
 
 `list_work_items` takes either a full `wiql` query or filter arguments (`type`, `state`,
 `assigned_to`, `team`, `changed_since`, `title_contains`). When it builds the query itself it
@@ -350,9 +367,17 @@ a `succeeded` merge status, an area path equal to the project.
 
 ### Mutations
 
-`update_work_item`, `create_work_item`, `add_pull_request_comment` and `run_pipeline` require
-`ADO_MCP_ALLOW_WRITE=true`. With the gate unset, each refuses with instructions before touching
-anything.
+`update_work_item`, `create_work_item`, `add_pull_request_comment`, `run_pipeline` and
+`deploy_release` require `ADO_MCP_ALLOW_WRITE=true`. With the gate unset, each refuses with
+instructions before touching anything.
+
+`approve_release` requires **both** `ADO_MCP_ALLOW_WRITE=true` and `ADO_MCP_ALLOW_APPROVE=true`, and
+the second gate exists because the two permissions are not the same permission. Writing says an
+agent may change things other people will see. An approval is a control that exists specifically to
+require a human, and answering one records *you* as having authorized that deployment whether or
+not you read what was in it. Turning on writes so an agent can file work items is not agreement to
+that, so one variable cannot honestly cover both. Leave `ADO_MCP_ALLOW_APPROVE` unset unless you
+mean it.
 
 Only the arguments you pass are written. Between them the two work item tools reach everything the
 read tools report: `title`, `description`, `repro_steps`, `acceptance_criteria`, `state`,
@@ -378,6 +403,14 @@ guess. `type` resolves against the project's own work item types.
 `run_pipeline` queues a run of a pipeline, optionally on a specific branch, and returns the queued
 run with the id that `wait_for_pipeline_run` takes — which is what lets an agent chain a delivery
 flow (wait for the PR to land, kick CI, watch it, kick the follow-on build) one call at a time.
+
+`deploy_release` starts deploying one environment of an existing release: the Deploy button, not a
+new release. It does not create releases — pass the id of one that already exists, which
+`list_releases` gives you. If the environment has a pre-deploy approval the deployment waits at it
+rather than starting, and `get_release` reports that as a `pendingApprovals` entry carrying the id
+`approve_release` takes. `approve_release` refuses rather than guessing when an environment has no
+pending approval, or more than one — pass `approval_id` to pick. Both return the release in
+`get_release`'s shape, so the new status comes back with the write.
 
 Every write returns the state after the write, so you never need a follow-up read. Deleting things,
 and voting on or completing pull requests, are not offered.

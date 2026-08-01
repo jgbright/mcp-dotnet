@@ -155,6 +155,7 @@ for a remote organization or tenant.
 | `send_channel_message`, `send_chat_message` | `Destructive = false, Idempotent = false` — a send adds and edits nothing, but sending twice posts twice |
 | `create_work_item`, `add_pull_request_comment`, `run_pipeline` | `Destructive = false, Idempotent = false` — same reasoning |
 | `update_work_item` | `Destructive = true, Idempotent = false` — it overwrites fields that already had values |
+| `deploy_release`, `approve_release` | `Destructive = true, Idempotent = false` — deploying replaces what is running in that environment, and approving a pre-deploy gate is what lets it happen. This is the annotation a client hangs its confirmation prompt on, and these are the calls that most deserve one |
 
 A tool that sets neither `ReadOnly` nor a mutation hint fails `ToolListingTests`.
 
@@ -198,7 +199,7 @@ ever varies its listing per caller has to revisit the TTL and `CacheScope.Public
 
 ## Waiting is a tool, not a held-open request
 
-`wait_for_pipeline_run`, `wait_for_pull_request`, `wait_for_channel_messages`,
+`wait_for_pipeline_run`, `wait_for_pull_request`, `wait_for_release`, `wait_for_channel_messages`,
 `wait_for_chat_messages`, `wait_for_mentions` and `wait_for_any_message` poll, and can run for the
 better part of an hour. Both servers enable the
 Tasks extension (`.WithTasks`, SEP-2663) with an `InMemoryMcpTaskStore` — correct for stdio, where

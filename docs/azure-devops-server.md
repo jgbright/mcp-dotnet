@@ -42,7 +42,7 @@ small function, and each handles the legacy `{org}.visualstudio.com` spelling as
 | Host | Answers | Derived by |
 | --- | --- | --- |
 | `dev.azure.com/{org}` | Core: projects, git, work items, build, TFVC | `AdoContext.RequireOrgUrl` |
-| `vsrm.dev.azure.com/{org}` | Release definitions and deployments | `Deployments.VsrmBaseUrl` |
+| `vsrm.dev.azure.com/{org}` | Release definitions, releases, deployments, approvals | `Deployments.VsrmBaseUrl` |
 | `almsearch.dev.azure.com/{org}` | Code, work item and wiki search | `Search.BaseUrl` |
 | `vssps.dev.azure.com/{org}` | Identities | `Writes.VsspsBaseUrl` |
 
@@ -60,6 +60,10 @@ each of these rejects a bare `7.1`:
 
 `selftest` additionally hits `_apis/connectionData?api-version=7.1-preview`, which is preview-only
 for the same reason.
+
+Release Management is **not** an exception, which is worth stating because it was preview-only for
+years: the release definitions, releases, environment-update and approval-update endpoints all
+answer a bare `7.1`, so they use `Api` like everything else.
 
 ## Paging strategies
 
@@ -107,6 +111,85 @@ The waiters and `run_pipeline` are deliberately primitives, not a workflow: an a
 "PR lands → kick CI → watch it → kick the follow-on build" itself, one composable call per step,
 and the server never models the flow.
 
+## Classic release pipelines
+
+Azure DevOps has two unrelated things called a pipeline, and this server keeps them apart by name
+rather than trying to unify them. The `_pipeline` tools mean build/YAML pipelines and their runs.
+The `_release` tools mean classic Release Management: a **release definition** is the pipeline, a
+**release** is one instance of it, and its stages are **environments**, each deploying separately.
+A release definition never appears in `list_pipelines`, which is why `ServerInstructions` says so —
+a model that concludes "no such pipeline" from an empty `list_pipelines` is wrong in a way that
+reads like a correct answer.
+
+The vocabulary is the API's and the deployment map's, kept rather than translated so one word means
+one thing across the server.
+
+### The wire shape is not the build API's
+
+Four differences cost a wrong answer rather than an error, so each has a test:
+
+- **A release environment has no `failed` status.** The `EnvironmentStatus` enum is `notStarted`,
+  `inProgress`, `queued`, `scheduled`, `succeeded`, `partiallySucceeded`, `canceled`, `rejected`.
+  A deployment that *failed* reports as **`rejected`** — indistinguishable from an approval somebody
+  turned down except by `operationStatus`, which reads `PhaseFailed` in the first case and
+  `Rejected` in the second. Both are surfaced. This was verified against a real failed deployment
+  in the organization rather than taken from the documentation, which does not say it.
+- **`$expand=tasks` is what makes the per-task detail arrive.** The single-release GET otherwise
+  returns `deploySteps` with empty `releaseDeployPhases`, and a failed deployment looks like it ran
+  no steps at all. `ReadReleaseWireAsync` always asks for it.
+- **A task's verdict has two spellings apiece.** Release Management's `TaskStatus` enum carries
+  both `failed` and `failure`, and both `succeeded` and `success`. `Mapping.IsReleaseTaskFailure`
+  and `IsReleaseTaskSuccess` match both; matching the familiar spelling alone silently halves what
+  gets reported.
+- **A redeploy adds an attempt rather than replacing one.** `deploySteps` keeps every attempt, so a
+  stage that has since gone green still carries the failed first one. `Mapping.LatestAttempt` takes
+  the highest-numbered, and the DTO reports `attempt` only when it is not 1 — a second attempt says
+  a person retried, which is worth knowing.
+
+The failure hierarchy differs too: a build timeline is a flat record list walked by `parentId`,
+while a release nests phase → deployment job → task. `Mapping.ReleaseFailedSteps` walks it into the
+same `FailedStepDto` the build side produces (`stage` = phase, `job` = job, `task` = task), so a
+failed deployment and a failed build read identically, `include_logs` works the same way, and
+passing tasks land in the same `skipped.succeeded`.
+
+### Two ids for one stage
+
+A stage has a **release environment id**, unique to the release, and a **definition environment
+id**, stable across every release of the definition. The deploy endpoint addresses the former.
+Since `Resolve` passes a number straight through, `ResolveReleaseEnvironment` re-checks the result
+against the release in hand and refuses an id that release does not have — without it, a plausible
+number would PATCH another release's stage.
+
+### Deploying and approving
+
+`deploy_release` is the Deploy button: it starts one environment of an existing release. It does
+not create releases. Creating one was left out deliberately — a release is normally created by the
+definition's own CI trigger, and what an agent actually needs is "is Prod out, why did it fail,
+ship the one that is staged". Both write tools PATCH plain JSON (`AdoClient.PatchJsonAsync`, added
+for these — `PatchAsync` hardcodes `application/json-patch+json`, which the release endpoints
+reject) and then re-read, so each returns the release exactly as `get_release` would.
+
+`approve_release` is gated twice: `RequireWriteEnabled()` **and** `RequireApprovalEnabled()`
+(`ADO_MCP_ALLOW_APPROVE=true`). The write gate answers "may this server change what other people
+see". An approval is a control that exists precisely to require a human, and answering one records
+the signed-in person as having authorized that deployment whether or not they read what was in it.
+Enabling writes so an agent can file work items is not agreement to that, so one variable cannot
+honestly carry both permissions.
+
+Which approval to act on follows the same never-guess rule as name resolution, for a stronger
+reason: exactly one pending approval is acted on, none is an error saying so, and several (parallel
+approvers, or a pre- and a post-deploy approval at once) is an error listing them with their ids
+and approvers, until `approval_id` names one. Automated placeholder approvals — the ones Azure
+DevOps records for a stage that needs no approval — are filtered out, so they never count toward
+that ambiguity.
+
+`wait_for_release` waits on one environment. A stage nobody triggered stays at `notStarted`
+indefinitely and a stage held at an approval stays `queued`, so neither is treated as terminal and
+waiting on one runs to the timeout — the tool's description says to check `pendingApprovals` first.
+An unrecognized status is terminal, as with the other waiters. The environment is resolved once
+against the first read rather than per poll, so a rename mid-wait cannot turn a wait into a
+failure.
+
 ## WIQL construction
 
 `list_work_items` takes either a full `wiql` query or filter arguments. When it builds the query
@@ -152,13 +235,22 @@ Details that are easy to get wrong:
 
 ## Writes
 
-Four tools behind `ADO_MCP_ALLOW_WRITE=true`: `update_work_item`, `create_work_item`,
-`add_pull_request_comment`, `run_pipeline`. Each calls `AdoTools.RequireWriteEnabled()` before
-anything else, including validating its own arguments, so the refusal is the same regardless of
-what was passed.
+Six tools behind `ADO_MCP_ALLOW_WRITE=true`: `update_work_item`, `create_work_item`,
+`add_pull_request_comment`, `run_pipeline`, `deploy_release`, `approve_release`. Each calls
+`AdoTools.RequireWriteEnabled()` before anything else, including validating its own arguments, so
+the refusal is the same regardless of what was passed. `approve_release` then calls a second gate,
+`RequireApprovalEnabled()` (`ADO_MCP_ALLOW_APPROVE=true`) — see "Deploying and approving" above for
+why that is a separate permission rather than a redundant one.
 
 Every write returns the post-write state in the read tools' DTO shapes, so no follow-up read is
-needed. Deleting things, and voting on or completing pull requests, are not offered.
+needed. Deleting things, voting on or completing pull requests, and creating releases are not
+offered.
+
+The `destructive` annotation separates the writes that replace something from the ones that only
+add: `update_work_item` overwrites fields, `deploy_release` replaces what is running in an
+environment, and `approve_release` is what lets that deployment happen. Filing a work item,
+commenting and queuing a run are additive. The annotation is what an MCP client gates its
+confirmation prompt on, which is why deploying and approving carry it.
 
 `run_pipeline` queues a run, optionally on a branch, through the build API — the same API runs are
 read through — so the queued run comes back in `list_pipeline_runs`'s shape, carrying the id
@@ -300,20 +392,24 @@ repository.** Extend the mechanism, or regenerate the data.
 | Cap | Value | Behaviour at the cap |
 | --- | --- | --- |
 | pull request scan | 500 | `hasMore` + Warning |
-| release definitions per project | 500 | Warning: resolution may be incomplete |
+| release definitions per project (`deployment_status`) | 500 | Warning: resolution may be incomplete |
+| release definitions per project (`list_release_definitions`) | `limit`, default 200, max 1000 | Paged to the limit |
 | build definitions per project | 1000 | Warning: resolution may be incomplete |
 | environment deployment records | 100 | Reported as "no succeeded deployment in the last 100 records" |
 | TFVC paths searched per deployable | 10 | `hasMore` + Warning |
 | work item ids per batch read | 200 | Batched — the endpoint 400s above this |
-| waiter timeout (`wait_for_pipeline_run`, `wait_for_pull_request`) | 1–21600 s | Clamped; returns `timedOut: true` |
-| waiter interval (both waiters) | 5–600 s | Clamped |
+| waiter timeout (all three waiters) | 1–21600 s | Clamped; returns `timedOut: true` |
+| waiter interval (all three waiters) | 5–600 s | Clamped |
 
 ## Tool inventory
 
 Read: `list_projects`, `list_repos`, `list_pull_requests`, `get_pull_request`,
 `wait_for_pull_request`, `list_work_items`, `get_work_item`, `list_pipelines`, `list_pipeline_runs`,
-`get_pipeline_run`, `wait_for_pipeline_run`, `search_code`, `search_work_items`, `search_wiki`,
+`get_pipeline_run`, `wait_for_pipeline_run`, `list_release_definitions`, `list_releases`,
+`get_release`, `wait_for_release`, `search_code`, `search_work_items`, `search_wiki`,
 `deployment_status`.
 
 Write (`ADO_MCP_ALLOW_WRITE=true`): `update_work_item`, `create_work_item`,
-`add_pull_request_comment`, `run_pipeline`.
+`add_pull_request_comment`, `run_pipeline`, `deploy_release`.
+
+Write, and additionally `ADO_MCP_ALLOW_APPROVE=true`: `approve_release`.

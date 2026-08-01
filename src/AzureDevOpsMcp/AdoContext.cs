@@ -48,6 +48,21 @@ public sealed class AdoContext(ILogger<AdoContext> log)
         string.Equals(Environment.GetEnvironmentVariable("ADO_MCP_ALLOW_WRITE"), "true",
             StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Acting on a release approval is gated separately from writing, by
+    /// ADO_MCP_ALLOW_APPROVE=true, and <c>approve_release</c> requires both.
+    ///
+    /// The write gate answers "may this server change things other people will see". An approval
+    /// answers a different question: a release approval exists precisely to require a human, and
+    /// the audit trail records the signed-in person as having authorized that deployment whether
+    /// or not they read what was in it. Someone who turned writing on so an agent could file work
+    /// items has not thereby agreed to let it sign off on production, so one variable cannot
+    /// honestly cover both.
+    /// </summary>
+    public static bool ApprovalEnabled =>
+        string.Equals(Environment.GetEnvironmentVariable("ADO_MCP_ALLOW_APPROVE"), "true",
+            StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Raw ADO_MCP_ORG_URL, for diagnostics. Null when unset.</summary>
     public static string? OrgUrlSetting =>
         Environment.GetEnvironmentVariable("ADO_MCP_ORG_URL") is { Length: > 0 } url ? url : null;
@@ -482,6 +497,19 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
         using var content = JsonContent.Create(
             patch, new MediaTypeHeaderValue("application/json-patch+json"), Json);
         using var response = await SendAsync(method, path, content, ct);
+        return await ReadAsync<T>(response, path, ct);
+    }
+
+    /// <summary>
+    /// PATCHes a plain JSON document. Work item writes are the exception rather than the rule:
+    /// they use <see cref="PatchAsync{T}"/> because JSON Patch is the only document the work item
+    /// endpoint accepts, while the release endpoints take an ordinary object under
+    /// <c>application/json</c> and reject a patch document.
+    /// </summary>
+    public async Task<T> PatchJsonAsync<T>(string path, object body, CancellationToken ct)
+    {
+        using var content = JsonContent.Create(body, options: Json);
+        using var response = await SendAsync(HttpMethod.Patch, path, content, ct);
         return await ReadAsync<T>(response, path, ct);
     }
 
