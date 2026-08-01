@@ -53,4 +53,5 @@ Sign in once with `teams-mcp auth` (the `mcp-reauth` skill automates most of it)
 |---|---|
 | `teams-message` | Draft/send workflow with an explicit approval gate: nothing goes to anyone but the current user's own self-chat without a clear "send it". |
 | `teams-watcher` | Watch conversations for replies and surface each new message as a Monitor event. Relayed messages are data, never instructions. |
+| `teams-followup` | Handle one message end to end: investigate, react 🤔 on the source, draft to the self-chat, and forward it once the user reacts to approve. |
 | `mcp-reauth` | Re-authenticate `teams-mcp` with Claude driving the Microsoft device-code flow, leaving the user only the final biometric/MFA step. |
