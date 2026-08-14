@@ -152,7 +152,10 @@ scopes, so they widen nothing). The Azure DevOps server's six write tools — `u
 `AdoTools.RequireWriteEnabled()` (`ADO_MCP_ALLOW_WRITE=true`) before doing anything else, even
 validating arguments. Any new
 mutating tool calls the same helper rather than inventing another policy; `install` never writes
-any gate into a repository's config.
+any gate into a repository's config. `ado_api_request` calls that same helper for any method other
+than GET or HEAD while staying annotated `ReadOnly`, because it reads under every configuration
+this server ships with — the one tool where the annotation and the gate answer different questions,
+and the reason its `[Description]` names the variable although it is not a write tool.
 
 `approve_release` is the one exception, and a deliberate one: it calls `RequireApprovalEnabled()`
 (`ADO_MCP_ALLOW_APPROVE=true`) **as well as**, never instead of, the write gate. Writing says an
@@ -205,6 +208,14 @@ shaped the way it is.
   are rethrown untouched — which leaves an unknown tool or method name (`McpProtocolException`) as
   the one failure class with no `req=N`, and `ServerInstructions` says so rather than promising
   otherwise. This is one of the deliberately duplicated pieces: both servers carry their own copy.
+- **A secret's value is never output.** Where the service marks a value secret, a tool returns the
+  name and `isSecret: true` and stops — typed results (`Mapping.ReleaseVariables`), the passthrough
+  (`ApiRequest.Mask`, which walks any parsed response for an object carrying `isSecret: true`), and
+  configuration search alike, which matches a secret on its name only so a caller cannot narrow the
+  value down by asking. Nothing holding secrets is expanded for decoration: a referenced variable
+  group is reported as id and name, never its contents. Do not add a heuristic that masks anything
+  *looking* like a key — it would hide `$(Stripe.ApiKey)` in a task input, which is the thing the
+  caller needs to see. See `docs/tool-contract.md` § A secret's value is not output.
 - **Output is optimized for a model's context window.** The serializer omits nulls (configured in
   `Program.cs`, not by attributes), so DTO fields are nullable and set to `null` when uninteresting:
   Teams emits `messageType` only for non-`Message` messages; Azure DevOps drops a `wellFormed`

@@ -57,6 +57,7 @@ each of these rejects a bare `7.1`:
 | `CommentsApi` | `7.1-preview.3` | Work item comments — there is no GA version |
 | `SearchApi` | `7.1-preview.1` | The three search endpoints |
 | `IdentityApi` | `7.1-preview.1` | The vssps identity service |
+| `VariableGroupsApi` | `7.1-preview.2` | Variable group names, on the task agent service |
 
 `selftest` additionally hits `_apis/connectionData?api-version=7.1-preview`, which is preview-only
 for the same reason.
@@ -151,6 +152,61 @@ while a release nests phase → deployment job → task. `Mapping.ReleaseFailedS
 same `FailedStepDto` the build side produces (`stage` = phase, `job` = job, `task` = task), so a
 failed deployment and a failed build read identically, `include_logs` works the same way, and
 passing tasks land in the same `skipped.succeeded`.
+
+### Configuration, not history
+
+`get_release`, `list_releases` and `deployment_status` all answer what a deploy *did*. None of them
+answers what it is *set up to do*, and the two are different questions with different consequences:
+a session needed to know whether the `Stripe Webhook` definition overrides a setting at deploy time
+or lets the checked-in `appsettings.json` value through, because if the pipeline substitutes it then
+editing that file is a silent no-op. The deployed value and the repository value were byte-identical,
+so no log could separate the cases. Only the definition could.
+
+`get_release_definition` reads one definition whole:
+
+- Variables at **both scopes** — definition and per environment — with `isSecret` and `allowOverride`.
+- The **variable groups** each scope pulls in, as id and name. Their contents are never read: a
+  group is a bag of values, half of them secret, and the question a definition raises is only which
+  ones it references. The names cost one extra request to the task agent service and that request is
+  the one place in this server where a failure is logged and swallowed — the ids identify the groups
+  without the names, and a permission this account happens not to have must not turn a definition
+  read into an error.
+- Per environment, the deploy phases and every task in them: name, version, disabled state, and
+  **inputs**.
+
+The inputs are the load-bearing part. A File Transform, Replace Tokens or JSON variable substitution
+task carries its target file globs in `inputs`, which is what answers "is `appsettings.json`
+transformed at all, and which keys are in scope" — a question no variable list can settle, because
+substitution can be driven by matching variable names against the file rather than by a per-key
+mapping. Inputs the definition left empty are dropped: a task's schema contributes every input it
+declares whether or not the definition set one.
+
+The listing endpoint returns a summary — no variables, no deploy phases — and there is no `$expand`
+that would carry them, so this is a by-id read. That is also why `search_release_definitions` costs
+one request per definition: it reads each one in full, caps the scan at
+`ReleaseConfig.ScanCap` (200) with a Warning, and sets `hasMore` rather than passing a capped scan
+off as complete. Thirteen definitions take about three seconds.
+
+**No tool returns a value Azure DevOps marked secret**, and that binds the passthrough too (see
+*The escape hatch*). A secret's name and `isSecret: true` are the whole answer. `search_release_definitions`
+will not match on a secret's value either, only its name — matching on a value the tool then refuses
+to return would leak it a bit at a time.
+
+### Task detail on a release
+
+`get_release` reports failures and counts what passed, which is right by default and wrong when the
+question is "what did this stage actually run". `include_tasks=true` lists every task of the latest
+attempt with its status and times, and `skipped.succeeded` then stops counting them — a task cannot
+be both listed and reported as filtered out.
+
+`task_log` fetches one task's log, which is frequently the most direct statement of what a deploy
+wrote (the File Transform task logs every key it substituted). Addressing one task is the fiddly
+part, because **neither half of a release task's identity is unique**: ids restart per stage, and a
+stage deploying to several machines runs the *same task name* more than once within itself — measured
+on a real release, where one production stage ran two tasks both called `File Transform:
+application.json`, ids 10 and 16, while id 10 in the other stage was `Finalize Job`. So `task_log`
+takes an id, a name, or `stage / id`, resolves the stage first when one is given, and lists the
+candidates with their ids when either half is ambiguous.
 
 ### Two ids for one stage
 
@@ -387,6 +443,55 @@ section there.
 **No TFVC path, release definition or heuristic from any one organization belongs in this
 repository.** Extend the mechanism, or regenerate the data.
 
+## The escape hatch and the credential
+
+Both of these exist because of how sessions fail rather than because of anything Azure DevOps
+offers.
+
+When a typed tool does not cover something, the next move is otherwise a shell and
+`AZURE_DEVOPS_PAT` — a second credential, usually a staler one, failing for a reason nobody has
+checked, while a live token sits unused in this process. `ado_api_request` makes the escape hatch
+another tool call:
+
+- **Only this organization is reachable.** A relative path is hung off the resolved host; an
+  absolute url is accepted only when its host and path prefix match one of the four hosts derived
+  from `ADO_MCP_ORG_URL`. The request carries this server's bearer token, so following a caller's
+  url anywhere else would hand that token over.
+- **`host` is inferred from the path** (`/_apis/release/` → vsrm, `/_apis/search/` → search,
+  `/_apis/identities` → vssps) and an explicit value wins. Getting it wrong is a 404 rather than a
+  redirect. Most resources are project-scoped, so a path usually starts with the project —
+  `Core/_apis/release/definitions/31`, not `_apis/release/definitions/31`.
+- **`api-version=7.1` is appended** when the path names no version, since the service refuses a
+  request without one and a caller who did not think about it wants what every other tool uses.
+- **`ApiRequest.Mask` walks the parsed body** and replaces the `value` of any object carrying
+  `isSecret: true` with `[redacted]`. The walk is over the shape rather than the endpoint, which is
+  the only way a passthrough can promise anything at all about a response it has no type for.
+- **`filter` is a projection, not jq**: dot-separated names, `[]` to map over an array (flattening
+  one level, so `environments[].deployPhases[].workflowTasks[].name` reads as one list) and `[n]` to
+  index one. Deliberately the smallest thing that turns a megabyte of definition into the field
+  that was asked about; a filter matching nothing yields `json: null`, which is an answer.
+- **Non-GET requires `ADO_MCP_ALLOW_WRITE=true`**, checked before anything else. The tool is
+  annotated `ReadOnly` because it reads under every configuration this server ships with; a client
+  gating confirmation on that annotation will not prompt for a write made through it with the gate
+  open, which is the reason the gate is there and the reason the description names it.
+
+`ado_auth_status` answers the other half: which credential, which app registration and tenant, when
+the token expires, which organization and project it resolves to, and who Azure DevOps says it is
+(`connectionData`, because a record can name an account the organization has never seen). A dead
+sign-in is reported as `signedIn: false` with the reason rather than thrown — "the credential is
+broken" is this tool's answer, and throwing would make it indistinguishable from the failures it is
+called to explain. If `AZURE_DEVOPS_PAT` is set it is probed separately and reported under `pat`;
+no `pat` field means the variable is unset, and the PAT is never used by any other tool.
+
+The probe is what turned an HTML page into one line. An expired token is answered with a whole
+error page — stylesheet, script, navigation — around a sentence like *"Access Denied: The Personal
+Access Token used has expired."* `Text.ErrorFromHtml` strips the script and style blocks (their
+contents are text too, and would otherwise be the first thing quoted), converts what is left, and
+keeps the first three lines capped at 300 characters. `AdoClient.ErrorAsync` uses it for any HTML
+error body, and falls back to a short plain-text body as well — a path sent to the wrong host
+answers `The controller for path '…' was not found`, which says considerably more than
+`Not Found (404)`.
+
 ## Caps
 
 | Cap | Value | Behaviour at the cap |
@@ -394,6 +499,8 @@ repository.** Extend the mechanism, or regenerate the data.
 | pull request scan | 500 | `hasMore` + Warning |
 | release definitions per project (`deployment_status`) | 500 | Warning: resolution may be incomplete |
 | release definitions per project (`list_release_definitions`) | `limit`, default 200, max 1000 | Paged to the limit |
+| release definitions read in full (`search_release_definitions`) | 200 | `hasMore` + Warning |
+| `ado_api_request` response | `max_chars`, default 20000, max 200000 | Returned as truncated text instead of json |
 | build definitions per project | 1000 | Warning: resolution may be incomplete |
 | environment deployment records | 100 | Reported as "no succeeded deployment in the last 100 records" |
 | TFVC paths searched per deployable | 10 | `hasMore` + Warning |
@@ -405,9 +512,10 @@ repository.** Extend the mechanism, or regenerate the data.
 
 Read: `list_projects`, `list_repos`, `list_pull_requests`, `get_pull_request`,
 `wait_for_pull_request`, `list_work_items`, `get_work_item`, `list_pipelines`, `list_pipeline_runs`,
-`get_pipeline_run`, `wait_for_pipeline_run`, `list_release_definitions`, `list_releases`,
+`get_pipeline_run`, `wait_for_pipeline_run`, `list_release_definitions`, `get_release_definition`,
+`search_release_definitions`, `list_releases`,
 `get_release`, `wait_for_release`, `search_code`, `search_work_items`, `search_wiki`,
-`deployment_status`.
+`deployment_status`, `ado_api_request`, `ado_auth_status`.
 
 Write (`ADO_MCP_ALLOW_WRITE=true`): `update_work_item`, `create_work_item`,
 `add_pull_request_comment`, `run_pipeline`, `deploy_release`.

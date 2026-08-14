@@ -173,6 +173,39 @@ internal sealed record WireReleaseApproval(
     DateTimeOffset? CreatedOn, DateTimeOffset? ModifiedOn, string? Comments, bool? IsAutomated,
     int? Rank, int? Attempt, WireReleaseRef? Release, WireReleaseRef? ReleaseEnvironment);
 
+// A release definition read whole (the by-id endpoint; the listing returns a summary). This is
+// where a classic pipeline says what it is configured to *do* rather than what it did: variables at
+// two scopes, the variable groups it pulls in, and per environment the phases and the tasks inside
+// them with their inputs. A variable arrives as a map entry name -> {value,isSecret,allowOverride},
+// and `variableGroups` is a list of bare ids at both scopes — the names cost a second request.
+
+internal sealed record WireReleaseVariable(string? Value, bool? IsSecret, bool? AllowOverride);
+
+internal sealed record WireReleaseDefinitionDetail(
+    int Id, string? Name, string? Path, string? Description, int? Revision,
+    Dictionary<string, WireReleaseVariable>? Variables, List<int>? VariableGroups,
+    List<WireReleaseDefEnvironmentDetail>? Environments, List<WireReleaseArtifact>? Artifacts);
+
+internal sealed record WireReleaseDefEnvironmentDetail(
+    int Id, string? Name, int? Rank,
+    Dictionary<string, WireReleaseVariable>? Variables, List<int>? VariableGroups,
+    List<WireDeployPhase>? DeployPhases);
+
+internal sealed record WireDeployPhase(
+    string? Name, int? Rank, string? PhaseType, List<WireWorkflowTask>? WorkflowTasks);
+
+/// <summary>
+/// One configured task. Not <see cref="WireReleaseTask"/>, which is one task as it *ran*: this is
+/// flat (<c>taskId</c>/<c>version</c> rather than a nested task reference) and carries the
+/// <c>inputs</c> that say which files a transform touches.
+/// </summary>
+internal sealed record WireWorkflowTask(
+    string? TaskId, string? Version, string? Name, bool? Enabled, string? Condition,
+    Dictionary<string, string?>? Inputs);
+
+/// <summary>A variable group as the task agent service lists it. Its variables are never read.</summary>
+internal sealed record WireVariableGroup(int Id, string? Name);
+
 internal sealed record WireBuildRepository(string? Type, string? Name, Dictionary<string, string>? Properties);
 
 /// <summary>A build definition read individually. The list shape (WirePipeline) has no repository.</summary>
@@ -406,6 +439,12 @@ public sealed record FailedStepDto(
 /// </summary>
 internal sealed record FailedStep(FailedStepDto Step, string? LogUrl);
 
+/// <summary>
+/// A listed release task paired with its own log url, for the same reason <see cref="FailedStep"/>
+/// carries one: the url is an API address rather than something the model should see.
+/// </summary>
+internal sealed record ReleaseTaskEntry(ReleaseTaskDto Task, string? LogUrl);
+
 // ------------------------------------------------------- classic release pipelines
 //
 // Kept in the vocabulary of the API and the deployment map: a *release definition* is the classic
@@ -472,9 +511,30 @@ public sealed record ReleaseEnvironmentDetailDto(
     DateTimeOffset? Finished,
     string? RequestedFor,
     List<PendingApprovalDto>? PendingApprovals,
-    List<FailedStepDto>? FailedSteps);
+    List<FailedStepDto>? FailedSteps,
+    // Every task of the latest attempt, only when include_tasks asked for them. A stage that
+    // succeeded reports nothing else about what it ran, and `skipped.succeeded` is a count.
+    List<ReleaseTaskDto>? Tasks);
 
 public sealed record PendingApprovalDto(int Id, string? Type, string? Approver, DateTimeOffset? Created);
+
+/// <summary>
+/// One task as it ran, listed rather than counted. <c>id</c> is what <c>task_log</c> takes — it is
+/// unique within a deployment attempt and repeats across stages, so that argument also accepts
+/// "stage / id" and lists the candidates rather than guessing. A substitution task's log is
+/// frequently the most direct statement of what value a deploy actually wrote, and it is only
+/// reachable this way: the failure path never sees it.
+/// </summary>
+public sealed record ReleaseTaskDto(
+    int Id,
+    string? Phase,
+    string? Job,
+    string? Name,
+    string? Status,
+    DateTimeOffset? Started,
+    DateTimeOffset? Finished,
+    string? LogTail,
+    bool? Truncated);
 
 /// <summary>
 /// The outcome of waiting for one stage of a release, shaped like the other waiters: the release
@@ -502,6 +562,121 @@ public sealed record ApprovalDto(
     string? ApprovedBy,
     string? Comments,
     DateTimeOffset? Modified);
+
+// ------------------------------------------------- what a release definition is configured to do
+//
+// The read tools above say what a release did. These say what it was set up to do, which is the
+// only thing that answers "would editing this file change what deploys" — a substitution task
+// carries its target files in its own inputs, and a variable list alone cannot settle it.
+//
+// A secret's value never appears here. `isSecret: true` with no `value` is the whole answer, and
+// the same rule holds for the passthrough tool (see Secrets.Mask).
+
+public sealed record ReleaseVariableDto(string Name, string? Value, bool? IsSecret, bool? AllowOverride);
+
+/// <summary>A referenced variable group: what it is, never what is in it.</summary>
+public sealed record VariableGroupDto(int Id, string? Name);
+
+/// <summary>
+/// One configured task. <c>inputs</c> is the load-bearing field — a File Transform, Replace Tokens
+/// or JSON substitution task names its target files there. Inputs the definition left empty are
+/// dropped, since a task's schema contributes dozens of them and an empty one says nothing.
+/// </summary>
+public sealed record ReleaseTaskConfigDto(
+    string? Name,
+    string? Version,
+    // Only when the task is switched off: enabled is the normal case and repeating it is noise.
+    bool? Disabled,
+    string? Condition,
+    Dictionary<string, string>? Inputs);
+
+public sealed record ReleaseDeployPhaseDto(string? Name, string? Type, List<ReleaseTaskConfigDto>? Tasks);
+
+/// <summary>
+/// One stage of a definition. <c>phases</c> is absent when the caller asked for no tasks, which is
+/// not the same as a stage that runs none — the omit-when-uninteresting rule cannot express that
+/// difference, so the tool's own description says which it is.
+/// </summary>
+public sealed record ReleaseDefinitionEnvironmentConfigDto(
+    int Id,
+    string? Name,
+    List<ReleaseVariableDto>? Variables,
+    List<VariableGroupDto>? VariableGroups,
+    List<ReleaseDeployPhaseDto>? Phases);
+
+public sealed record ReleaseDefinitionDetailDto(
+    int Id,
+    string? Name,
+    string? Folder,
+    string? Description,
+    List<ReleaseVariableDto>? Variables,
+    List<VariableGroupDto>? VariableGroups,
+    List<ReleaseArtifactDto>? Artifacts,
+    List<ReleaseDefinitionEnvironmentConfigDto> Environments,
+    string? WebUrl);
+
+/// <summary>
+/// One place a pattern matched across the project's release definitions. <c>environment</c> is
+/// absent when the match is at definition scope, <c>task</c> when it is a variable rather than a
+/// task input, and <c>value</c> when the variable is a secret.
+/// </summary>
+public sealed record ReleaseDefinitionMatchDto(
+    int DefinitionId,
+    string? Definition,
+    string? Environment,
+    string Kind,
+    string? Task,
+    string Key,
+    string? Value,
+    bool? IsSecret,
+    string MatchedIn,
+    string? WebUrl);
+
+/// <summary>
+/// <c>scanned</c> is how many definitions were actually read, which is what makes a nil result
+/// mean something: a capped scan sets <c>hasMore</c> rather than passing itself off as complete.
+/// </summary>
+public sealed record ReleaseDefinitionSearchResult(
+    List<ReleaseDefinitionMatchDto> Results, int Scanned, bool? HasMore);
+
+/// <summary>
+/// A raw REST response. <c>json</c> carries the parsed body when it is JSON and fits the cap;
+/// otherwise <c>text</c> carries it, <c>truncated</c> says so, and the way out is a narrower
+/// `filter` or the endpoint's own paging, not a bigger cap.
+/// </summary>
+public sealed record ApiResponseDto(
+    int Status,
+    string Url,
+    string? ContentType,
+    JsonElement? Json,
+    string? Text,
+    bool? Truncated);
+
+/// <summary>
+/// Which credential this server is using and whether it still works. Reported rather than thrown:
+/// "the sign-in is dead" is the answer this tool exists to give, so it is data, not a failure.
+/// </summary>
+public sealed record AuthStatusDto(
+    bool SignedIn,
+    string Credential,
+    string? Account,
+    string? Identity,
+    string? TenantId,
+    string? ClientId,
+    string? Authority,
+    DateTimeOffset? SignedInOn,
+    DateTimeOffset? TokenExpires,
+    int? TokenExpiresInMinutes,
+    string? Organization,
+    string? Project,
+    string? Error,
+    PatStatusDto? Pat);
+
+/// <summary>
+/// AZURE_DEVOPS_PAT, probed separately because sessions reach for it as a fallback when a tool
+/// fails and need to learn in one line that it is dead. Absent entirely when the variable is unset.
+/// </summary>
+public sealed record PatStatusDto(bool Valid, string? Identity, string? Error);
 
 // Search envelopes always carry `total`, the service's overall match count, so an empty result
 // list still says whether nothing matched (0) or the caller's limit cut the list short (paired
@@ -991,7 +1166,7 @@ internal static class Mapping
     /// The tasks only arrive when the release was read with <c>$expand=tasks</c>.
     /// </summary>
     internal static List<FailedStep> ReleaseFailedSteps(
-        WireReleaseEnvironment env, int maxErrors, SkipCounter counts)
+        WireReleaseEnvironment env, int maxErrors, SkipCounter counts, bool countSucceeded = true)
     {
         var failed = new List<FailedStep>();
         if (LatestAttempt(env) is not { } attempt)
@@ -1006,7 +1181,10 @@ internal static class Mapping
                 {
                     if (!IsReleaseTaskFailure(task.Status))
                     {
-                        if (IsReleaseTaskSuccess(task.Status))
+                        // A task that passed is skipped only while nothing else reports it.
+                        // include_tasks lists them, and then `skipped.succeeded` would be claiming
+                        // they were filtered out of a result they are sitting in.
+                        if (countSucceeded && IsReleaseTaskSuccess(task.Status))
                         {
                             counts.Succeeded++;
                         }
@@ -1080,7 +1258,7 @@ internal static class Mapping
     /// saying, which is why it does not live in the tool.
     /// </summary>
     internal static ReleaseEnvironmentDetailDto ReleaseEnvironment(
-        WireReleaseEnvironment env, List<FailedStepDto> failedSteps)
+        WireReleaseEnvironment env, List<FailedStepDto> failedSteps, List<ReleaseTaskDto>? tasks = null)
     {
         var attempt = LatestAttempt(env);
         var pending = PendingApprovals(env).Select(PendingApproval).ToList();
@@ -1104,7 +1282,38 @@ internal static class Mapping
             attempt is not null && IsTerminalEnvironmentStatus(env.Status) ? attempt.LastModifiedOn : null,
             attempt?.RequestedFor?.DisplayName,
             pending.Count > 0 ? pending : null,
-            failedSteps.Count > 0 ? failedSteps : null);
+            failedSteps.Count > 0 ? failedSteps : null,
+            tasks is { Count: > 0 } ? tasks : null);
+    }
+
+    /// <summary>
+    /// Every task of the stage's latest attempt, in the order it ran, with the phase and job it
+    /// sits under. Unlike <see cref="ReleaseFailedSteps"/> this lists what passed and what was
+    /// skipped as well: the caller asked what the stage runs, and "24 tasks succeeded" does not
+    /// answer that. Tasks only arrive when the release was read with <c>$expand=tasks</c>.
+    /// </summary>
+    internal static List<ReleaseTaskEntry> ReleaseTasks(WireReleaseEnvironment env)
+    {
+        var tasks = new List<ReleaseTaskEntry>();
+        if (LatestAttempt(env) is not { } attempt)
+        {
+            return tasks;
+        }
+        foreach (var phase in (attempt.ReleaseDeployPhases ?? []).OrderBy(p => p.Rank ?? 0))
+        {
+            foreach (var job in phase.DeploymentJobs ?? [])
+            {
+                foreach (var task in (job.Tasks ?? []).OrderBy(t => t.Rank ?? 0))
+                {
+                    tasks.Add(new ReleaseTaskEntry(
+                        new ReleaseTaskDto(
+                            task.Id, phase.Name, job.Job?.Name, task.Name, task.Status,
+                            task.StartTime, task.FinishTime, null, null),
+                        task.LogUrl));
+                }
+            }
+        }
+        return tasks;
     }
 
     /// <summary>
@@ -1147,6 +1356,95 @@ internal static class Mapping
         _ when status.Equals("undefined", StringComparison.OrdinalIgnoreCase) => false,
         _ => true,
     };
+
+    // ------------------------------------------- what a release definition is configured to do
+
+    /// <summary>
+    /// Definition- or environment-scope variables, sorted by name so two reads of the same
+    /// definition compare. A secret is reported by name with <c>isSecret</c> and no value — Azure
+    /// DevOps already returns null for one, and this makes that a rule rather than a courtesy.
+    /// </summary>
+    internal static List<ReleaseVariableDto>? ReleaseVariables(
+        Dictionary<string, WireReleaseVariable>? variables) =>
+        (variables ?? [])
+        .OrderBy(v => v.Key, StringComparer.OrdinalIgnoreCase)
+        .Select(v => new ReleaseVariableDto(
+            v.Key,
+            v.Value?.IsSecret is true ? null : v.Value?.Value,
+            v.Value?.IsSecret is true ? true : null,
+            // Overridable at queue time is the interesting case; the default is not.
+            v.Value?.AllowOverride is true ? true : null))
+        .ToList() is { Count: > 0 } list ? list : null;
+
+    /// <summary>
+    /// The groups a scope pulls in, id and name. The names come from a separate lookup that may
+    /// not have answered, in which case the id still identifies the group.
+    /// </summary>
+    internal static List<VariableGroupDto>? VariableGroups(
+        List<int>? ids, IReadOnlyDictionary<int, string> names) =>
+        (ids ?? [])
+        .Select(id => new VariableGroupDto(id, names.TryGetValue(id, out var name) ? name : null))
+        .ToList() is { Count: > 0 } groups ? groups : null;
+
+    /// <summary>
+    /// One configured task. Empty inputs are dropped: a task's schema contributes every input it
+    /// declares whether or not the definition set one, and an empty string says nothing that the
+    /// input's absence does not.
+    /// </summary>
+    internal static ReleaseTaskConfigDto TaskConfig(WireWorkflowTask task) => new(
+        task.Name,
+        task.Version,
+        task.Enabled is false ? true : null,
+        // "succeededContinueOnError" is what the designer writes for the default checkbox.
+        task.Condition is { Length: > 0 } condition &&
+        !condition.Equals("succeeded()", StringComparison.OrdinalIgnoreCase) &&
+        !condition.Equals("succeededContinueOnError", StringComparison.OrdinalIgnoreCase)
+            ? condition
+            : null,
+        (task.Inputs ?? [])
+            .Where(i => !string.IsNullOrWhiteSpace(i.Value))
+            .OrderBy(i => i.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(i => i.Key, i => i.Value!) is { Count: > 0 } inputs ? inputs : null);
+
+    internal static ReleaseDeployPhaseDto DeployPhase(WireDeployPhase phase) => new(
+        phase.Name,
+        phase.PhaseType,
+        (phase.WorkflowTasks ?? []).Select(TaskConfig).ToList() is { Count: > 0 } tasks ? tasks : null);
+
+    internal static ReleaseDefinitionEnvironmentConfigDto ReleaseDefinitionEnvironment(
+        WireReleaseDefEnvironmentDetail env, IReadOnlyDictionary<int, string> groupNames, bool includeTasks) => new(
+        env.Id,
+        env.Name,
+        ReleaseVariables(env.Variables),
+        VariableGroups(env.VariableGroups, groupNames),
+        includeTasks && (env.DeployPhases ?? []).OrderBy(p => p.Rank ?? 0).Select(DeployPhase).ToList()
+            is { Count: > 0 } phases
+            ? phases
+            : null);
+
+    /// <summary>
+    /// Every variable group id a definition references, at either scope, once each. This is what
+    /// the name lookup is asked for; the groups' contents are never read.
+    /// </summary>
+    internal static IReadOnlyList<int> ReferencedGroups(WireReleaseDefinitionDetail d) =>
+        [.. (d.VariableGroups ?? [])
+            .Concat((d.Environments ?? []).SelectMany(e => e.VariableGroups ?? []))
+            .Distinct()
+            .OrderBy(id => id)];
+
+    internal static ReleaseDefinitionDetailDto ReleaseDefinitionDetail(
+        WireReleaseDefinitionDetail d, IReadOnlyDictionary<int, string> groupNames, bool includeTasks,
+        string orgUrl, string? project) => new(
+        d.Id,
+        d.Name,
+        string.Equals(d.Path, "\\", StringComparison.Ordinal) ? null : d.Path,
+        TrimDescription(d.Description, d.Name),
+        ReleaseVariables(d.Variables),
+        VariableGroups(d.VariableGroups, groupNames),
+        (d.Artifacts ?? []).Select(ReleaseArtifact).ToList() is { Count: > 0 } artifacts ? artifacts : null,
+        (d.Environments ?? []).OrderBy(e => e.Rank ?? 0)
+            .Select(e => ReleaseDefinitionEnvironment(e, groupNames, includeTasks)).ToList(),
+        ReleaseDefinitionUrl(orgUrl, project, d.Id));
 
     // ----------------------------------------------------------------- search results
 

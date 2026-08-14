@@ -143,7 +143,10 @@ corrupts the JSON-RPC stream.
 | `Deployments.cs` | The deployment map's shape and validation, the vsrm host, TFVC mapping parsing, path containment |
 | `DataFiles.cs` | `DataFile<T>`: the one mechanism for externally configured data |
 | `Search.cs` | The almsearch host and the shared search request body |
-| `Text.cs` | HTML and Markdown to plain text, truncation |
+| `ReleaseConfig.cs` | A release definition flattened to the settings it holds, and the pattern match over them |
+| `ApiRequest.cs` | The passthrough's pure half: host resolution, the in-organization url guard, secret masking, the response projection |
+| `AuthStatus.cs` | Reading the persisted sign-in for reporting, and the AZURE_DEVOPS_PAT probe |
+| `Text.cs` | HTML and Markdown to plain text, truncation, the sentence inside an HTML error page |
 | `ToolListing.cs`, `Logging.cs`, `Install.cs`, `Call.cs` | As above |
 
 ## State and concurrency

@@ -51,6 +51,33 @@ internal static partial class Text
 
     private static string? Blank(string s) => s.Length == 0 ? null : s;
 
+    /// <summary>How much of an HTML error page is worth quoting. The message is at the top of it.</summary>
+    private const int ErrorLimit = 300;
+
+    /// <summary>
+    /// The readable part of an HTML error page, or null when the body is not one.
+    ///
+    /// Azure DevOps answers a rejected or expired credential with a whole page — stylesheet,
+    /// scripts, navigation — wrapped around a sentence like "Access Denied: The Personal Access
+    /// Token used has expired." Handed on verbatim, that sentence arrives buried in a page of
+    /// markup, several steps removed from the cause; the point of extracting it is that an auth
+    /// failure should read as one line wherever it surfaces. Script and style blocks go first
+    /// because their *contents* are text and would otherwise be the first thing quoted.
+    /// </summary>
+    internal static string? ErrorFromHtml(string? body)
+    {
+        if (body is null || body.TrimStart() is not { Length: > 0 } trimmed || trimmed[0] != '<')
+        {
+            return null;
+        }
+        var text = HtmlToText(ScriptStyleRegex().Replace(trimmed, " "));
+        var lines = text.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).Take(3).ToList();
+        var message = string.Join(" ", lines);
+        return message.Length == 0
+            ? null
+            : message.Length > ErrorLimit ? Cut(message, ErrorLimit) + "…" : message;
+    }
+
     internal static string HtmlToText(string html)
     {
         // Links carry what an agent acts on, so keep them as "text (url)".
@@ -124,6 +151,9 @@ internal static partial class Text
 
     [GeneratedRegex(@"<[^>]+>")]
     private static partial Regex TagRegex();
+
+    [GeneratedRegex(@"<(script|style)\b[^>]*>.*?</\1>", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex ScriptStyleRegex();
 
     [GeneratedRegex(@"\n{3,}")]
     private static partial Regex MultiNewlineRegex();

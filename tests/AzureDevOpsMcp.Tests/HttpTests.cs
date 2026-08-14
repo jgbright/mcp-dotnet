@@ -256,7 +256,7 @@ public class AdoClientTests : IDisposable
     {
         var client = Client(_ => new HttpResponseMessage(HttpStatusCode.BadGateway)
         {
-            Content = new StringContent("<html>gateway</html>"),
+            Content = new StringContent(""),
         });
 
         var e = await Assert.ThrowsAsync<AdoApiException>(
@@ -264,6 +264,50 @@ public class AdoClientTests : IDisposable
 
         Assert.Equal(502, e.Status);
         Assert.Contains("502", e.Message);
+    }
+
+    [Fact]
+    public async Task A_plain_text_failure_says_what_it_said()
+    {
+        // A path sent to the wrong host answers in plain text, and what it says is the whole
+        // diagnosis: "Not Found (404)" would leave a caller looking for a definition that exists.
+        var client = Client(_ => new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            Content = new StringContent(
+                "The controller for path '/_apis/release/definitions/31' was not found."),
+        });
+
+        var e = await Assert.ThrowsAsync<AdoApiException>(
+            () => client.GetAsync<ListResponse<WireProject>>("_apis/release/definitions/31", default));
+
+        Assert.Contains("The controller for path", e.Message);
+    }
+
+    [Fact]
+    public async Task An_html_error_page_is_reduced_to_the_sentence_inside_it()
+    {
+        // The failure this exists for: an expired credential is answered with a whole page, and
+        // the one line that says so arrives buried in markup several steps from the cause.
+        var client = Client(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent(
+                "<!DOCTYPE html><html><head><title>Azure DevOps Services</title>" +
+                "<style>body { font-family: sans-serif; }</style>" +
+                "<script>window.location='/signin';</script></head>" +
+                "<body><div class=\"error\">Access Denied: The Personal Access Token used has " +
+                "expired.</div></body></html>",
+                Encoding.UTF8, "text/html"),
+        });
+
+        var e = await Assert.ThrowsAsync<AdoApiException>(
+            () => client.GetAsync<ListResponse<WireProject>>("_apis/projects", default));
+
+        Assert.Equal(401, e.Status);
+        Assert.Equal("HtmlErrorPage", e.TypeKey);
+        Assert.Contains("Personal Access Token used has expired", e.Message);
+        // The stylesheet and the script are text too, and would otherwise be the first thing quoted.
+        Assert.DoesNotContain("font-family", e.Message);
+        Assert.DoesNotContain("window.location", e.Message);
     }
 
     [Fact]

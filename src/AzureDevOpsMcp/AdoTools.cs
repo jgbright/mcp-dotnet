@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using Azure.Identity;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
@@ -30,6 +31,12 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     /// <summary>The identity service (vssps host) is likewise preview-only.</summary>
     private const string IdentityApi = "api-version=7.1-preview.1";
+
+    /// <summary>
+    /// Variable groups are read from the task agent service, which is preview-only too — unlike
+    /// Release Management itself, whose endpoints all answer a bare 7.1.
+    /// </summary>
+    private const string VariableGroupsApi = "api-version=7.1-preview.2";
 
     /// <summary>
     /// Bodies echoed back from a write (the updated work item's description, the created comment)
@@ -619,6 +626,106 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         return definitions.Select(d => Mapping.ReleaseDefinition(d, client.OrgUrl, resolved.Name)).ToList();
     });
 
+    [McpServerTool(Name = "get_release_definition", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Read one classic release definition as configuration: what it is set up " +
+                 "to do, rather than what any release of it did. Returns its variables and the " +
+                 "variable groups it pulls in at definition scope, the same per environment, its " +
+                 "artifacts, and (include_tasks, on by default) each environment's deploy phases " +
+                 "with every task, its version, and its **inputs**. The inputs are the point: a File " +
+                 "Transform, Replace Tokens or JSON variable substitution task names the files it " +
+                 "rewrites there, which is the only thing that answers whether editing a checked-in " +
+                 "config file changes what is deployed — a variable list cannot, because " +
+                 "substitution can be driven by matching variable names against the file. A secret " +
+                 "variable comes back as its name with `isSecret: true` and no value, always. " +
+                 "Inputs a definition left empty are omitted. `definition` may be a numeric id or a " +
+                 "name; use list_release_definitions to find it.")]
+    public Task<ReleaseDefinitionDetailDto> GetReleaseDefinition(
+        [Description("Release definition id (number) or name")] string definition,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Include each environment's deploy phases and the tasks they run (default true)")] bool include_tasks = true,
+        CancellationToken ct = default) => Run("get_release_definition",
+        A("definition", definition) + A("project", project) + A("include_tasks", include_tasks), async () =>
+    {
+        var client = await ado.GetClientAsync(ct);
+        var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+        var resolved = await ResolveReleaseDefinitionAsync(client, vsrm, resolvedProject, definition, ct);
+        var wire = await ReadReleaseDefinitionAsync(client, vsrm, resolvedProject, resolved.Id, ct);
+        var groups = await VariableGroupNamesAsync(client, resolvedProject, Mapping.ReferencedGroups(wire), ct);
+        return Mapping.ReleaseDefinitionDetail(
+            wire, groups, include_tasks, client.OrgUrl, resolvedProject.Name);
+    });
+
+    [McpServerTool(Name = "search_release_definitions", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Find where a name or value appears across every classic release " +
+                 "definition in a project: in a variable at definition or environment scope, in a " +
+                 "task input, or both (`scope`). This is the one call that answers \"does anything " +
+                 "we deploy set this\" without reading each definition by hand. Each hit names the " +
+                 "definition, the environment when the match is environment-scoped, the task when it " +
+                 "is a task input, the key, the value, and whether it matched the name or the value. " +
+                 "A secret matches on its name only — its value is neither searched nor returned. " +
+                 "`pattern` is a case-insensitive substring unless regex=true. The scan reads each " +
+                 "definition in full, so it costs one request per definition and stops at a cap: " +
+                 "`hasMore` means it stopped early, and `scanned` says how many were actually read.")]
+    public Task<ReleaseDefinitionSearchResult> SearchReleaseDefinitions(
+        [Description("Name or text to look for, e.g. Stripe:ApiVersion")] string pattern,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Where to look: variables, task_inputs, or both (default both)")] string scope = "both",
+        [Description("Treat `pattern` as a regular expression (default false)")] bool regex = false,
+        [Description("Maximum matches to return (default 50, max 500)")] int limit = 50,
+        CancellationToken ct = default) => Run("search_release_definitions",
+        A("pattern", pattern) + A("project", project) + A("scope", scope) + A("regex", regex) +
+        A("limit", limit), async () =>
+    {
+        limit = Math.Clamp(limit, 1, 500);
+        var (variables, taskInputs) = ReleaseConfig.ParseScope(scope);
+        var matcher = ReleaseConfig.Matcher(pattern, regex);
+
+        var client = await ado.GetClientAsync(ct);
+        var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+
+        // One over the cap, so "there are more definitions than were read" is answered without a
+        // second request — the same shape every other bounded scan in this server uses.
+        var definitions = await ListReleaseDefinitionsInternal(
+            client, vsrm, resolvedProject.Id, ReleaseConfig.ScanCap + 1, ct);
+        var capped = definitions.Count > ReleaseConfig.ScanCap;
+        if (capped)
+        {
+            log.Line(LogLevel.Warning, Ev.Page,
+                "release definition scan capped" + A("cap", ReleaseConfig.ScanCap) +
+                A("found", definitions.Count) + A("project", resolvedProject.Name));
+        }
+
+        var results = new List<ReleaseDefinitionMatchDto>();
+        var scanned = 0;
+        var truncated = false;
+        foreach (var summary in definitions.Take(ReleaseConfig.ScanCap))
+        {
+            if (results.Count >= limit)
+            {
+                truncated = true;
+                break;
+            }
+            var wire = await ReadReleaseDefinitionAsync(
+                client, vsrm, resolvedProject,
+                summary.Id.ToString(CultureInfo.InvariantCulture), ct);
+            scanned++;
+            foreach (var hit in ReleaseConfig.Matches(
+                         wire, variables, taskInputs, matcher,
+                         Mapping.ReleaseDefinitionUrl(client.OrgUrl, resolvedProject.Name, wire.Id)))
+            {
+                if (results.Count >= limit)
+                {
+                    truncated = true;
+                    break;
+                }
+                results.Add(hit);
+            }
+        }
+        return new ReleaseDefinitionSearchResult(results, scanned, capped || truncated ? true : null);
+    });
+
     [McpServerTool(Name = "list_releases", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. List the releases of one classic release definition, newest first, each " +
                  "with the status of every environment it has. This is how to see what is deployed " +
@@ -664,7 +771,11 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "no `failed` status: a deployment that failed reports as `rejected` with " +
                  "`operationStatus: PhaseFailed`, which is what tells it apart from an approval " +
                  "somebody turned down. " +
-                 "`skipped.succeeded` counts the tasks that are not reported because they passed.")]
+                 "`skipped.succeeded` counts the tasks that are not reported because they passed; " +
+                 "set include_tasks=true to list every task each stage ran instead of counting the " +
+                 "ones that passed, and task_log=<id or 'stage / task'> to fetch one of their logs, " +
+                 "which is how to see what a substitution task actually wrote. What a definition is " +
+                 "configured to do, as opposed to what this release did, is get_release_definition.")]
     public Task<ReleaseDetailDto> GetRelease(
         [Description("Release id (the number in the release name's URL, not the definition id)")] int release_id,
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
@@ -672,16 +783,20 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Lines of log to keep per failed task (default 40)")] int log_tail_lines = 40,
         [Description("Maximum failed tasks to report per environment (default 5)")] int max_failed = 5,
         [Description("Maximum error messages per failed task (default 5)")] int max_errors = 5,
+        [Description("List every task each stage ran, not only the failures (default false)")] bool include_tasks = false,
+        [Description("Fetch the log tail of one listed task: its id, its name, or 'stage / id' when " +
+                     "an id or a name appears in more than one stage; implies include_tasks")] string? task_log = null,
         CancellationToken ct = default) => Run("get_release",
         A("release_id", release_id) + A("project", project) + A("include_logs", include_logs) +
-        A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors),
+        A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors) +
+        A("include_tasks", include_tasks) + A("task_log", task_log),
         async () =>
     {
         var client = await ado.GetClientAsync(ct);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
         return await ReadReleaseAsync(
             client, Deployments.VsrmBaseUrl(client.OrgUrl), resolvedProject, release_id,
-            include_logs, log_tail_lines, max_failed, max_errors, ct);
+            include_logs, log_tail_lines, max_failed, max_errors, include_tasks, task_log, ct);
     });
 
     /// <summary>
@@ -691,19 +806,43 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// </summary>
     private async Task<ReleaseDetailDto> ReadReleaseAsync(
         AdoClient client, string vsrm, Named project, int releaseId, bool includeLogs,
-        int logTailLines, int maxFailed, int maxErrors, CancellationToken ct)
+        int logTailLines, int maxFailed, int maxErrors, bool includeTasks, string? taskLog,
+        CancellationToken ct)
     {
         maxFailed = Math.Clamp(maxFailed, 1, 50);
         maxErrors = Math.Clamp(maxErrors, 1, 50);
         logTailLines = Math.Clamp(logTailLines, 0, 500);
+        // Naming a task to fetch presupposes the list it was named from, so asking for one is
+        // asking for the other. Refusing the combination would only make the caller call twice.
+        includeTasks = includeTasks || taskLog is { Length: > 0 };
 
         var release = await ReadReleaseWireAsync(client, vsrm, project, releaseId, ct);
         var counts = new SkipCounter();
         var environments = new List<ReleaseEnvironmentDetailDto>();
+        var ordered = (release.Environments ?? []).OrderBy(e => e.Rank ?? 0).ToList();
+        var tasks = ordered.Select(e => includeTasks ? Mapping.ReleaseTasks(e) : []).ToList();
 
-        foreach (var env in (release.Environments ?? []).OrderBy(e => e.Rank ?? 0))
+        if (taskLog is { Length: > 0 } && logTailLines > 0)
         {
-            var failed = Mapping.ReleaseFailedSteps(env, maxErrors, counts);
+            var (envIndex, taskIndex) = ResolveReleaseTask(ordered, tasks, taskLog);
+            var entry = tasks[envIndex][taskIndex];
+            if (entry.LogUrl is not { } url)
+            {
+                throw new McpException(
+                    $"Task '{entry.Task.Name}' in '{ordered[envIndex].Name}' has no log — its status is " +
+                    $"'{entry.Task.Status}', so it did not run.");
+            }
+            var (tail, truncated) = Mapping.LogTail(await client.GetTextAsync(url, ct), logTailLines);
+            tasks[envIndex][taskIndex] =
+                entry with { Task = entry.Task with { LogTail = tail, Truncated = truncated } };
+        }
+
+        for (var index = 0; index < ordered.Count; index++)
+        {
+            var env = ordered[index];
+            // A task that passed is only "skipped" while nothing reports it. With include_tasks it
+            // is in the result, and counting it again would say it was filtered out.
+            var failed = Mapping.ReleaseFailedSteps(env, maxErrors, counts, countSucceeded: !includeTasks);
             var reported = failed.Take(maxFailed).Select(f => f.Step).ToList();
             if (includeLogs && logTailLines > 0)
             {
@@ -718,7 +857,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                 }
             }
 
-            environments.Add(Mapping.ReleaseEnvironment(env, reported));
+            environments.Add(Mapping.ReleaseEnvironment(
+                env, reported, [.. tasks[index].Select(t => t.Task)]));
         }
 
         return Mapping.ReleaseDetail(
@@ -726,9 +866,131 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     }
 
     /// <summary>
+    /// Which listed task <c>task_log</c> named, as an index into the per-stage lists.
+    ///
+    /// Neither half of a release task's identity is unique on its own, which is why this is not
+    /// one call to <see cref="Resolve"/>: an id is unique within a deployment attempt and repeats
+    /// across stages, and a stage deploying to several machines runs the *same task name* more
+    /// than once within itself (measured — two "File Transform" tasks in one production stage).
+    /// So an optional "stage / …" prefix scopes the search, an id is matched inside that scope,
+    /// and a name goes through the shared lenient rule against candidates carrying their own id,
+    /// so an ambiguous name is answered by a list that says how to pick.
+    /// </summary>
+    internal (int Environment, int Task) ResolveReleaseTask(
+        IReadOnlyList<WireReleaseEnvironment> environments,
+        IReadOnlyList<List<ReleaseTaskEntry>> tasks,
+        string input)
+    {
+        var slash = input.IndexOf('/', StringComparison.Ordinal);
+        var stage = slash < 0 ? null : input[..slash].Trim();
+        var wanted = (slash < 0 ? input : input[(slash + 1)..]).Trim();
+
+        var scope = Enumerable.Range(0, environments.Count).ToList();
+        if (stage is { Length: > 0 })
+        {
+            var stages = environments
+                .Select(e => new Named(e.Id.ToString(CultureInfo.InvariantCulture), e.Name ?? ""))
+                .ToList();
+            var resolvedStage = Resolve(stage, IsNumber, stages, "environment", log);
+            scope = [.. scope.Where(i => stages[i].Id == resolvedStage.Id || stages[i].Name == resolvedStage.Name)];
+            if (scope.Count == 0)
+            {
+                throw new McpException(
+                    $"This release has no stage '{stage}'. Available: " +
+                    string.Join(", ", stages.Select(s => s.Name)));
+            }
+        }
+
+        var candidates = new List<Named>();
+        var positions = new List<(int Environment, int Task)>();
+        foreach (var e in scope)
+        {
+            for (var t = 0; t < tasks[e].Count; t++)
+            {
+                var task = tasks[e][t].Task;
+                // The id is part of the candidate's name, so two tasks that share a name are still
+                // two distinct candidates and the ambiguity message says which id each one has.
+                candidates.Add(new Named(
+                    task.Id.ToString(CultureInfo.InvariantCulture),
+                    $"{environments[e].Name} / {task.Name} #{task.Id}"));
+                positions.Add((e, t));
+            }
+        }
+        if (candidates.Count == 0)
+        {
+            throw new McpException(
+                "This release reports no tasks in scope. Tasks arrive only for a stage that has " +
+                "started deploying, so there is nothing to fetch a log for.");
+        }
+
+        if (IsNumber(wanted))
+        {
+            var byId = Enumerable.Range(0, candidates.Count).Where(k => candidates[k].Id == wanted).ToList();
+            return byId switch
+            {
+                [var only] => positions[only],
+                [] => throw new McpException(
+                    $"No task with id {wanted}. Available: " +
+                    string.Join(", ", candidates.Select(c => c.Name))),
+                _ => throw new McpException(
+                    $"Task id {wanted} belongs to more than one stage: " +
+                    string.Join(", ", byId.Select(k => candidates[k].Name)) +
+                    $". Prefix it with the stage, e.g. '{environments[positions[byId[0]].Environment].Name} / {wanted}'."),
+            };
+        }
+
+        var resolved = Resolve(wanted, _ => false, candidates, "release task", log);
+        return positions[candidates.FindIndex(c => c.Name == resolved.Name)];
+    }
+
+    /// <summary>
     /// The release itself. <c>$expand=tasks</c> is what makes the per-task detail arrive; without
     /// it every deployment looks like it ran no steps at all.
     /// </summary>
+    /// <summary>
+    /// One release definition in full. The listing endpoint answers with a summary — no variables,
+    /// no deploy phases — so the by-id read is what "how is this configured" costs, and there is
+    /// no <c>$expand</c> that would let the listing carry it.
+    /// </summary>
+    private static async Task<WireReleaseDefinitionDetail> ReadReleaseDefinitionAsync(
+        AdoClient client, string vsrm, Named project, string definitionId, CancellationToken ct) =>
+        await client.GetAsync<WireReleaseDefinitionDetail>(
+            $"{vsrm}/{Escape(project.Id)}/_apis/release/definitions/{Escape(definitionId)}?{Api}", ct);
+
+    /// <summary>
+    /// Names for the variable groups a definition references, which arrive as bare ids. The groups
+    /// themselves are never read into a result: a variable group is a bag of values, half of them
+    /// secret, and the question a definition raises is only which ones it pulls in.
+    ///
+    /// A failure here is logged and swallowed, alone in this server: the names are a convenience,
+    /// the ids identify the groups without them, and a permission this account happens not to have
+    /// on the task agent service must not turn a definition read into an error.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<int, string>> VariableGroupNamesAsync(
+        AdoClient client, Named project, IReadOnlyList<int> ids, CancellationToken ct)
+    {
+        if (ids.Count == 0)
+        {
+            return new Dictionary<int, string>();
+        }
+        try
+        {
+            var response = await client.GetAsync<ListResponse<WireVariableGroup>>(
+                $"{Escape(project.Id)}/_apis/distributedtask/variablegroups?{VariableGroupsApi}" +
+                $"&groupIds={string.Join(",", ids)}", ct);
+            return (response.Value ?? [])
+                .Where(g => g.Name is { Length: > 0 })
+                .ToDictionary(g => g.Id, g => g.Name!);
+        }
+        catch (AdoApiException e)
+        {
+            log.Line(LogLevel.Warning, Ev.ToolFail,
+                "variable group names unavailable; reporting ids only" +
+                A("groups", string.Join(",", ids)) + A("status", e.Status) + A("reason", e.Message));
+            return new Dictionary<int, string>();
+        }
+    }
+
     private static async Task<WireRelease> ReadReleaseWireAsync(
         AdoClient client, string vsrm, Named project, int releaseId, CancellationToken ct) =>
         await client.GetAsync<WireRelease>(
@@ -789,7 +1051,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                     A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
                 return new ReleaseWaitResult(
                     await ReadReleaseAsync(client, vsrm, resolvedProject, release_id, include_logs,
-                        log_tail_lines, max_failed, max_errors, ct),
+                        log_tail_lines, max_failed, max_errors, includeTasks: false, taskLog: null, ct),
                     env.Name, (int)sw.Elapsed.TotalSeconds, TimedOut: null);
             }
 
@@ -801,7 +1063,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                     A("status", current?.Status) + A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
                 return new ReleaseWaitResult(
                     await ReadReleaseAsync(client, vsrm, resolvedProject, release_id, include_logs,
-                        log_tail_lines, max_failed, max_errors, ct),
+                        log_tail_lines, max_failed, max_errors, includeTasks: false, taskLog: null, ct),
                     env.Name, (int)sw.Elapsed.TotalSeconds, TimedOut: true);
             }
 
@@ -1409,6 +1671,143 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             hasMore ? true : null, null, null);
     }
 
+    // ------------------------------------------------------- escape hatch and diagnostics
+    //
+    // Two tools that exist because of how sessions fail rather than because of what Azure DevOps
+    // offers. When a typed tool does not cover something the next move is otherwise a shell and a
+    // personal access token — a second credential, usually a stale one, failing for a reason
+    // nobody has checked. So the escape hatch is another tool call on the credential this server
+    // already holds, and the credential itself can be asked whether it works.
+
+    [McpServerTool(Name = "ado_api_request", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only by default. Call one Azure DevOps REST endpoint directly, using this " +
+                 "server's own credential, for the case a typed tool does not cover. Prefer a typed " +
+                 "tool when one fits: this returns the service's raw shape, which is large and " +
+                 "unfiltered. `path` is relative to the organization and only this organization can " +
+                 "be addressed; most resources are project-scoped, so the path usually starts with " +
+                 "the project — Core/_apis/release/definitions/31, not _apis/release/definitions/31, " +
+                 "which answers 404. `host` " +
+                 "picks which host answers — core, vsrm, search or vssps — and is inferred from the " +
+                 "path when omitted; getting it wrong is the classic 404, because releases and " +
+                 "release definitions live on vsrm and nothing redirects. api-version=7.1 is added " +
+                 "when the path does not name one. `filter` narrows the response: dot-separated " +
+                 "property names with [] to map over an array and [n] to index one, e.g. " +
+                 "value[].name — it is a projection, not jq, and matching nothing yields json: null. " +
+                 "Values Azure DevOps marks secret come back as \"[redacted]\". A response larger " +
+                 "than max_chars is returned as truncated text instead of json, which a narrower " +
+                 "`filter` or the endpoint's own $top is the way out of. Any method other than GET " +
+                 "or HEAD requires ADO_MCP_ALLOW_WRITE=true in this server's environment and is " +
+                 "refused otherwise, which no retry will change.")]
+    public Task<ApiResponseDto> AdoApiRequest(
+        [Description("Path relative to the organization, e.g. _apis/release/definitions/31")] string path,
+        [Description("HTTP method (default GET; anything but GET/HEAD needs ADO_MCP_ALLOW_WRITE=true)")] string method = "GET",
+        [Description("Extra query string, e.g. $expand=environments&$top=10")] string? query = null,
+        [Description("JSON request body, for a non-GET method")] string? body = null,
+        [Description("Projection over the response, e.g. value[].name")] string? filter = null,
+        [Description("Which host answers: core, vsrm, search, vssps; inferred from the path when omitted")] string? host = null,
+        [Description("Maximum characters of response to return (default 20000)")] int max_chars = 20000,
+        CancellationToken ct = default) => Run("ado_api_request",
+        A("path", path) + A("method", method) + A("query", query) + A("filter", filter) +
+        A("host", host) + A("max_chars", max_chars) + AdoMcpLog.ContentArg("body", body), async () =>
+    {
+        max_chars = Math.Clamp(max_chars, 500, 200_000);
+        // The gate is consulted before anything else, exactly as the write tools do it: a refusal
+        // must not depend on whether the rest of the arguments happened to be valid.
+        var verb = ApiRequest.Method(method);
+        var client = await ado.GetClientAsync(ct);
+        var url = ApiRequest.Url(client.OrgUrl, path, query, host);
+
+        var raw = await client.SendRawAsync(verb, url, body, ct);
+        var trimmed = raw.Body.TrimStart();
+        var isJson = trimmed.Length > 0 && trimmed[0] is '{' or '[';
+        if (!isJson)
+        {
+            var (text, truncated) = Text.Truncate(raw.Body, max_chars);
+            return new ApiResponseDto(
+                raw.Status, url, raw.ContentType, null,
+                text is { Length: > 0 } ? text : null, truncated);
+        }
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(raw.Body);
+        // Masking runs before the filter, so a projection cannot reach past it.
+        var masked = ApiRequest.Mask(node);
+        var projected = filter is { Length: > 0 } ? ApiRequest.Filter(masked, filter) : masked;
+        var json = projected?.ToJsonString() ?? "null";
+        return json.Length > max_chars
+            ? new ApiResponseDto(
+                raw.Status, url, raw.ContentType, null, Text.Cut(json, max_chars), true)
+            : new ApiResponseDto(
+                raw.Status, url, raw.ContentType,
+                JsonSerializer.SerializeToElement(projected), null, null);
+    });
+
+    [McpServerTool(Name = "ado_auth_status", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Which credential this server is using and whether it still works: the " +
+                 "signed-in account, the app registration and tenant it was issued to, when the " +
+                 "current token expires, the organization and default project it resolves to, and " +
+                 "the identity Azure DevOps says it is. A dead sign-in is reported as " +
+                 "signedIn: false with the reason, not as a failure — that is the answer. If " +
+                 "AZURE_DEVOPS_PAT is set in this server's environment it is probed separately and " +
+                 "reported under `pat`; it is never used by any other tool, and no `pat` field at " +
+                 "all means the variable is unset. Call this before concluding that a failing tool " +
+                 "means Azure DevOps is down, and before falling back to a personal access token.")]
+    public Task<AuthStatusDto> AdoAuthStatus(CancellationToken ct = default) =>
+        Run("ado_auth_status", "", async () =>
+    {
+        var record = await AuthStatus.ReadRecordAsync(ct);
+        var signedOn = File.Exists(AdoContext.RecordPath)
+            ? new DateTimeOffset(File.GetLastWriteTimeUtc(AdoContext.RecordPath), TimeSpan.Zero)
+            : (DateTimeOffset?)null;
+
+        var organization = AdoContext.OrgUrlSetting;
+        string? identity = null;
+        string? project = null;
+        string? error = null;
+        DateTimeOffset? expires = null;
+        var signedIn = false;
+        try
+        {
+            var client = await ado.GetClientAsync(ct);
+            organization = client.OrgUrl;
+            expires = await ado.TokenExpiresOnAsync(ct);
+            // connectionData is what the organization itself says this token is, which is the
+            // claim that matters: a record can name an account the organization has never seen.
+            var me = await client.GetAsync<WireConnectionData>(
+                "_apis/connectionData?api-version=7.1-preview", ct);
+            identity = me.AuthenticatedUser?.DisplayName
+                       ?? me.AuthenticatedUser?.ProviderDisplayName
+                       ?? me.AuthenticatedUser?.UniqueName;
+            signedIn = true;
+            if (AdoContext.DefaultProject is not null)
+            {
+                project = (await ResolveProjectAsync(client, null, ct)).Name;
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // Reported, not thrown: "the credential is dead" is this tool's answer, and throwing
+            // would make it indistinguishable from the failures it is called to explain.
+            error = $"{e.GetType().Name}: {e.Message}";
+            log.Line(LogLevel.Warning, Ev.AuthFail, "auth status reports a broken credential", e);
+        }
+
+        return new AuthStatusDto(
+            signedIn,
+            "Entra ID delegated user token, acquired silently from the persisted MSAL cache",
+            record?.Username,
+            identity,
+            record?.TenantId ?? Environment.GetEnvironmentVariable("ADO_MCP_TENANT_ID"),
+            record?.ClientId ?? Environment.GetEnvironmentVariable("ADO_MCP_CLIENT_ID"),
+            record?.Authority,
+            signedOn,
+            expires,
+            expires is { } when_ ? (int)(when_ - DateTimeOffset.UtcNow).TotalMinutes : null,
+            organization,
+            project,
+            error,
+            await AuthStatus.ProbePatAsync(log, ct));
+    });
+
     // ------------------------------------------------- write tools (ADO_MCP_ALLOW_WRITE)
     //
     // Every tool below mutates something other people can see, so every one calls
@@ -1710,7 +2109,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         // and the post-write state a caller wants is the release as get_release would report it.
         return await ReadReleaseAsync(
             client, vsrm, resolvedProject, release_id,
-            includeLogs: false, logTailLines: 0, maxFailed: 5, maxErrors: 5, ct);
+            includeLogs: false, logTailLines: 0, maxFailed: 5, maxErrors: 5,
+            includeTasks: false, taskLog: null, ct);
     });
 
     // Approving is not covered by the write gate (see AdoContext.ApprovalEnabled): it acts as the
@@ -1761,7 +2161,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             Mapping.Approval(updated),
             await ReadReleaseAsync(
                 client, vsrm, resolvedProject, release_id,
-                includeLogs: false, logTailLines: 0, maxFailed: 5, maxErrors: 5, ct));
+                includeLogs: false, logTailLines: 0, maxFailed: 5, maxErrors: 5,
+                includeTasks: false, taskLog: null, ct));
     });
 
     /// <summary>
@@ -1938,6 +2339,25 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         PullRequestCommentResult c =>
             A("pullRequest", c.PullRequestId) + A("thread", c.ThreadId) +
             AdoMcpLog.ContentArg("comment", c.Comment.Body),
+        ReleaseDefinitionDetailDto d =>
+            A("definition", d.Id) + A("name", d.Name) +
+            A("variables", d.Variables?.Count ?? 0) +
+            A("variableGroups", d.VariableGroups?.Count ?? 0) +
+            A("environments", d.Environments.Count) +
+            A("tasks", d.Environments.Sum(e => e.Phases?.Sum(p => p.Tasks?.Count ?? 0) ?? 0)) +
+            A("secrets", d.Variables?.Count(v => v.IsSecret is true) ?? 0),
+        ReleaseDefinitionSearchResult s =>
+            A("results", s.Results.Count) + A("scanned", s.Scanned) +
+            (s.HasMore is true ? A("hasMore", true) : ""),
+        ApiResponseDto a =>
+            A("status", a.Status) + A("contentType", a.ContentType) +
+            A("chars", a.Json?.GetRawText().Length ?? a.Text?.Length ?? 0) +
+            (a.Truncated is true ? A("truncated", true) : ""),
+        AuthStatusDto a =>
+            A("signedIn", a.SignedIn) + A("account", a.Account) + A("identity", a.Identity) +
+            A("tokenExpires", a.TokenExpires) + A("organization", a.Organization) +
+            A("project", a.Project) + A("error", a.Error) +
+            (a.Pat is null ? "" : A("pat.valid", a.Pat.Valid)),
         System.Collections.ICollection c => A("count", c.Count),
         _ => "",
     };

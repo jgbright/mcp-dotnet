@@ -336,6 +336,18 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         it, and each environment deploys separately. A release definition never appears in
         list_pipelines, so "not found" there is not evidence it does not exist.
 
+        A release is history and a release definition is configuration, and only the second one says
+        what a deploy is set up to do — which variables it overrides and which files its tasks
+        rewrite. get_release_definition reads one, search_release_definitions finds either across the
+        project. No tool returns a value Azure DevOps marks secret; the name and `isSecret` are the
+        whole answer, and asking again another way will not produce it.
+
+        When no tool covers what is needed, ado_api_request calls the REST API with this server's own
+        credential rather than sending you looking for a personal access token, which is how a
+        session ends up debugging a second, staler credential instead of the question it started
+        with. ado_auth_status says whether this server's credential still works, and reports a dead
+        one as an answer rather than a failure.
+
         The write tools (create_work_item, update_work_item, add_pull_request_comment, run_pipeline,
         deploy_release, approve_release) refuse unless ADO_MCP_ALLOW_WRITE=true in this server's
         environment, and approve_release needs ADO_MCP_ALLOW_APPROVE=true as well. Those refusals are

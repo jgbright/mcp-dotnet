@@ -87,6 +87,29 @@ every result to say nothing.
 The server instructions tell the model how to read that silence: *an omitted field means "nothing
 to say", not "unknown".*
 
+## A secret's value is not output
+
+Where the service marks a value secret, tools return the name and the flag and stop. The Azure
+DevOps server's release definitions hold `whsec_` and `sk_` values, and a tool that leaks one into a
+transcript is worse than no tool: a transcript outlives the call, and the value cannot be un-said.
+
+This is a rule about the *shape* rather than about particular endpoints, which is what makes it hold
+where a type does not:
+
+- Typed results null the value and keep `isSecret: true` (`Mapping.ReleaseVariables`).
+- `ado_api_request` walks the parsed response and replaces the `value` of any object carrying
+  `isSecret: true` with `[redacted]` (`ApiRequest.Mask`) — the same rule applied to a body this
+  server has no type for.
+- A search over configuration matches a secret on its **name only** (`ReleaseConfig.Matches`).
+  Matching on a value that is then withheld would leak it a bit at a time: a caller could ask
+  whether it starts with `whsec_` and be told.
+- Nothing that holds a secret is expanded for decoration. A referenced variable group is reported as
+  id and name; its variables are never read.
+
+Heuristics on the value — masking anything that *looks* like a key — are deliberately not part of
+this. They would hide `$(Stripe.ApiKey)` in a task input, which is exactly what the caller needs to
+see, while still missing whatever the heuristic did not anticipate.
+
 ## Skipped, not dropped
 
 Anything filtered out is counted in a `skipped` envelope via `SkipCounter`, so a caller can tell
@@ -276,6 +299,7 @@ twice, once in the instructions and once in the listing.
 - [ ] `limit` clamped; a client-side filter capped and the cap logged as a Warning
 - [ ] Bodies converted to plain text, truncated at `body_limit`, flagged `truncated`
 - [ ] Filtered records counted into `skipped`
+- [ ] Anything the service marks secret returned as name + flag, never as a value
 - [ ] DTO fields nullable and nulled when uninteresting
 - [ ] `Describe` extended so `tool.ok` summarizes the new result type
 - [ ] Long-running? Added to `ToolExecution.LongRunning`, bounds its own wait, returns `timedOut`

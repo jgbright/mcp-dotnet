@@ -95,6 +95,52 @@ public class ToolOutputShapeTests
     }
 
     [Fact]
+    public void A_secret_variable_serializes_to_its_name_and_the_flag()
+    {
+        var json = Serialize(new ReleaseVariableDto("Stripe.WebhookSecret", null, true, null));
+
+        Assert.False(Has(json, "value"));
+        Assert.False(Has(json, "allowOverride"));
+        Assert.True(json.GetProperty("isSecret").GetBoolean());
+        Assert.Equal(2, json.EnumerateObject().Count());
+    }
+
+    [Fact]
+    public void An_ordinary_variable_carries_no_flags_at_all()
+    {
+        var json = Serialize(new ReleaseVariableDto("OTEL_SERVICE_NAME", "Stripe Webhook", null, null));
+
+        Assert.False(Has(json, "isSecret"));
+        Assert.Equal(2, json.EnumerateObject().Count());
+    }
+
+    [Fact]
+    public void An_api_response_that_fit_carries_json_and_no_text()
+    {
+        var json = Serialize(new ApiResponseDto(
+            200, "https://vsrm.dev.azure.com/contoso/Core/_apis/release/definitions/31",
+            "application/json", JsonSerializer.Deserialize<JsonElement>("""{"id":31}"""), null, null));
+
+        Assert.False(Has(json, "text"));
+        Assert.False(Has(json, "truncated"));
+        Assert.Equal(31, json.GetProperty("json").GetProperty("id").GetInt32());
+    }
+
+    [Fact]
+    public void An_unset_personal_access_token_is_absent_rather_than_invalid()
+    {
+        // A `pat: {valid: false}` where the variable is simply unset would read as a broken
+        // credential somebody was meant to have set.
+        var json = Serialize(new AuthStatusDto(
+            true, "Entra ID", "jason@contoso.com", "Jason Bright", null, null, null, null,
+            null, null, "https://dev.azure.com/contoso", "Core", null, null));
+
+        Assert.False(Has(json, "pat"));
+        Assert.False(Has(json, "error"));
+        Assert.True(json.GetProperty("signedIn").GetBoolean());
+    }
+
+    [Fact]
     public void A_run_that_is_still_going_omits_the_result_rather_than_sending_null()
     {
         var json = Serialize(new PipelineRunDto(77, "20260701.3", "inProgress", null, null, null, null, null, null));

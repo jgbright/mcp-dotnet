@@ -34,6 +34,24 @@ than an error if assumed away:
   has since gone green still carries the failed first attempt. `Mapping.LatestAttempt` takes the
   highest, and the DTO reports `attempt` only when it is not 1.
 
+**A release definition is configuration and a release is history**, and the tools that read the
+first one have their own traps:
+- **The listing is a summary and there is no `$expand` that carries the rest.** Variables and deploy
+  phases arrive only from the by-id read, which is why `search_release_definitions` costs one
+  request per definition and caps its scan.
+- **Neither half of a release task's identity is unique.** Ids restart per stage, and a stage
+  deploying to several machines runs the *same task name* twice within itself — measured: one
+  production stage with two `File Transform: application.json` tasks, ids 10 and 16, while id 10 in
+  the other stage was `Finalize Job`. `get_release`'s `task_log` therefore takes an id, a name, or
+  `stage / id`, and lists candidates carrying their own ids rather than guessing.
+- **Variable group names are a separate, preview-only request** (`VariableGroupsApi`) to the task
+  agent service, and the one call in this server whose failure is logged and swallowed: the ids
+  identify the groups without the names, and a missing permission there must not turn a definition
+  read into an error. The groups' contents are never read at all.
+- **Release paths are project-scoped on the vsrm host.** `{vsrm}/{project}/_apis/release/…`; without
+  the project segment the service answers 404 with a plain-text body, which is why
+  `AdoClient.ErrorAsync` surfaces a short plain-text error rather than `Not Found (404)`.
+
 Also: the *release* environment id and the *definition* environment id are different numbers for
 the same stage, and the deploy endpoint takes the former. `ResolveReleaseEnvironment` resolves
 against the release in hand and refuses a numeric id that release does not have, because `Resolve`

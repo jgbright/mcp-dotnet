@@ -214,3 +214,50 @@ public class TruncateTests
         Assert.True(truncated);
     }
 }
+
+/// <summary>
+/// An auth failure arrives as a whole HTML page. Reducing it to the sentence inside is what makes
+/// "the token expired" readable wherever it surfaces, instead of a stylesheet in an error message.
+/// </summary>
+public class HtmlErrorTests
+{
+    [Fact]
+    public void The_sentence_survives_and_the_page_does_not()
+    {
+        var message = Text.ErrorFromHtml(
+            "<html><head><style>.a{color:red}</style><script>var x=1;</script></head>" +
+            "<body><p>Access Denied: The Personal Access Token used has expired.</p>" +
+            "<p>Contact your administrator.</p></body></html>");
+
+        Assert.StartsWith("Access Denied: The Personal Access Token used has expired.", message);
+        Assert.DoesNotContain("color:red", message);
+        Assert.DoesNotContain("var x", message);
+    }
+
+    [Theory]
+    [InlineData("""{"message":"nope"}""")]
+    [InlineData("The controller for path was not found.")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void Anything_that_is_not_a_page_is_left_to_the_caller(string? body)
+    {
+        // A JSON error has its own field, and a plain-text one is already the message. Claiming
+        // either as extracted HTML would only make the caller's branch wrong.
+        Assert.Null(Text.ErrorFromHtml(body));
+    }
+
+    [Fact]
+    public void A_page_of_nothing_but_markup_extracts_nothing()
+    {
+        Assert.Null(Text.ErrorFromHtml("<html><head><style>.a{}</style></head><body><br/></body></html>"));
+    }
+
+    [Fact]
+    public void A_long_page_is_cut_rather_than_quoted_whole()
+    {
+        var message = Text.ErrorFromHtml("<p>" + new string('x', 900) + "</p>");
+
+        Assert.EndsWith("…", message);
+        Assert.True(message!.Length <= 301);
+    }
+}

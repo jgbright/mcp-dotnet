@@ -168,6 +168,45 @@ public class ReleaseMappingTests
     }
 
     [Fact]
+    public void Every_task_is_listed_when_the_caller_asks_for_them_including_the_ones_that_passed()
+    {
+        // "24 tasks succeeded" does not answer "what does this stage run", which is the question
+        // include_tasks exists for. Skipped tasks are listed too, with their status.
+        var env = Environment("Production", "succeeded",
+            [Attempt(1, Task("Copy files", "succeeded"), Task("Not this time", "skipped"),
+                Task("File Transform", "succeeded"))]);
+
+        var tasks = Mapping.ReleaseTasks(env);
+
+        Assert.Equal(["Copy files", "Not this time", "File Transform"], tasks.Select(t => t.Task.Name));
+        Assert.Equal("Run on agent", tasks[0].Task.Phase);
+        Assert.Equal("Agent job 1", tasks[0].Task.Job);
+        Assert.Equal($"{Org}/_apis/logs/File Transform", tasks[2].LogUrl);
+    }
+
+    [Fact]
+    public void A_task_that_is_listed_is_not_also_counted_as_skipped()
+    {
+        // `skipped.succeeded` says "not reported because it passed". With include_tasks it is in
+        // the result, and saying both would be a lie about the same task.
+        var env = Environment("Production", "succeeded", [Attempt(1, Task("Copy files", "succeeded"))]);
+
+        var counted = new SkipCounter();
+        Mapping.ReleaseFailedSteps(env, maxErrors: 5, counted);
+        Assert.Equal(1, counted.Succeeded);
+
+        var listed = new SkipCounter();
+        Mapping.ReleaseFailedSteps(env, maxErrors: 5, listed, countSucceeded: false);
+        Assert.Null(listed.ToDto());
+    }
+
+    [Fact]
+    public void A_stage_asked_for_no_tasks_reports_none_rather_than_an_empty_list()
+    {
+        Assert.Null(Mapping.ReleaseEnvironment(Environment("Dev", "succeeded", [Attempt(1)]), [], []).Tasks);
+    }
+
+    [Fact]
     public void Only_a_real_pending_approval_counts_as_waiting_on_somebody()
     {
         // Azure DevOps records an automated placeholder approval for a stage that needs none, and
@@ -258,6 +297,251 @@ public class ReleaseMappingTests
         // notStarted is the trap: it is a stage nobody has triggered, which is exactly what a
         // caller waiting for an automatic promotion is waiting to see change.
         Assert.Equal(terminal, Mapping.IsTerminalEnvironmentStatus(status));
+    }
+}
+
+/// <summary>
+/// A release definition read as configuration. What is asserted here is mostly what is *not*
+/// returned — a secret's value, an input the definition left empty — and the one thing the whole
+/// feature exists for: that a substitution task's target files survive into the result.
+/// </summary>
+public class ReleaseDefinitionConfigTests
+{
+    private const string Org = "https://dev.azure.com/contoso";
+
+    private static readonly IReadOnlyDictionary<int, string> NoGroups = new Dictionary<int, string>();
+
+    private static WireWorkflowTask Transform() => new(
+        "abc-123", "1.*", "File Transform: appsettings.json", true, null,
+        new Dictionary<string, string?>
+        {
+            ["jsonTargetFiles"] = "**/appsettings.json",
+            ["folderPath"] = "$(System.DefaultWorkingDirectory)/_Build/drop",
+            ["enableXmlTransform"] = "false",
+            // The task's schema contributes every input it declares, set or not.
+            ["xmlTargetFiles"] = "",
+            ["fileType"] = null,
+        });
+
+    private static WireReleaseDefinitionDetail Definition() => new(
+        31, "Stripe Webhook", "\\Websites\\Webhooks", null, 7,
+        new Dictionary<string, WireReleaseVariable>
+        {
+            ["Shared.Timeout"] = new("30", null, true),
+        },
+        [12],
+        [
+            new(68, "Deploy to Production", 2,
+                new Dictionary<string, WireReleaseVariable>
+                {
+                    ["Stripe.WebhookSecret"] = new("whsec_live_do_not_return", true, null),
+                    ["OTEL_SERVICE_NAME"] = new("Stripe Webhook", null, null),
+                },
+                [15],
+                [new WireDeployPhase("Deploy", 1, "machineGroupBasedDeployment", [Transform()])]),
+            new(67, "Deploy to Staging", 1, null, null, []),
+        ],
+        [
+            new WireReleaseArtifact("_Stripe Webhook", "Build", true,
+                new WireArtifactDefinitionReference(new("12", "Stripe Webhook CI"), new("98", "20260806.1"))),
+        ]);
+
+    [Fact]
+    public void A_secret_comes_back_as_its_name_and_the_flag_and_nothing_else()
+    {
+        var dto = Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, includeTasks: true, Org, "Core");
+
+        var production = dto.Environments[1];
+        var secret = production.Variables!.Single(v => v.Name == "Stripe.WebhookSecret");
+        Assert.True(secret.IsSecret);
+        Assert.Null(secret.Value);
+        Assert.DoesNotContain("whsec_live_do_not_return", System.Text.Json.JsonSerializer.Serialize(dto));
+    }
+
+    [Fact]
+    public void Environments_are_in_the_order_they_deploy_and_variables_in_name_order()
+    {
+        var dto = Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, includeTasks: true, Org, "Core");
+
+        Assert.Equal(["Deploy to Staging", "Deploy to Production"], dto.Environments.Select(e => e.Name));
+        Assert.Equal(
+            ["OTEL_SERVICE_NAME", "Stripe.WebhookSecret"],
+            dto.Environments[1].Variables!.Select(v => v.Name));
+    }
+
+    [Fact]
+    public void A_task_keeps_the_inputs_that_say_which_files_it_rewrites()
+    {
+        // The whole point of the tool: this is what settles whether editing a checked-in
+        // appsettings.json changes anything, and no variable list can answer it.
+        var dto = Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, includeTasks: true, Org, "Core");
+
+        var task = dto.Environments[1].Phases!.Single().Tasks!.Single();
+        Assert.Equal("**/appsettings.json", task.Inputs!["jsonTargetFiles"]);
+        Assert.Equal("1.*", task.Version);
+        Assert.Null(task.Disabled);
+        // Inputs the definition left empty are dropped: an empty one says nothing its absence does not.
+        Assert.False(task.Inputs.ContainsKey("xmlTargetFiles"));
+        Assert.False(task.Inputs.ContainsKey("fileType"));
+    }
+
+    [Fact]
+    public void Asking_for_no_tasks_omits_the_phases_rather_than_reporting_none()
+    {
+        var dto = Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, includeTasks: false, Org, "Core");
+
+        Assert.All(dto.Environments, e => Assert.Null(e.Phases));
+        // A stage that really runs nothing is also null, which is why the tool's description says
+        // which of the two an absent `phases` means.
+        Assert.Null(Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, true, Org, "Core")
+            .Environments[0].Phases);
+    }
+
+    [Fact]
+    public void Variable_groups_are_reported_by_id_when_their_names_could_not_be_read()
+    {
+        var named = Mapping.ReleaseDefinitionDetail(
+            Definition(), new Dictionary<int, string> { [12] = "Shared secrets" },
+            includeTasks: false, Org, "Core");
+
+        Assert.Equal("Shared secrets", named.VariableGroups!.Single().Name);
+        Assert.Equal(15, named.Environments[1].VariableGroups!.Single().Id);
+        Assert.Null(named.Environments[1].VariableGroups!.Single().Name);
+    }
+
+    [Fact]
+    public void Every_referenced_group_is_looked_up_once_at_either_scope()
+    {
+        Assert.Equal([12, 15], Mapping.ReferencedGroups(Definition()));
+    }
+
+    [Fact]
+    public void A_definition_with_nothing_configured_omits_the_fields_entirely()
+    {
+        // Absent means absent: an empty variables object would read as "none configured" where it
+        // means "there was nothing to say".
+        var bare = new WireReleaseDefinitionDetail(
+            9, "Api", "\\", null, 1, null, null, [new(1, "Prod", 1, null, null, null)], null);
+
+        var dto = Mapping.ReleaseDefinitionDetail(bare, NoGroups, includeTasks: true, Org, "Core");
+
+        Assert.Null(dto.Variables);
+        Assert.Null(dto.VariableGroups);
+        Assert.Null(dto.Artifacts);
+        Assert.Null(dto.Folder);
+        Assert.Null(dto.Environments.Single().Variables);
+    }
+
+    [Fact]
+    public void A_definition_scope_variable_that_can_be_overridden_says_so()
+    {
+        var dto = Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, includeTasks: false, Org, "Core");
+
+        Assert.True(dto.Variables!.Single().AllowOverride);
+        Assert.Equal("30", dto.Variables.Single().Value);
+    }
+
+    [Theory]
+    [InlineData("both", true, true)]
+    [InlineData("variables", true, false)]
+    [InlineData("task_inputs", false, true)]
+    [InlineData(null, true, true)]
+    public void The_scope_argument_says_where_to_look(string? scope, bool variables, bool inputs)
+    {
+        Assert.Equal((variables, inputs), ReleaseConfig.ParseScope(scope));
+    }
+
+    [Fact]
+    public void An_unknown_scope_lists_the_ones_there_are()
+    {
+        Assert.Contains("task_inputs",
+            Assert.Throws<McpException>(() => ReleaseConfig.ParseScope("tasks")).Message);
+    }
+
+    [Fact]
+    public void A_pattern_matches_a_variable_name_a_task_input_key_and_a_value()
+    {
+        var matches = ReleaseConfig.Matches(
+            Definition(), variables: true, taskInputs: true,
+            ReleaseConfig.Matcher("appsettings.json", regex: false), "url").ToList();
+
+        var hit = Assert.Single(matches);
+        Assert.Equal(ReleaseConfig.TaskInputKind, hit.Kind);
+        Assert.Equal("jsonTargetFiles", hit.Key);
+        Assert.Equal("File Transform: appsettings.json", hit.Task);
+        Assert.Equal("Deploy to Production", hit.Environment);
+        Assert.Equal("value", hit.MatchedIn);
+    }
+
+    [Fact]
+    public void A_variable_matched_by_name_says_so_and_carries_its_value()
+    {
+        var matches = ReleaseConfig.Matches(
+            Definition(), variables: true, taskInputs: false,
+            ReleaseConfig.Matcher("otel_service", regex: false), "url").ToList();
+
+        var hit = Assert.Single(matches);
+        Assert.Equal("name", hit.MatchedIn);
+        Assert.Equal("Stripe Webhook", hit.Value);
+        Assert.Null(hit.Task);
+    }
+
+    [Fact]
+    public void A_definition_scope_variable_reports_no_environment()
+    {
+        var hit = Assert.Single(ReleaseConfig.Matches(
+            Definition(), variables: true, taskInputs: false,
+            ReleaseConfig.Matcher("Shared.Timeout", regex: false), "url"));
+
+        Assert.Null(hit.Environment);
+        Assert.Equal(ReleaseConfig.VariableKind, hit.Kind);
+    }
+
+    [Fact]
+    public void A_secret_matches_on_its_name_only()
+    {
+        // Matching on a value the tool then refuses to return would leak it a bit at a time: a
+        // caller could ask whether it starts with "whsec_" and be told.
+        var byName = Assert.Single(ReleaseConfig.Matches(
+            Definition(), true, false, ReleaseConfig.Matcher("WebhookSecret", false), "url"));
+        Assert.True(byName.IsSecret);
+        Assert.Null(byName.Value);
+
+        Assert.Empty(ReleaseConfig.Matches(
+            Definition(), true, false, ReleaseConfig.Matcher("whsec_", false), "url"));
+    }
+
+    [Fact]
+    public void The_scope_narrows_what_is_searched()
+    {
+        Assert.Empty(ReleaseConfig.Matches(
+            Definition(), variables: true, taskInputs: false,
+            ReleaseConfig.Matcher("appsettings.json", false), "url"));
+    }
+
+    [Fact]
+    public void A_regex_is_only_a_regex_when_asked_for()
+    {
+        var literal = ReleaseConfig.Matcher("OTEL_.*_NAME", regex: false);
+        var expression = ReleaseConfig.Matcher("OTEL_.*_NAME", regex: true);
+
+        Assert.False(literal("OTEL_SERVICE_NAME"));
+        Assert.True(expression("OTEL_SERVICE_NAME"));
+        Assert.True(ReleaseConfig.Matcher("otel_service_name", regex: false)("OTEL_SERVICE_NAME"));
+    }
+
+    [Fact]
+    public void A_pattern_that_does_not_compile_says_so_rather_than_matching_nothing()
+    {
+        var e = Assert.Throws<McpException>(() => ReleaseConfig.Matcher("[unclosed", regex: true));
+
+        Assert.Contains("not a valid regular expression", e.Message);
+    }
+
+    [Fact]
+    public void An_empty_pattern_is_refused()
+    {
+        Assert.Contains("empty", Assert.Throws<McpException>(() => ReleaseConfig.Matcher("", false)).Message);
     }
 }
 
@@ -372,6 +656,98 @@ public class ReleaseToolTests : IDisposable
 
         Assert.Contains("No environment matches 'Staging'", e.Message);
         Assert.Contains("Dev", e.Message);
+    }
+
+    /// <summary>
+    /// Two stages that each run a task called "File Transform", and reused ids: measured against a
+    /// real release, where a production stage deploying to two machines ran the same task twice and
+    /// the ids restarted in the other stage.
+    /// </summary>
+    private static (List<WireReleaseEnvironment> Environments, List<List<ReleaseTaskEntry>> Tasks) Ran()
+    {
+        WireReleaseTask task(int id, string name) =>
+            new(id, name, "succeeded", id, "agent", null, null, $"log/{id}", null);
+        WireReleaseEnvironment stage(int id, string name, int rank, params WireReleaseTask[] tasks) =>
+            new(id, name, "succeeded", rank, id, "Manual",
+                [new WireDeploymentAttempt(1, 1, "succeeded", "approved", null, null, "manual", null,
+                    [new WireReleaseDeployPhase("Deploy", "agent", 1, "succeeded", null,
+                        [new WireDeploymentJob(new WireReleaseTask(0, "Release", "succeeded", 0, null, null, null, null, null), [.. tasks])])])],
+                null, null);
+
+        List<WireReleaseEnvironment> environments =
+        [
+            stage(101, "Deploy to Staging", 1, task(7, "File Transform"), task(10, "Finalize Job")),
+            stage(102, "Deploy to Production", 2, task(10, "File Transform"), task(16, "File Transform")),
+        ];
+        return (environments, [.. environments.Select(Mapping.ReleaseTasks)]);
+    }
+
+    [Fact]
+    public void A_task_id_that_belongs_to_one_stage_only_needs_no_qualifying()
+    {
+        var (environments, tasks) = Ran();
+
+        Assert.Equal((0, 0), _tools.ResolveReleaseTask(environments, tasks, "7"));
+        Assert.Equal((1, 1), _tools.ResolveReleaseTask(environments, tasks, "16"));
+    }
+
+    [Fact]
+    public void A_task_id_that_repeats_across_stages_is_qualified_by_the_stage()
+    {
+        var (environments, tasks) = Ran();
+
+        var e = Assert.Throws<McpException>(() => _tools.ResolveReleaseTask(environments, tasks, "10"));
+        Assert.Contains("belongs to more than one stage", e.Message);
+        Assert.Contains("Deploy to Staging / Finalize Job #10", e.Message);
+
+        Assert.Equal((1, 0), _tools.ResolveReleaseTask(environments, tasks, "Deploy to Production / 10"));
+        Assert.Equal((0, 1), _tools.ResolveReleaseTask(environments, tasks, "Staging / 10"));
+    }
+
+    [Fact]
+    public void A_name_that_two_tasks_share_is_listed_with_the_id_of_each()
+    {
+        // One stage can run the same task twice, so naming it is not enough — and the answer has
+        // to carry the thing that would be enough.
+        var (environments, tasks) = Ran();
+
+        var e = Assert.Throws<McpException>(() =>
+            _tools.ResolveReleaseTask(environments, tasks, "Deploy to Production / File Transform"));
+
+        Assert.Contains("ambiguous", e.Message);
+        Assert.Contains("#10", e.Message);
+        Assert.Contains("#16", e.Message);
+    }
+
+    [Fact]
+    public void A_task_name_unique_within_its_stage_resolves()
+    {
+        var (environments, tasks) = Ran();
+
+        Assert.Equal((0, 1), _tools.ResolveReleaseTask(environments, tasks, "Finalize"));
+        Assert.Equal((0, 0), _tools.ResolveReleaseTask(environments, tasks, "Staging / File Transform"));
+    }
+
+    [Fact]
+    public void An_unknown_stage_and_an_unknown_id_both_say_what_there_is()
+    {
+        var (environments, tasks) = Ran();
+
+        Assert.Contains("No environment matches 'QA'", Assert.Throws<McpException>(
+            () => _tools.ResolveReleaseTask(environments, tasks, "QA / 7")).Message);
+        Assert.Contains("No task with id 99", Assert.Throws<McpException>(
+            () => _tools.ResolveReleaseTask(environments, tasks, "99")).Message);
+    }
+
+    [Fact]
+    public void Asking_for_a_log_before_anything_has_run_says_that_rather_than_nothing()
+    {
+        var (environments, _) = Ran();
+
+        var e = Assert.Throws<McpException>(
+            () => _tools.ResolveReleaseTask(environments, [[], []], "7"));
+
+        Assert.Contains("reports no tasks", e.Message);
     }
 
     [Fact]
