@@ -245,7 +245,9 @@ poll. One that does not just blocks until the tool's own timeout. `wait_for_chat
 up to twenty chats in one call. The search-backed waiters poll no faster than every 20 seconds.
 
 Mutations, which require `TEAMS_MCP_ALLOW_SEND=true`: `send_channel_message` and
-`send_chat_message`. Both take an optional `format: html` for hyperlinks.
+`send_chat_message`. Both take the message as `body` — the same word the reads use — plus an
+optional `format`: `markdown` for anything with structure (converted server-side), `html` only for
+markup markdown cannot express.
 
 ### MCP registration
 
