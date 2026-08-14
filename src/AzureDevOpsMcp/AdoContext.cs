@@ -67,6 +67,17 @@ public sealed class AdoContext(ILogger<AdoContext> log)
     public static string? OrgUrlSetting =>
         Environment.GetEnvironmentVariable("ADO_MCP_ORG_URL") is { Length: > 0 } url ? url : null;
 
+    /// <summary>
+    /// AZURE_DEVOPS_PAT is not this server's credential and is never used to make a request. It is
+    /// read only so <c>ado_auth_status</c> can probe it: a session whose tool call failed reaches
+    /// for it as a fallback, and "that token expired" is worth one line rather than an afternoon.
+    /// </summary>
+    public static bool PatPresent =>
+        Environment.GetEnvironmentVariable("AZURE_DEVOPS_PAT") is { Length: > 0 };
+
+    internal static string? Pat =>
+        Environment.GetEnvironmentVariable("AZURE_DEVOPS_PAT") is { Length: > 0 } pat ? pat : null;
+
     /// <summary>ADO_MCP_PROJECT: the project used by tools whose `project` argument is omitted.</summary>
     public static string? DefaultProject =>
         Environment.GetEnvironmentVariable("ADO_MCP_PROJECT") is { Length: > 0 } p ? p : null;
@@ -183,6 +194,19 @@ public sealed class AdoContext(ILogger<AdoContext> log)
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private AdoClient? _client;
+    private TokenCredential? _credential;
+
+    /// <summary>
+    /// When the token this server is using stops working, asked of the same credential the client
+    /// holds. Azure.Identity answers from its own cache, so this costs nothing on the usual path
+    /// and is what <c>ado_auth_status</c> reports rather than guessing from the record's age.
+    /// </summary>
+    public async Task<DateTimeOffset> TokenExpiresOnAsync(CancellationToken ct = default)
+    {
+        await GetClientAsync(ct);
+        var credential = _credential ?? throw new InvalidOperationException("no credential was built");
+        return (await credential.GetTokenAsync(RequestContext, ct)).ExpiresOn;
+    }
 
     /// <summary>Silent client for MCP tool calls. Never prompts. It fails with guidance instead.</summary>
     public async Task<AdoClient> GetClientAsync(CancellationToken ct = default)
@@ -285,6 +309,7 @@ public sealed class AdoContext(ILogger<AdoContext> log)
             http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             http.DefaultRequestHeaders.UserAgent.ParseAdd("ado-mcp/1.0");
 
+            _credential = credential;
             _client = new AdoClient(http, org, log);
             return _client;
         }
@@ -455,6 +480,12 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
         PropertyNameCaseInsensitive = true,
     };
 
+    /// <summary>
+    /// How much of a plain-text error body is a message rather than a document. Past this it is
+    /// something that happens to have failed to be JSON, and the status says more than it does.
+    /// </summary>
+    private const int MaxPlainTextError = 500;
+
     /// <summary>Organization URL without a trailing slash. Also the base for browser links.</summary>
     public string OrgUrl { get; } = orgUrl;
 
@@ -511,6 +542,28 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
         using var content = JsonContent.Create(body, options: Json);
         using var response = await SendAsync(HttpMethod.Patch, path, content, ct);
         return await ReadAsync<T>(response, path, ct);
+    }
+
+    /// <summary>
+    /// One request, body returned as it arrived. This is what <c>ado_api_request</c> sends: no
+    /// deserialization, because the whole point is an endpoint this server has no type for, and no
+    /// paging, because the caller drives the endpoint's own. Failures still throw
+    /// <see cref="AdoApiException"/> the way every other call does.
+    /// </summary>
+    public async Task<RawResponse> SendRawAsync(
+        HttpMethod method, string url, string? jsonBody, CancellationToken ct)
+    {
+        using var content = jsonBody is null
+            ? null
+            : new StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
+        using var response = await SendAsync(method, url, content, ct);
+        // A sign-in page arrives with a success status, so it would otherwise be handed back as
+        // the response body — a page of HTML where a caller expected a resource.
+        ThrowIfSignInPage(response, url);
+        return new RawResponse(
+            (int)response.StatusCode,
+            response.Content.Headers.ContentType?.MediaType,
+            await response.Content.ReadAsStringAsync(ct));
     }
 
     /// <summary>Plain-text fetch for build logs, which are not JSON.</summary>
@@ -579,12 +632,27 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
         string? typeKey = null;
         try
         {
-            var body = await response.Content.ReadAsStringAsync(ct);
+            var body = (await response.Content.ReadAsStringAsync(ct)).TrimStart();
             if (body.Length > 0 && body[0] == '{')
             {
                 var error = JsonSerializer.Deserialize<ApiError>(body, Json);
                 message = error?.Message;
                 typeKey = error?.TypeKey;
+            }
+            else if (Text.ErrorFromHtml(body) is { } extracted)
+            {
+                // An expired credential is answered with a whole HTML error page, so without this
+                // the model-facing message is a stylesheet and the one sentence that says
+                // "the Personal Access Token used has expired" is buried in it.
+                message = extracted;
+                typeKey = "HtmlErrorPage";
+            }
+            else if (body.Length is > 0 and <= MaxPlainTextError)
+            {
+                // Some routes answer in plain text — a path on the wrong host comes back as "the
+                // controller for path '...' was not found", which says considerably more than
+                // "Not Found (404)" does.
+                message = body;
             }
         }
         catch (Exception)
@@ -602,3 +670,6 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
 
     private sealed record ApiError(string? Message, string? TypeKey);
 }
+
+/// <summary>One response as it arrived, for the passthrough tool. Not deserialized on purpose.</summary>
+public sealed record RawResponse(int Status, string? ContentType, string Body);

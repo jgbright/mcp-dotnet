@@ -101,7 +101,7 @@ they refuse at call time until their gate is set.
 | Gate | Enables |
 | --- | --- |
 | `TEAMS_MCP_ALLOW_SEND=true` | `send_channel_message`, `send_chat_message` |
-| `ADO_MCP_ALLOW_WRITE=true` | `create_work_item`, `update_work_item`, `add_pull_request_comment`, `run_pipeline`, `deploy_release` |
+| `ADO_MCP_ALLOW_WRITE=true` | `create_work_item`, `update_work_item`, `add_pull_request_comment`, `run_pipeline`, `deploy_release`, and any method other than GET or HEAD through `ado_api_request` |
 | `ADO_MCP_ALLOW_APPROVE=true` | `approve_release`, and only alongside `ADO_MCP_ALLOW_WRITE=true` |
 
 Set them the same way as step 2, or in a hand-written config's `env` block. Two things to know:
@@ -322,13 +322,17 @@ Read:
 | `get_pipeline_run` | Reports each failed task with its stage, job, errors and log tail |
 | `wait_for_pipeline_run` | Polls until the run finishes, then reports like `get_pipeline_run`. A timeout returns the run as it stands with `timedOut: true` |
 | `list_release_definitions` | Classic release pipelines, with the environments each deploys to |
+| `get_release_definition` | How one is configured: variables at both scopes, variable groups, and each environment's tasks with their inputs |
+| `search_release_definitions` | Where a name or value appears across every definition — in a variable, a task input, or both |
 | `list_releases` | Releases of one definition, newest first, with every environment's status |
-| `get_release` | Artifacts, pending approvals, and each failed task with its phase, job, errors and log tail |
+| `get_release` | Artifacts, pending approvals, and each failed task with its phase, job, errors and log tail; `include_tasks` lists every task and `task_log` fetches one's log |
 | `wait_for_release` | Polls one environment until it stops moving, then reports like `get_release` |
 | `search_code` | Needs the Code Search extension, see below |
 | `search_work_items` | Full text. `list_work_items` is the structured query |
 | `search_wiki` | |
 | `deployment_status` | Config-driven, see the deployment map section |
+| `ado_api_request` | One REST call this server has no typed tool for, on its own credential and its own organization only |
+| `ado_auth_status` | Which credential is in use, whether it still works, and whether `AZURE_DEVOPS_PAT` does |
 
 `project`, `repo`, `pipeline`, `team`, `definition` and `environment` accept an id or a name. Names
 match case-insensitively, exact first and then substring. An ambiguous or unknown name fails with
@@ -344,6 +348,13 @@ One quirk of the classic release API is worth knowing before reading a result: a
 environment has no `failed` status. **A deployment that failed reports as `rejected`**, the same
 status an approval somebody turned down produces, and `operationStatus` (`PhaseFailed` against
 `Rejected`) is what tells them apart. `get_release` reports both.
+
+A release says what a deploy *did*; a release definition says what it is *set up to do*.
+`get_release_definition` is the second question — whether a pipeline overrides a setting at deploy
+time, and which files its substitution tasks rewrite, which is what decides whether editing a
+checked-in config file changes anything in production. `search_release_definitions` asks it across
+every definition in the project at once. Neither returns a value Azure DevOps marks secret: the name
+and `isSecret: true` are the answer, and that holds through `ado_api_request` too.
 
 `list_work_items` takes either a full `wiql` query or filter arguments (`type`, `state`,
 `assigned_to`, `team`, `changed_since`, `title_contains`). When it builds the query itself it
@@ -501,6 +512,11 @@ pair (`graph.http` and `graph.http.fail` in Teams, `http` and `http.fail` in Azu
 User-authored text is not logged unless `…_LOG_CONTENT=true`, only its length. `…_LOG_LEVEL=Debug`
 adds successful HTTP calls, paging and name resolution. `Trace` adds the MCP SDK's JSON-RPC
 traffic.
+
+From inside a session, the Azure DevOps server's own `ado_auth_status` answers the first question
+without leaving the client: which credential it is using, when the token expires, who Azure DevOps
+says it is, and — when `AZURE_DEVOPS_PAT` is set in the environment — whether that token is still
+valid, which is worth knowing before falling back to it.
 
 For fastest triage, in order: run `-- selftest`, which separates auth problems from tool problems.
 Then reproduce the failing call with `-- call <tool> key=value…`, which drives the real server path

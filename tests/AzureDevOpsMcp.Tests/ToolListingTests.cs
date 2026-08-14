@@ -93,7 +93,14 @@ public class ToolListingTests
 
         // The annotation is for the client, the description for the model. A tool gated on
         // ADO_MCP_ALLOW_WRITE has to name the variable, or a refusal looks like a transient failure.
-        Assert.Equal(Writes.Contains(attribute.Name!), description.Contains("ADO_MCP_ALLOW_WRITE"));
+        //
+        // ado_api_request names it without being a write tool, which is the one exception and a
+        // deliberate one: it reads under every configuration this server ships with, and refuses
+        // the methods that would not on the same variable. That refusal is configuration too, so
+        // the model has to be told which one.
+        Assert.Equal(
+            Writes.Contains(attribute.Name!) || attribute.Name == "ado_api_request",
+            description.Contains("ADO_MCP_ALLOW_WRITE"));
     }
 
     [Theory]
