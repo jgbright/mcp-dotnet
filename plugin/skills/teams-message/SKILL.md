@@ -1,6 +1,6 @@
 ---
 name: teams-message
-version: 2.2.0
+version: 2.3.0
 description: |
   Draft and send Microsoft Teams messages following the user's established rules
   for destination, formatting, humanization, and approval. Use whenever the user
@@ -8,19 +8,6 @@ description: |
   message, or to react to one with an emoji. Also use when the user says "send
   me" / "send this to me" / "drop it in Teams" — this skill knows how to look up
   the current user's self-chat destination from local memory.
-allowed-tools:
-  - Read
-  - Write
-  - Edit
-  - Skill
-  - mcp__teams__get_current_user
-  - mcp__teams__list_chats
-  - mcp__teams__search_users
-  - mcp__teams__send_chat_message
-  - mcp__teams__send_file_to_chat
-  - mcp__teams__create_chat
-  - mcp__teams__react_to_chat_message
-  - mcp__teams__react_to_channel_message
 ---
 
 # Teams Message Skill
@@ -41,29 +28,25 @@ Sending to the current user's own self-chat is always allowed because it's for t
 
 When the user asks you to send them something in Teams ("send me...", "drop it in Teams for me", "send it to me but only to me"), the destination is the current user's Teams self-chat — i.e., whoever Claude is running as.
 
-**Look up the chat ID at runtime from local memory.** It is stored as a memory entry (typically `reference-teams-destinations.md`, indexed in MEMORY.md). Read that entry before sending. If no entry exists:
+**Look up the chat ID at runtime from local memory.** It is stored as a memory entry (typically `reference-teams-destinations.md`, indexed in MEMORY.md). Read that entry before sending. If no entry exists, ask the user for their Teams self-chat ID and offer to save it as a memory entry so future sessions don't have to ask again.
 
-1. Ask the user for their Teams self-chat ID.
-2. Verify with `mcp__teams__get_current_user` + `mcp__teams__list_chats` that the value looks plausible.
-3. Offer to save it as a memory entry so future sessions don't have to ask again.
+**A self-chat ID cannot be rediscovered.** `list_chats` lists 1:1 and group chats; the user's chat with themselves is not among them, so there is nothing to verify a remembered value against and nothing to fall back on when the memory entry is missing. Ask, then confirm by sending and letting the user say they saw it — never guess a chat from the list and never substitute the closest-looking one.
 
 **Do not use `19:meeting_...@thread.v2` chats as the destination for human-drafted messages.** They are ad-hoc / instant-meeting leftovers; messages posted there don't reliably surface in the Teams desktop sidebar. Some users wire one of these chats into automated notification commands; that wiring is held in user-local memory and is not a substitute for the self-chat.
 
-**Tools to send:** `mcp__teams__send_chat_message` for inline text, `mcp__teams__send_file_to_chat` for file attachments.
+### 3. The message goes in `body`
 
-### 3. Inline text vs. file attachment
-
-Default to inline text (`send_chat_message`) unless the user explicitly asks for a file. File attachments in Teams are useful for long reference documents, but they are a less convenient read than inline text for message drafts, notes, and summaries. When in doubt, send inline and note that the source markdown file is saved at such-and-such path.
+`send_chat_message(chat, body, format?)` and `send_channel_message(team, channel, body, format?)` are the whole sending surface — there is no file-attachment tool, so a long document is sent as a message like anything else, with the markdown file on disk named as the durable copy. The content parameter is `body`, the same word the read tools use.
 
 ### 4. Always use `format: "markdown"`
 
-Both `send_chat_message` and `send_file_to_chat` accept a `format` parameter. Always set it to `"markdown"` unless you have a specific reason not to. Plain text loses code blocks, bullets, bold, and links.
+Set `format: "markdown"` unless you have a specific reason not to. Plain text loses code blocks, bullets, bold, and links.
 
 ## Workflow: drafting a new message
 
 When the user asks you to draft a Teams message (whether to send to themselves, to someone else, or to a group):
 
-0. **Probe Teams MCP health before drafting.** Call a cheap tool (`mcp__teams__get_current_user`) first. If it fails or the server is disconnected, tell the user now and re-authenticate *before* the drafting chain runs — `teams-mcp auth` is the fix, and the `mcp-reauth` skill drives it end to end. The drafting chain can take minutes; discovering a dead server only at send time wastes the whole chain. If the user wants to proceed anyway, draft, but note delivery is blocked pending re-auth. Only fall through to re-auth when the probe actually fails: an existing token cache does **not** short-circuit the interactive flow, so running it unnecessarily costs the user a full sign-in.
+0. **Probe Teams MCP health before drafting.** Call a cheap read first — `list_chats` with `limit: 1` is one request and returns almost nothing. If it fails or the server is disconnected, tell the user now and re-authenticate *before* the drafting chain runs — `teams-mcp auth` is the fix, and the `mcp-reauth` skill drives it end to end. The drafting chain can take minutes; discovering a dead server only at send time wastes the whole chain. If the user wants to proceed anyway, draft, but note delivery is blocked pending re-auth. Only fall through to re-auth when the probe actually fails: an existing token cache does **not** short-circuit the interactive flow, so running it unnecessarily costs the user a full sign-in.
 1. **Refine the draft before presenting it.** If the host project provides a drafting-refinement skill (commonly named `draft-critique`), invoke it via `Skill` — it produces a converged, already-humanized draft; use *that* as the input to the steps below, and don't re-humanize it. If no such skill is available, draft carefully, then apply a humanization pass if one is available (e.g. a `humanizer` skill).
 2. **Save the draft to a markdown file** at its canonical path. Pick a path that matches existing project conventions for the topic (look for sibling drafts or a `docs/correspondence/` folder; if a project memory entry names a path for this topic, use it). The file is the durable record; the Teams message is the delivery mechanism.
 3. **Top of the file:** Include a status line so the file is self-describing:
@@ -98,10 +81,12 @@ newlines in a text body — including blank lines — collapse, so a multi-parag
 arrives as one dense block. Never insert `&nbsp;` or any other entity as a spacer in a text body:
 it is sent as-is and arrives as literal characters.
 
-**`format: "html"` remains for the rare body that needs markup markdown cannot express.** Teams
-renders a subset of HTML only, and adjacent `<p>` tags render with no gap between them — separate
-prose paragraphs with `<br/><br/>`, not bare `<p>` boundaries. Prefer markdown unless there is a
-concrete reason not to.
+**`format: "html"` remains for the rare body that needs markup markdown cannot express.** Links,
+bold, headings, lists and paragraph spacing are not that — markdown expresses all of them and the
+converter has already measured how Teams renders each one, so reaching for html to get a hyperlink
+is hand-writing what the server does better. When html really is the answer: Teams renders a subset
+only, and adjacent `<p>` tags render with no gap between them — separate prose paragraphs with
+`<br/><br/>`, not bare `<p>` boundaries or `&nbsp;` spacer elements.
 
 **None of this applies to the markdown file on disk.** Files use normal markdown conventions.
 What changes at send time is only which `format` the body goes out as — and since the send format
@@ -115,7 +100,7 @@ Use the chat ID from the user's local memory entry (typically `reference-teams-d
 
 ### Sending to a specific person
 
-1. Use `mcp__teams__list_chats` or `mcp__teams__search_users` to find the right chat.
+1. Use `list_chats` with `member` (their display name) to find the right chat. There is no user-directory search and no create-chat tool: if no chat with that person exists yet, say so — the user starts it in Teams.
 2. Confirm the target chat's members match the intended recipient before sending.
 3. If there's ambiguity (multiple possible chats), ask the user which one — don't guess.
 
