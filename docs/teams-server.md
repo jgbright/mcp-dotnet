@@ -185,6 +185,43 @@ URLs and code spans are shielded before the emphasis pass for the same reason. I
 HTML-escaped first, so markup in a markdown body arrives as literal characters — the only tags
 sent are the ones the converter emits.
 
+### Replying
+
+`reply_to` on either send tool answers an existing message, and it means a different thing in each
+because Teams' two conversation kinds are different things. A channel has real one-level threading,
+so `send_channel_message` posts into the thread root's `replies` collection and the reply lands
+inside the thread. A chat has no threading at all: its "Reply" is a quote card, carried by a
+`messageReference` attachment that an `<attachment>` element in the body anchors, and
+`send_chat_message` produces one through Graph's `replyWithQuote` action. Both halves of that pair
+are required — a body whose `<attachment>` element names an attachment that is not in the array
+renders as an **empty box above the text**, which is the signature of every failed attempt below.
+
+Measured 2026-08-14 against the live service, and none of it is visible from a return code:
+
+- **The self chat is not a chat, and so cannot be replied to.** `GET /chats/48:notes` answers
+  `400 BadRequest: Call made for a thread which is not a ChatThread`, and `replyWithQuote` routes as
+  `/chats({chatThreadId})/messages/replyWithQuote` — the id it requires is exactly what `48:notes` is
+  not. Posting a plain message to it works, which is what hides the hole: `replyWithQuote` answers
+  `201 Created` having written the body's `<attachment>` element and created no attachment, so the
+  quote renders as an empty box. Identical on v1.0 and beta; the same call against a
+  `19:…@thread.v2` chat builds the attachment correctly. The `/me/chats/{id}/…` and
+  `/users/{id}/chats/{id}/…` routes are not alternatives — both 404 with *"Request path is not
+  supported"*. `RequireQuotableChat` therefore refuses `reply_to` for a `48:` chat rather than
+  posting the broken message: nothing downstream would report a problem, so the alternative is
+  discovering it in a screenshot.
+- **The attachment cannot be composed by hand.** Building the `messageReference` exactly as the
+  Teams client writes it and posting it as an ordinary message does not work in any chat: Graph
+  strips the attachment and keeps the body's element — tried with the quoted message's own id and
+  with a fresh GUID, since the client's non-GUID id suggested id validation was the cause. It was
+  not.
+- **The Skype markup is refused outright.** `<blockquote itemscope itemtype="http://schema.skype.com/Reply">`,
+  with or without its inner `itemprop` elements, fails with `Message body content cannot contain
+  unsupported item types`.
+
+The Teams client *can* quote in the self chat, through its own internal API. That is a hole in
+Graph rather than in Teams, and it is not one this server can route around — a client-authored
+reply in `48:notes` and a Graph-authored one in a real chat read back with the same attachment.
+
 ## Reactions
 
 `react_to_chat_message` and `react_to_channel_message` are Graph's `setReaction`/`unsetReaction`
