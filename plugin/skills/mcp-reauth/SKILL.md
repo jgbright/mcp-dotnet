@@ -12,7 +12,7 @@ Converts the Teams MCP re-auth from a manual context-switch into a mostly-automa
 
 ## Step 0 — probe before you authenticate
 
-Call a cheap Teams tool first (`mcp__teams__get_current_user`), or from a shell run `teams-mcp selftest`, which does a silent-auth Graph round-trip and prints raw errors. **Only run the flow below if the probe fails.** An existing token cache does NOT short-circuit `teams-mcp auth` — it runs the full interactive flow regardless, so re-running it against healthy auth costs the user an entire sign-in for nothing.
+Call a cheap Teams tool first (`list_chats` with `limit: 1`), or from a shell run `teams-mcp selftest`, which does a silent-auth Graph round-trip and prints raw errors. **Only run the flow below if the probe fails.** An existing token cache does NOT short-circuit `teams-mcp auth` — it runs the full interactive flow regardless, so re-running it against healthy auth costs the user an entire sign-in for nothing.
 
 ## The flow
 

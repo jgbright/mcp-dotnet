@@ -43,7 +43,7 @@ Shared metadata lives in `Directory.Build.props` — authors, product, tags, out
 
 **The plugin** (`plugin/`, published through `.claude-plugin/marketplace.json`) is the current
 path. It bundles a `.mcp.json` declaring both servers by PATH command with no environment at all,
-plus three skills — `teams-message`, `teams-watcher`, `mcp-reauth`. Installed with
+plus four skills — `teams-message`, `teams-followup`, `teams-watcher`, `mcp-reauth`. Installed with
 `/plugin marketplace add jgbright/mcp-dotnet` (or a local clone's path) then
 `/plugin install mcp-dotnet@mcp-dotnet`, and updated as one unit.
 
