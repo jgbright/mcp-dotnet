@@ -756,9 +756,16 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     // supplied `body`, which cost a rejection and a re-send of the whole message — the schema was
     // the only place the word `text` appeared, and `format: "text"` is a different thing again.
     // One word for message content, both directions.
+    // A channel reply is threading rather than quoting: the replies collection is what puts the
+    // message inside the thread the client draws under its root, so `reply_to` posts there. It takes
+    // the thread ROOT's id, the same id `react_to_channel_message` wants and the same one a reply's
+    // own `replyToId` names — replying to a reply still lands in the one thread, because a channel
+    // thread is one level deep. Chats have no equivalent and quote instead; see send_chat_message.
     [McpServerTool(Name = "send_channel_message", UseStructuredContent = true, Destructive = false, Idempotent = false)]
     [Description("MUTATION: posts a message visible to everyone in the channel. Disabled unless the environment " +
-                 "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `team`/`channel` accept ids or display names.")]
+                 "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `team`/`channel` accept ids or display " +
+                 "names. Set reply_to to a thread root's message id to post inside that thread rather than " +
+                 "starting a new one.")]
     public Task<SentMessageDto> SendChannelMessage(
         [Description("Team id (GUID) or display name")] string team,
         [Description("Channel id (19:...) or display name")] string channel,
@@ -766,39 +773,62 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         [Description("Body format: 'text' (default), 'markdown', or 'html'. Use markdown for anything beyond " +
                      "a single plain paragraph (Teams collapses newlines in a text body); it is converted " +
                      "server-side and renders consistently. html is a last resort.")] string? format = null,
+        [Description("Id of the thread root to reply under, from read_channel_messages. Omit to start a new " +
+                     "thread. To answer a reply, pass its thread root's id — the id in its replyToId.")] string? reply_to = null,
         CancellationToken ct = default) => Run("send_channel_message",
-        A("team", team) + A("channel", channel) + A("format", format ?? "text")
+        A("team", team) + A("channel", channel) + A("format", format ?? "text") + A("reply_to", reply_to)
             + TeamsMcpLog.ContentArg("body", body), async () =>
     {
         RequireSendEnabled();
         var client = await graph.GetClientAsync(ct);
         var (teamId, _) = await ResolveTeamAsync(client, team, log, ct);
         var channelId = await ResolveChannelAsync(client, teamId, channel, log, ct);
-        var created = await client.Teams[teamId].Channels[channelId].Messages.PostAsync(new ChatMessage
-        {
-            Body = BuildBody(body, format),
-        }, cancellationToken: ct);
+        var messages = client.Teams[teamId].Channels[channelId].Messages;
+        var message = new ChatMessage { Body = BuildBody(body, format) };
+        var created = reply_to is null
+            ? await messages.PostAsync(message, cancellationToken: ct)
+            : await messages[reply_to].Replies.PostAsync(message, cancellationToken: ct);
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });
 
+    // A chat has no thread to reply into: Teams' chat "Reply" is a quote, carried by a
+    // `messageReference` attachment that an `<attachment>` element in the body anchors. Only
+    // `replyWithQuote` creates that attachment, which is why `reply_to` branches to another endpoint
+    // rather than decorating the ChatMessage. Two measured dead ends, both of which post a message
+    // that looks sent and renders as an empty box above the text:
+    //   - Composing the attachment here and posting it normally. Graph strips a `messageReference`
+    //     off a posted message — tried with the quoted message's id and with a fresh GUID — while
+    //     keeping the body's `<attachment>` element, which is what draws the empty box.
+    //   - The Skype markup the client used to use (`<blockquote itemtype=".../Reply">`) is refused
+    //     outright: "Message body content cannot contain unsupported item types".
+    // Graph builds the card from the id, so the caller never restates the quoted text.
     [McpServerTool(Name = "send_chat_message", UseStructuredContent = true, Destructive = false, Idempotent = false)]
     [Description("MUTATION: sends a message visible to everyone in the chat. Disabled unless the environment " +
-                 "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `chat` is a chat id from list_chats.")]
+                 "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `chat` is a chat id from list_chats. " +
+                 "Set reply_to to a message id from read_chat_messages to answer that message as a quoted reply, " +
+                 "the same card the Teams client's Reply button produces.")]
     public Task<SentMessageDto> SendChatMessage(
         [Description("Chat id, e.g. 19:...@thread.v2")] string chat,
         [Description("Message body. Plain text unless format says otherwise.")] string body,
         [Description("Body format: 'text' (default), 'markdown', or 'html'. Use markdown for anything beyond " +
                      "a single plain paragraph (Teams collapses newlines in a text body); it is converted " +
                      "server-side and renders consistently. html is a last resort.")] string? format = null,
+        [Description("Id of a message in this chat to quote, from read_chat_messages. Omit to send a new " +
+                     "top-level message. The quoted card is built by Teams from the id; do not restate the " +
+                     "quoted text in body. Not supported in the self chat.")] string? reply_to = null,
         CancellationToken ct = default) => Run("send_chat_message",
-        A("chat", chat) + A("format", format ?? "text") + TeamsMcpLog.ContentArg("body", body), async () =>
+        A("chat", chat) + A("format", format ?? "text") + A("reply_to", reply_to)
+            + TeamsMcpLog.ContentArg("body", body), async () =>
     {
         RequireSendEnabled();
+        RequireQuotableChat(chat, reply_to);
         var client = await graph.GetClientAsync(ct);
-        var created = await client.Chats[chat].Messages.PostAsync(new ChatMessage
-        {
-            Body = BuildBody(body, format),
-        }, cancellationToken: ct);
+        var message = new ChatMessage { Body = BuildBody(body, format) };
+        var created = reply_to is null
+            ? await client.Chats[chat].Messages.PostAsync(message, cancellationToken: ct)
+            : await client.Chats[chat].Messages.ReplyWithQuote.PostAsync(
+                new Microsoft.Graph.Chats.Item.Messages.ReplyWithQuote.ReplyWithQuotePostRequestBody
+                { MessageIds = [reply_to], ReplyMessage = message }, cancellationToken: ct);
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });
 
@@ -911,6 +941,29 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                 "Sending is disabled. Set TEAMS_MCP_ALLOW_SEND=true in this server's environment to " +
                 "opt in to posting messages and reactions other people will see. That gate also decides " +
                 "whether sign-in asks for the send scopes, so a sign-in made without it needs `-- auth` again.");
+        }
+    }
+
+    /// <summary>
+    /// The self chat cannot carry a quoted reply through Graph, because Graph does not model it as a
+    /// chat at all: `GET /chats/48:notes` answers 400 "Call made for a thread which is not a
+    /// ChatThread", and `replyWithQuote` is routed as `/chats({chatThreadId})/messages/replyWithQuote`
+    /// — the id it needs is the thing `48:notes` is not. Posting a plain message to it works, which
+    /// is what makes the hole invisible: `replyWithQuote` answers 201 having written the body's
+    /// `attachment` element and created no attachment, so the client draws an empty box above the
+    /// text. Measured on v1.0 and beta alike; the same call against a `19:…@thread.v2` chat builds
+    /// the `messageReference` attachment correctly. The Teams client can quote here through its own
+    /// internal API, so this is a hole in Graph rather than in Teams. It fails silently at every
+    /// layer a caller can see, which is why it is refused rather than left to a screenshot.
+    /// </summary>
+    internal static void RequireQuotableChat(string chat, string? replyTo)
+    {
+        if (replyTo is not null && chat.StartsWith("48:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new McpException(
+                $"The self chat ('{chat}') does not support quoted replies through Graph: the call " +
+                "succeeds and the quote is dropped, leaving an empty quote box above the text. Send " +
+                "without reply_to, or reply in a 19:...@thread.v2 chat.");
         }
     }
 
