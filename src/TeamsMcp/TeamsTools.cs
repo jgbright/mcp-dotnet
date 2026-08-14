@@ -749,19 +749,26 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
 
     // A send posts a new message and edits nothing, so it is additive rather than destructive.
     // It is not idempotent: the same call twice puts the same text in the conversation twice.
+    //
+    // The content parameter is `body` because that is what the rest of the server calls it: reads
+    // return `body`, they take `body_limit`, and the parameter's own description said "message
+    // body" while the parameter was named `text`. A caller that had just read a conversation
+    // supplied `body`, which cost a rejection and a re-send of the whole message — the schema was
+    // the only place the word `text` appeared, and `format: "text"` is a different thing again.
+    // One word for message content, both directions.
     [McpServerTool(Name = "send_channel_message", UseStructuredContent = true, Destructive = false, Idempotent = false)]
     [Description("MUTATION: posts a message visible to everyone in the channel. Disabled unless the environment " +
                  "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `team`/`channel` accept ids or display names.")]
     public Task<SentMessageDto> SendChannelMessage(
         [Description("Team id (GUID) or display name")] string team,
         [Description("Channel id (19:...) or display name")] string channel,
-        [Description("Message body. Plain text unless format says otherwise.")] string text,
+        [Description("Message body. Plain text unless format says otherwise.")] string body,
         [Description("Body format: 'text' (default), 'markdown', or 'html'. Use markdown for anything beyond " +
                      "a single plain paragraph (Teams collapses newlines in a text body); it is converted " +
                      "server-side and renders consistently. html is a last resort.")] string? format = null,
         CancellationToken ct = default) => Run("send_channel_message",
         A("team", team) + A("channel", channel) + A("format", format ?? "text")
-            + TeamsMcpLog.ContentArg("text", text), async () =>
+            + TeamsMcpLog.ContentArg("body", body), async () =>
     {
         RequireSendEnabled();
         var client = await graph.GetClientAsync(ct);
@@ -769,7 +776,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         var channelId = await ResolveChannelAsync(client, teamId, channel, log, ct);
         var created = await client.Teams[teamId].Channels[channelId].Messages.PostAsync(new ChatMessage
         {
-            Body = BuildBody(text, format),
+            Body = BuildBody(body, format),
         }, cancellationToken: ct);
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });
@@ -779,18 +786,18 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                  "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `chat` is a chat id from list_chats.")]
     public Task<SentMessageDto> SendChatMessage(
         [Description("Chat id, e.g. 19:...@thread.v2")] string chat,
-        [Description("Message body. Plain text unless format says otherwise.")] string text,
+        [Description("Message body. Plain text unless format says otherwise.")] string body,
         [Description("Body format: 'text' (default), 'markdown', or 'html'. Use markdown for anything beyond " +
                      "a single plain paragraph (Teams collapses newlines in a text body); it is converted " +
                      "server-side and renders consistently. html is a last resort.")] string? format = null,
         CancellationToken ct = default) => Run("send_chat_message",
-        A("chat", chat) + A("format", format ?? "text") + TeamsMcpLog.ContentArg("text", text), async () =>
+        A("chat", chat) + A("format", format ?? "text") + TeamsMcpLog.ContentArg("body", body), async () =>
     {
         RequireSendEnabled();
         var client = await graph.GetClientAsync(ct);
         var created = await client.Chats[chat].Messages.PostAsync(new ChatMessage
         {
-            Body = BuildBody(text, format),
+            Body = BuildBody(body, format),
         }, cancellationToken: ct);
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });

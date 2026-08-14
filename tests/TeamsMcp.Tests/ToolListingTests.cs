@@ -117,6 +117,23 @@ public class ToolListingTests
         Assert.True(tool.GetCustomAttribute<McpServerToolAttribute>()!.UseStructuredContent);
     }
 
+    [Theory]
+    [MemberData(nameof(Tools))]
+    public void Message_content_is_called_the_same_thing_in_both_directions(MethodInfo tool)
+    {
+        // Reads return `body` and take `body_limit`; a send takes `body`. The parameter was `text`
+        // once, and a caller that had just read a conversation supplied `body` — one rejection and
+        // a re-send of the whole message. Nothing in either server may call message content `text`
+        // again: `text` is a value of `format`, which is a different question.
+        var parameters = tool.GetParameters().Select(p => p.Name).ToList();
+
+        Assert.DoesNotContain("text", parameters);
+        if (Sends.Contains(tool.GetCustomAttribute<McpServerToolAttribute>()!.Name!))
+        {
+            Assert.Contains("body", parameters);
+        }
+    }
+
     private static CallToolResult Call(object? structured, bool isError = false)
     {
         var result = new CallToolResult

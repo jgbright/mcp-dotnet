@@ -153,6 +153,11 @@ scopes are requested at all. See [authentication.md](authentication.md#teams-the
 the refusal message says so explicitly, because "the gate is on but it still refuses" is otherwise a
 confusing state.
 
+The content parameter is `body`, the same word the read tools use for the same thing (`body` in a
+message DTO, `body_limit` on every read). It was `text` until a caller that had just read a
+conversation supplied `body`, was rejected, and re-sent the whole message — the schema was the only
+place the word `text` appeared, and `format: "text"` means something else again.
+
 `format` defaults to text. Markup is opt-in because Teams escapes it in a text body, so an HTML
 entity sent as text arrives as its literal characters. An unknown value is an `McpException`
 rather than a silent fallback.
