@@ -192,7 +192,36 @@ internal sealed record WireReleaseDefEnvironmentDetail(
     List<WireDeployPhase>? DeployPhases);
 
 internal sealed record WireDeployPhase(
-    string? Name, int? Rank, string? PhaseType, List<WireWorkflowTask>? WorkflowTasks);
+    string? Name, int? Rank, string? PhaseType, List<WireWorkflowTask>? WorkflowTasks,
+    WireDeploymentInput? DeploymentInput = null);
+
+/// <summary>
+/// Where a phase runs. <c>queueId</c> is a deployment group on a <c>machineGroupBasedDeployment</c>
+/// phase and an agent queue on an <c>agentBasedDeployment</c> phase; only <c>phaseType</c> tells
+/// them apart. <c>tags</c> pick machines in the group: a machine needs all of them, case does not
+/// matter, and no tags means every machine (see <see cref="Targeting"/>).
+/// </summary>
+internal sealed record WireDeploymentInput(
+    int? QueueId, List<string>? Tags, string? DeploymentHealthOption, int? HealthPercent,
+    int? TimeoutInMinutes, string? Condition);
+
+// Deployment groups: the machines classic release stages deploy to. They live on the task agent
+// service at distributedtask/deploymentgroups, project-scoped on the core host. They are not the
+// ADO Environments that YAML pipelines deploy to (WireEnvironmentInstance), which sit next to them
+// under distributedtask/environments. The listing rejects $expand=machines (400, "no longer
+// supported"); only the by-id read returns machines.
+//
+// Agent capabilities are left out on purpose. They are the agent process's environment variables.
+// The service does not mark them secret, and on a real agent they held a license key. The by-id
+// read does not return them, and no tool calls the endpoint that does.
+
+internal sealed record WireDeploymentGroup(
+    int Id, string? Name, string? Description, int? MachineCount, List<WireDeploymentMachine>? Machines);
+
+internal sealed record WireDeploymentMachine(int Id, List<string>? Tags, WireDeploymentAgent? Agent);
+
+internal sealed record WireDeploymentAgent(
+    int Id, string? Name, string? Version, string? OsDescription, bool? Enabled, string? Status);
 
 /// <summary>
 /// One configured task. Not <see cref="WireReleaseTask"/>, which is one task as it *ran*: this is
@@ -595,7 +624,84 @@ public sealed record ReleaseTaskConfigDto(
     string? Condition,
     Dictionary<string, string>? Inputs);
 
-public sealed record ReleaseDeployPhaseDto(string? Name, string? Type, List<ReleaseTaskConfigDto>? Tasks);
+/// <summary>
+/// Where a phase is set to run. A deployment-group phase carries either <c>tags</c> or
+/// <c>allMachines</c>. The second spells out the empty tag list, because no tags means every
+/// machine in the group (including ones added later) and few readers know that.
+/// <c>healthOption</c>, <c>timeoutMinutes</c> and <c>condition</c> appear only when they differ
+/// from the designer's defaults: one target at a time, no timeout, <c>succeeded()</c>.
+/// </summary>
+public sealed record DeployTargetConfigDto(
+    DeploymentGroupRefDto? DeploymentGroup,
+    // The agent queue an agentBasedDeployment phase runs on, which is not a deployment group.
+    int? AgentQueue,
+    List<string>? Tags,
+    bool? AllMachines,
+    string? HealthOption,
+    int? HealthPercent,
+    int? TimeoutMinutes,
+    string? Condition);
+
+/// <summary>A deployment group by id and name. get_release_definition_targets resolves it to machines.</summary>
+public sealed record DeploymentGroupRefDto(int Id, string? Name);
+
+public sealed record ReleaseDeployPhaseDto(
+    string? Name, string? Type, DeployTargetConfigDto? Target, List<ReleaseTaskConfigDto>? Tasks);
+
+// ------------------------------------------------------------- deployment groups and targets
+//
+// Where a classic release stage lands. A deployment group is a set of machines; a stage's deploy
+// phase names one and picks machines in it by tag. Both are Azure DevOps' own data, not
+// organization-specific knowledge, so none of this touches the deployment map.
+//
+// Agent capabilities are never returned. They are environment variables the service does not mark
+// secret, and one on a real agent was a license key. The escape hatch covers the rare case.
+
+/// <summary>
+/// One machine in a deployment group. <c>status</c> appears only when the agent is not online and
+/// <c>disabled</c> only when it is switched off; online and enabled is the normal state.
+/// </summary>
+public sealed record DeploymentMachineDto(
+    int Id,
+    string? Name,
+    string? Status,
+    bool? Disabled,
+    string? AgentVersion,
+    string? Os,
+    List<string>? Tags);
+
+/// <summary>
+/// A deployment group. <c>machines</c> is absent when the caller did not ask for them or the group
+/// has none. <c>machineCount</c> is the service's own count and is always present, so a target list
+/// can be compared with the whole group.
+/// </summary>
+public sealed record DeploymentGroupDto(
+    int Id,
+    string? Name,
+    string? Description,
+    int? MachineCount,
+    List<DeploymentMachineDto>? Machines);
+
+/// <summary>
+/// One deploy phase resolved to the machines it would run on now. <c>machines</c> is an empty list
+/// when the phase's tags match nothing in its group; that empty list is the finding, not padding.
+/// It is absent when the phase does not run on a deployment group (<c>type</c> says what it runs
+/// on) or the group could not be read (<c>error</c> says why).
+/// </summary>
+public sealed record PhaseTargetsDto(
+    string? Phase,
+    string? Type,
+    DeploymentGroupDto? DeploymentGroup,
+    int? AgentQueue,
+    List<string>? Tags,
+    bool? AllMachines,
+    List<DeploymentMachineDto>? Machines,
+    string? Error);
+
+public sealed record StageTargetsDto(int Id, string? Name, List<PhaseTargetsDto> Phases);
+
+public sealed record ReleaseTargetsDto(
+    int Id, string? Name, List<StageTargetsDto> Environments, string? WebUrl);
 
 /// <summary>
 /// One stage of a definition. <c>phases</c> is absent when the caller asked for no tasks, which is
@@ -1405,32 +1511,130 @@ internal static class Mapping
         task.Name,
         task.Version,
         task.Enabled is false ? true : null,
-        // "succeededContinueOnError" is what the designer writes for the default checkbox.
-        task.Condition is { Length: > 0 } condition &&
-        !condition.Equals("succeeded()", StringComparison.OrdinalIgnoreCase) &&
-        !condition.Equals("succeededContinueOnError", StringComparison.OrdinalIgnoreCase)
-            ? condition
-            : null,
+        Condition(task.Condition),
         (task.Inputs ?? [])
             .Where(i => !string.IsNullOrWhiteSpace(i.Value))
             .OrderBy(i => i.Key, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(i => i.Key, i => i.Value!) is { Count: > 0 } inputs ? inputs : null);
 
-    internal static ReleaseDeployPhaseDto DeployPhase(WireDeployPhase phase) => new(
+    /// <summary>
+    /// A task's or phase's run condition, unless it is a default the designer writes on its own.
+    /// "succeededContinueOnError" is what the default checkbox produces.
+    /// </summary>
+    internal static string? Condition(string? condition) =>
+        condition is { Length: > 0 } &&
+        !condition.Equals("succeeded()", StringComparison.OrdinalIgnoreCase) &&
+        !condition.Equals("succeededContinueOnError", StringComparison.OrdinalIgnoreCase)
+            ? condition
+            : null;
+
+    /// <summary>
+    /// Where a phase is set to run. Null when the phase has no <c>deploymentInput</c> worth
+    /// reporting, such as a server-side phase at its defaults. <c>queueId</c> is a deployment group
+    /// only on a machine-group phase; on an agent-based phase it is an agent queue and is reported
+    /// as one.
+    /// </summary>
+    internal static DeployTargetConfigDto? DeployTarget(
+        WireDeployPhase phase, IReadOnlyDictionary<int, string> deploymentGroupNames)
+    {
+        if (phase.DeploymentInput is not { } input)
+        {
+            return null;
+        }
+        var machineGroup = Targeting.IsMachineGroup(phase.PhaseType);
+        var tags = Targeting.Tags(input.Tags);
+        // One target at a time is the default. Only the rolling options are worth reporting.
+        var health = input.DeploymentHealthOption is { Length: > 0 } option &&
+                     !option.Equals("OneTargetAtATime", StringComparison.OrdinalIgnoreCase)
+            ? option
+            : null;
+        var target = new DeployTargetConfigDto(
+            machineGroup && input.QueueId is { } groupId
+                ? new DeploymentGroupRefDto(
+                    groupId, deploymentGroupNames.TryGetValue(groupId, out var name) ? name : null)
+                : null,
+            !machineGroup && input.QueueId is > 0 ? input.QueueId : null,
+            machineGroup && tags.Count > 0 ? tags : null,
+            machineGroup && tags.Count == 0 ? true : null,
+            health,
+            health is not null && input.HealthPercent is > 0 ? input.HealthPercent : null,
+            input.TimeoutInMinutes is > 0 ? input.TimeoutInMinutes : null,
+            Condition(input.Condition));
+        return target is
+        {
+            DeploymentGroup: null, AgentQueue: null, Tags: null, AllMachines: null,
+            HealthOption: null, TimeoutMinutes: null, Condition: null,
+        }
+            ? null
+            : target;
+    }
+
+    internal static ReleaseDeployPhaseDto DeployPhase(
+        WireDeployPhase phase, IReadOnlyDictionary<int, string> deploymentGroupNames) => new(
         phase.Name,
         phase.PhaseType,
+        DeployTarget(phase, deploymentGroupNames),
         (phase.WorkflowTasks ?? []).Select(TaskConfig).ToList() is { Count: > 0 } tasks ? tasks : null);
 
     internal static ReleaseDefinitionEnvironmentConfigDto ReleaseDefinitionEnvironment(
-        WireReleaseDefEnvironmentDetail env, IReadOnlyDictionary<int, string> groupNames, bool includeTasks) => new(
+        WireReleaseDefEnvironmentDetail env, IReadOnlyDictionary<int, string> groupNames, bool includeTasks,
+        IReadOnlyDictionary<int, string> deploymentGroupNames) => new(
         env.Id,
         env.Name,
         ReleaseVariables(env.Variables),
         VariableGroups(env.VariableGroups, groupNames),
-        includeTasks && (env.DeployPhases ?? []).OrderBy(p => p.Rank ?? 0).Select(DeployPhase).ToList()
+        includeTasks && (env.DeployPhases ?? []).OrderBy(p => p.Rank ?? 0)
+            .Select(p => DeployPhase(p, deploymentGroupNames)).ToList()
             is { Count: > 0 } phases
             ? phases
             : null);
+
+    /// <summary>
+    /// The deployment groups a definition's machine-group phases name, once each, in id order.
+    /// Agent-based phases are skipped: their queue is not a group.
+    /// </summary>
+    internal static IReadOnlyList<int> ReferencedDeploymentGroups(WireReleaseDefinitionDetail d) =>
+        [.. (d.Environments ?? [])
+            .SelectMany(e => e.DeployPhases ?? [])
+            .Where(p => Targeting.IsMachineGroup(p.PhaseType))
+            .Select(p => p.DeploymentInput?.QueueId)
+            .OfType<int>()
+            .Distinct()
+            .OrderBy(id => id)];
+
+    /// <summary>
+    /// One machine. Online and enabled is the state that deploys, so only other states are
+    /// reported. Tags are sorted so machines with the same set read the same.
+    /// </summary>
+    internal static DeploymentMachineDto DeploymentMachine(WireDeploymentMachine machine) => new(
+        machine.Id,
+        machine.Agent?.Name,
+        machine.Agent?.Status is { Length: > 0 } status &&
+        !status.Equals("online", StringComparison.OrdinalIgnoreCase)
+            ? status
+            : null,
+        machine.Agent?.Enabled is false ? true : null,
+        machine.Agent?.Version,
+        machine.Agent?.OsDescription?.Trim() is { Length: > 0 } os ? os : null,
+        Targeting.Tags(machine.Tags).OrderBy(t => t, StringComparer.OrdinalIgnoreCase).ToList()
+            is { Count: > 0 } tags ? tags : null);
+
+    internal static List<DeploymentMachineDto>? DeploymentMachines(IEnumerable<WireDeploymentMachine>? machines) =>
+        (machines ?? [])
+        .OrderBy(m => m.Agent?.Name, StringComparer.OrdinalIgnoreCase)
+        .Select(DeploymentMachine)
+        .ToList() is { Count: > 0 } list ? list : null;
+
+    /// <summary>
+    /// A group, with its machines when asked. <c>machineCount</c> falls back to the machines in
+    /// hand, so a target list can always be compared with the whole group.
+    /// </summary>
+    internal static DeploymentGroupDto DeploymentGroup(WireDeploymentGroup group, bool includeMachines) => new(
+        group.Id,
+        group.Name,
+        group.Description is { Length: > 0 } description ? description : null,
+        group.MachineCount ?? group.Machines?.Count,
+        includeMachines ? DeploymentMachines(group.Machines) : null);
 
     /// <summary>
     /// Every variable group id a definition references, at either scope, once each. This is what
@@ -1442,9 +1646,14 @@ internal static class Mapping
             .Distinct()
             .OrderBy(id => id)];
 
+    /// <summary>
+    /// <paramref name="deploymentGroupNames"/> adds each phase's group name. Like the variable
+    /// group names it comes from a lookup that may have failed, and the id identifies the group
+    /// without it.
+    /// </summary>
     internal static ReleaseDefinitionDetailDto ReleaseDefinitionDetail(
         WireReleaseDefinitionDetail d, IReadOnlyDictionary<int, string> groupNames, bool includeTasks,
-        string orgUrl, string? project) => new(
+        string orgUrl, string? project, IReadOnlyDictionary<int, string>? deploymentGroupNames = null) => new(
         d.Id,
         d.Name,
         string.Equals(d.Path, "\\", StringComparison.Ordinal) ? null : d.Path,
@@ -1453,7 +1662,9 @@ internal static class Mapping
         VariableGroups(d.VariableGroups, groupNames),
         (d.Artifacts ?? []).Select(ReleaseArtifact).ToList() is { Count: > 0 } artifacts ? artifacts : null,
         (d.Environments ?? []).OrderBy(e => e.Rank ?? 0)
-            .Select(e => ReleaseDefinitionEnvironment(e, groupNames, includeTasks)).ToList(),
+            .Select(e => ReleaseDefinitionEnvironment(
+                e, groupNames, includeTasks, deploymentGroupNames ?? new Dictionary<int, string>()))
+            .ToList(),
         ReleaseDefinitionUrl(orgUrl, project, d.Id));
 
     // ----------------------------------------------------------------- search results
