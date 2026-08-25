@@ -394,7 +394,7 @@ mean it.
 
 Only the arguments you pass are written. Between them the two work item tools reach everything the
 read tools report: `title`, `description`, `repro_steps`, `acceptance_criteria`, `state`,
-`assigned_to`, `area`, `iteration`, tags, `priority` and the parent link.
+`assigned_to`, `area`, `iteration`, tags, `priority`, the estimates and the parent link.
 
 `update_work_item` changes exactly the fields passed. The body fields replace what is there, so
 read the item first if you mean to extend it. Its `comment` posts to the discussion, and `add_tags`
@@ -405,6 +405,13 @@ parent it already has writes nothing. `remove_parent` leaves it unparented.
 
 `priority` is the process's own scale, commonly 1 to 4. Leaving it off a `create_work_item` call
 takes the process default rather than a considered value, which is usually 2.
+
+The estimates are five separate fields because the processes spell the same idea differently:
+`original_estimate`, `remaining_work` and `completed_work` are hours on a Task, `story_points` is
+the Agile User Story field, and `effort` is the Scrum one. A work item type defines some of them
+and not others, and writing one it does not define is refused by Azure DevOps naming the field.
+Nothing couples them — `original_estimate` does not set `remaining_work`, and a sprint burndown
+reads the second, so set both when you are starting from an estimate.
 
 `assigned_to` takes a display name, an email, or an identity GUID. A display name resolves through
 the identity service. On a write, an ambiguous name is an error listing the candidates, never a

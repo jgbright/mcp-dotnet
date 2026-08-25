@@ -293,6 +293,43 @@ public class WorkItemMappingTests
     }
 
     [Fact]
+    public void The_scheduling_fields_are_read_back_as_the_numbers_they_are()
+    {
+        // Every one of these is writable by the two work item tools; a field a model can see but
+        // not fix sends the work out to a shell. Fractions survive because they are doubles.
+        var fields = Fields("""
+            {
+              "Microsoft.VSTS.Scheduling.OriginalEstimate": 4,
+              "Microsoft.VSTS.Scheduling.RemainingWork": 3.5,
+              "Microsoft.VSTS.Scheduling.CompletedWork": 0.5,
+              "Microsoft.VSTS.Scheduling.StoryPoints": 8,
+              "Microsoft.VSTS.Scheduling.Effort": 13
+            }
+            """);
+
+        var dto = Mapping.WorkItemDetail(new WireWorkItem(3, fields, null, null), 0, "https://x", null, null);
+
+        Assert.Equal(4, dto.OriginalEstimate);
+        Assert.Equal(3.5, dto.RemainingWork);
+        Assert.Equal(0.5, dto.CompletedWork);
+        Assert.Equal(8, dto.StoryPoints);
+        Assert.Equal(13, dto.Effort);
+    }
+
+    [Fact]
+    public void A_type_that_defines_no_estimate_says_nothing_rather_than_zero()
+    {
+        // Omitted, not 0. A Task with no estimate and a Bug that cannot have one both report
+        // nothing; a zero would read as "estimated at none".
+        var dto = Mapping.WorkItemDetail(
+            new WireWorkItem(3, Fields("""{ "System.State": "New" }"""), null, null),
+            0, "https://x", null, null);
+
+        Assert.Null(dto.OriginalEstimate);
+        Assert.Null(dto.StoryPoints);
+    }
+
+    [Fact]
     public void A_reason_that_merely_repeats_the_state_is_dropped()
     {
         var fields = Fields("""{ "System.State": "New", "System.Reason": "New" }""");

@@ -12,11 +12,12 @@ public class PatchDocumentTests
 {
     private static List<Writes.PatchOp> Update(
         string? state = null, string? assignee = null, string? area = null, string? iteration = null,
-        string? tags = null, int? priority = null, string? title = null, string? description = null,
+        string? tags = null, int? priority = null, Writes.Estimates? estimates = null,
+        string? title = null, string? description = null,
         string? reproSteps = null, string? acceptanceCriteria = null, string? comment = null) =>
         Writes.UpdatePatch(
-            state, assignee, area, iteration, tags, priority, title, description, reproSteps,
-            acceptanceCriteria, comment);
+            state, assignee, area, iteration, tags, priority, estimates, title, description,
+            reproSteps, acceptanceCriteria, comment);
 
     [Fact]
     public void Only_the_arguments_given_become_operations()
@@ -33,11 +34,17 @@ public class PatchDocumentTests
     {
         var ops = Update(
             "Resolved", "jason@contoso.com", "Core\\Billing", "Core\\Sprint 12", "stripe; qa", 1,
+            new Writes.Estimates(4, 4, 0.5, 3, 5),
             "Retry loop spins", "the queue page hangs", "1. open the queue page", "no hang", "done");
 
         Assert.Equal(
             ["/fields/System.State", "/fields/System.AssignedTo", "/fields/System.AreaPath",
              "/fields/System.IterationPath", "/fields/System.Tags", "/fields/Microsoft.VSTS.Common.Priority",
+             "/fields/Microsoft.VSTS.Scheduling.OriginalEstimate",
+             "/fields/Microsoft.VSTS.Scheduling.RemainingWork",
+             "/fields/Microsoft.VSTS.Scheduling.CompletedWork",
+             "/fields/Microsoft.VSTS.Scheduling.StoryPoints",
+             "/fields/Microsoft.VSTS.Scheduling.Effort",
              "/fields/System.Title", "/fields/System.Description", "/fields/Microsoft.VSTS.TCM.ReproSteps",
              "/fields/Microsoft.VSTS.Common.AcceptanceCriteria", "/fields/System.History"],
             ops.Select(o => o.Path).ToList());
@@ -47,7 +54,7 @@ public class PatchDocumentTests
     public void A_create_always_starts_with_the_title()
     {
         var ops = Writes.CreatePatch(
-            "Retry loop spins", null, "1. open the queue page", null, null, null, null, null, null);
+            "Retry loop spins", null, "1. open the queue page", null, null, null, null, null, null, null);
 
         Assert.Equal("/fields/System.Title", ops[0].Path);
         Assert.Equal("Retry loop spins", ops[0].Value);
@@ -96,10 +103,54 @@ public class PatchDocumentTests
     }
 
     [Fact]
+    public void An_estimate_is_enough_on_its_own_to_produce_an_operation()
+    {
+        var ops = Update(estimates: new Writes.Estimates(RemainingWork: 4));
+
+        var op = Assert.Single(ops);
+        Assert.Equal("/fields/Microsoft.VSTS.Scheduling.RemainingWork", op.Path);
+    }
+
+    [Fact]
+    public void An_original_estimate_does_not_carry_remaining_work_with_it()
+    {
+        // A sprint burndown reads RemainingWork. Writing only the estimate leaves it at zero, so
+        // the two are set independently and a caller who means both passes both.
+        var ops = Update(estimates: new Writes.Estimates(OriginalEstimate: 4));
+
+        Assert.Equal("/fields/Microsoft.VSTS.Scheduling.OriginalEstimate", Assert.Single(ops).Path);
+    }
+
+    [Fact]
+    public void An_estimate_reaches_the_wire_as_a_number_so_half_an_hour_survives()
+    {
+        var json = JsonSerializer.Serialize(
+            Update(estimates: new Writes.Estimates(RemainingWork: 0.5)), AdoClient.Json);
+
+        Assert.Equal(
+            """[{"op":"add","path":"/fields/Microsoft.VSTS.Scheduling.RemainingWork","value":0.5}]""",
+            json);
+    }
+
+    [Fact]
+    public void A_create_carries_the_estimates_it_is_given()
+    {
+        var ops = Writes.CreatePatch(
+            "Rotate the key", null, null, null, null, null, null, null, null,
+            new Writes.Estimates(OriginalEstimate: 4, RemainingWork: 4));
+
+        Assert.Equal(
+            ["/fields/System.Title", "/fields/Microsoft.VSTS.Scheduling.OriginalEstimate",
+             "/fields/Microsoft.VSTS.Scheduling.RemainingWork"],
+            ops.Select(o => o.Path).ToList());
+    }
+
+    [Fact]
     public void Tags_are_the_only_field_that_is_not_an_add()
     {
         var ops = Update(
             "Resolved", "jason@contoso.com", "Core\\Billing", "Core\\Sprint 12", "stripe; qa", 1,
+            new Writes.Estimates(4, 4, 0.5, 3, 5),
             "Retry loop spins", "the queue page hangs", "1. open the queue page", "no hang", "done");
 
         Assert.Equal("replace", Assert.Single(ops, o => o.Path == "/fields/System.Tags").Op);
@@ -370,6 +421,18 @@ public class WriteToolTests : IDisposable
         var e = await Assert.ThrowsAsync<McpException>(() => _tools.UpdateWorkItem(17));
 
         Assert.Contains("Nothing to change", e.Message);
+    }
+
+    [Fact]
+    public async Task An_update_that_only_sets_an_estimate_has_something_to_change()
+    {
+        using var _ = new EnvVar("ADO_MCP_ALLOW_WRITE", "true");
+
+        // It fails for want of an organization, which comes after the guard. The point is that an
+        // estimate on its own is not read as "nothing to change".
+        var e = await Assert.ThrowsAsync<McpException>(() => _tools.UpdateWorkItem(17, remaining_work: 4));
+
+        Assert.DoesNotContain("Nothing to change", e.Message);
     }
 
     [Fact]

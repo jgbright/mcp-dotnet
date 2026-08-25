@@ -73,12 +73,19 @@ that DTO should arrive with the argument that sets it. The escape hatch is held 
 standard: `ado_api_request` sends a JSON Patch body as `application/json-patch+json`
 (`ApiRequest.ContentType`, overridable), because a hardcoded `application/json` there put every
 work item endpoint out of reach and sent the work out to a shell anyway — which is the one thing
-that tool exists to prevent. Two of the writable things are not fields at all and each
-has its own trap:
+that tool exists to prevent. Three of the writable things have their own trap:
 - **Priority is an integer field**, so `PatchOp.Value` is `object?` rather than `string` and the
   op carries a JSON number. Omitting it on a create does not mean "no priority" — the process
   template's default lands instead (usually 2), which is why `create_work_item` says so in the
   argument's own description.
+- **The estimates are doubles and there are five of them**, carried as one `Writes.Estimates`
+  group rather than five arguments apiece on both patch builders, because the processes spell one
+  idea differently: hours on a Task (`OriginalEstimate`/`RemainingWork`/`CompletedWork`),
+  `StoryPoints` on an Agile User Story, `Effort` on a Scrum backlog item. They read back through
+  `Mapping.Number`, never `Mapping.Int`, which would round half an hour and half a point away
+  silently. Nothing couples them — writing an original estimate does not touch remaining work, and
+  remaining work is what a sprint burndown reads. A type that does not define one of these fields
+  is Azure DevOps' error to give, not this server's to predict.
 - **The parent is a relation addressed by index**, not a name: `System.LinkTypes.Hierarchy-Reverse`
   in the item's `relations` array, of which there is at most one. So `parent` reads before it
   writes (`$expand=relations`, which cannot be combined with a `fields` list — one read covers the

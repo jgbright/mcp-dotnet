@@ -366,7 +366,8 @@ public class AdoClientTests : IDisposable
 
         var result = await client.PatchAsync<WireWorkItem>(
             HttpMethod.Patch, "_apis/wit/workitems/17",
-            Writes.UpdatePatch("Active", null, null, null, null, null, null, null, null, null, null), default);
+            Writes.UpdatePatch("Active", null, null, null, null, null, null, null, null, null, null, null),
+            default);
 
         // Azure DevOps rejects a patch document sent as plain application/json.
         Assert.Equal("application/json-patch+json", contentType);

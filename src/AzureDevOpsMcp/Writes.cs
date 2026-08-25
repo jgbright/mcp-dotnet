@@ -27,13 +27,32 @@ internal static class Writes
     internal static PatchOp Field(string field, object value) => new("add", "/fields/" + field, value);
 
     /// <summary>
+    /// The scheduling fields, carried as one group instead of five arguments on each patch builder.
+    /// They are one idea spelled per process template: hours on a Task, points on an Agile User
+    /// Story, effort on a Scrum backlog item. A work item type defines some and not others, and
+    /// writing one it does not define is refused by Azure DevOps naming the field. Doubles, not
+    /// integers: half an hour and half a point are ordinary values.
+    /// </summary>
+    internal sealed record Estimates(
+        double? OriginalEstimate = null,
+        double? RemainingWork = null,
+        double? CompletedWork = null,
+        double? StoryPoints = null,
+        double? Effort = null)
+    {
+        internal bool Any =>
+            OriginalEstimate is not null || RemainingWork is not null ||
+            CompletedWork is not null || StoryPoints is not null || Effort is not null;
+    }
+
+    /// <summary>
     /// Only the arguments given become operations. Everything else stays untouched. The body fields
     /// (title, description, repro steps, acceptance criteria) replace what is there rather than
     /// appending to it — the discussion is the only append-only one.
     /// </summary>
     internal static List<PatchOp> UpdatePatch(
         string? state, string? assignee, string? area, string? iteration, string? tags,
-        int? priority, string? title, string? description, string? reproSteps,
+        int? priority, Estimates? estimates, string? title, string? description, string? reproSteps,
         string? acceptanceCriteria, string? comment)
     {
         var ops = new List<PatchOp>();
@@ -49,6 +68,7 @@ internal static class Writes
             ops.Add(new PatchOp("replace", "/fields/System.Tags", tags));
         }
         Add(ops, "Microsoft.VSTS.Common.Priority", priority);
+        AddEstimates(ops, estimates);
         Add(ops, "System.Title", title);
         Add(ops, "System.Description", description);
         Add(ops, "Microsoft.VSTS.TCM.ReproSteps", reproSteps);
@@ -60,7 +80,8 @@ internal static class Writes
 
     internal static List<PatchOp> CreatePatch(
         string title, string? description, string? reproSteps, string? acceptanceCriteria,
-        string? assignee, string? area, string? iteration, string? tags, int? priority)
+        string? assignee, string? area, string? iteration, string? tags, int? priority,
+        Estimates? estimates)
     {
         var ops = new List<PatchOp> { Field("System.Title", title) };
         Add(ops, "System.Description", description);
@@ -71,6 +92,7 @@ internal static class Writes
         Add(ops, "System.IterationPath", iteration);
         Add(ops, "System.Tags", tags);
         Add(ops, "Microsoft.VSTS.Common.Priority", priority);
+        AddEstimates(ops, estimates);
         return ops;
     }
 
@@ -84,6 +106,24 @@ internal static class Writes
         {
             ops.Add(Field(field, value));
         }
+    }
+
+    /// <summary>
+    /// Only the estimates given become operations, so the item's other scheduling fields stay as
+    /// they were. Nothing couples them: writing an original estimate does not touch remaining work,
+    /// which is the field a sprint burndown reads.
+    /// </summary>
+    private static void AddEstimates(List<PatchOp> ops, Estimates? estimates)
+    {
+        if (estimates is null)
+        {
+            return;
+        }
+        Add(ops, "Microsoft.VSTS.Scheduling.OriginalEstimate", estimates.OriginalEstimate);
+        Add(ops, "Microsoft.VSTS.Scheduling.RemainingWork", estimates.RemainingWork);
+        Add(ops, "Microsoft.VSTS.Scheduling.CompletedWork", estimates.CompletedWork);
+        Add(ops, "Microsoft.VSTS.Scheduling.StoryPoints", estimates.StoryPoints);
+        Add(ops, "Microsoft.VSTS.Scheduling.Effort", estimates.Effort);
     }
 
     // ------------------------------------------------------------------ the parent link

@@ -204,6 +204,7 @@ public class DescribeResultTests
     {
         var described = AdoTools.Describe(new WorkItemDetailDto(
             17, "Bug", "Retry loop spins", "Active", null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null,
             "reproduces on the nightly build", null, null, null, null,
             [new CommentDto(1, "Mike", null, null, "seen it too", null)], null, null));
 

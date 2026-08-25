@@ -335,6 +335,17 @@ Two of the writable things are not fields, and each has its own trap.
 a JSON number. Omitting it on a create does not mean "no priority" — the process template's default
 lands instead, usually 2 — which is why `create_work_item` says so in the argument's own description.
 
+**The estimates are doubles, and there are five of them because the processes disagree.**
+`Writes.Estimates` carries `Microsoft.VSTS.Scheduling.OriginalEstimate`, `RemainingWork` and
+`CompletedWork` (hours, on a Task), `StoryPoints` (Agile User Story) and `Effort` (Scrum backlog
+item), as one group rather than five arguments apiece on the two patch builders. They are read back
+through `Mapping.Number` rather than `Mapping.Int`, since half an hour of remaining work and half a
+story point are both ordinary values and an int would round them away silently. A type defines some
+of these fields and not others, and writing one it does not define is refused by Azure DevOps naming
+the field — the same shape of error as a bad state, so it is left to the service rather than
+predicted here. Nothing in `AddEstimates` couples them: writing an original estimate does not touch
+remaining work, which is the field a sprint burndown reads.
+
 **The parent is a relation addressed by index**, not by name. `System.LinkTypes.Hierarchy-Reverse`
 in the item's `relations` array, of which there is at most one. So `parent` reads before it writes
 (`$expand=relations`, which **cannot be combined with a `fields` list** — one read therefore covers
