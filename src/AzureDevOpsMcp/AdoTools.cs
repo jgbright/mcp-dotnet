@@ -637,8 +637,12 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "config file changes what is deployed — a variable list cannot, because " +
                  "substitution can be driven by matching variable names against the file. A secret " +
                  "variable comes back as its name with `isSecret: true` and no value, always. " +
-                 "Inputs a definition left empty are omitted. `definition` may be a numeric id or a " +
-                 "name; use list_release_definitions to find it.")]
+                 "Inputs a definition left empty are omitted. Each phase also carries its `target`: " +
+                 "the deployment group it runs on (or the agent queue, for an agent-based phase) and " +
+                 "the tags it selects machines by — or `allMachines: true` when it has none, which " +
+                 "means every machine in the group. get_release_definition_targets resolves those to " +
+                 "the machines themselves. `definition` may be a numeric id or a name; use " +
+                 "list_release_definitions to find it.")]
     public Task<ReleaseDefinitionDetailDto> GetReleaseDefinition(
         [Description("Release definition id (number) or name")] string definition,
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
@@ -652,8 +656,94 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var resolved = await ResolveReleaseDefinitionAsync(client, vsrm, resolvedProject, definition, ct);
         var wire = await ReadReleaseDefinitionAsync(client, vsrm, resolvedProject, resolved.Id, ct);
         var groups = await VariableGroupNamesAsync(client, resolvedProject, Mapping.ReferencedGroups(wire), ct);
+        // Phases are only reported with the tasks, so the group names are only fetched then.
+        var deploymentGroups = include_tasks
+            ? await DeploymentGroupNamesAsync(client, resolvedProject, Mapping.ReferencedDeploymentGroups(wire), ct)
+            : new Dictionary<int, string>();
         return Mapping.ReleaseDefinitionDetail(
-            wire, groups, include_tasks, client.OrgUrl, resolvedProject.Name);
+            wire, groups, include_tasks, client.OrgUrl, resolvedProject.Name, deploymentGroups);
+    });
+
+    [McpServerTool(Name = "get_release_definition_targets", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Resolve where each stage of a classic release definition would deploy " +
+                 "right now: per environment, in the order they deploy, each deploy phase with its " +
+                 "deployment group, the tags it selects by, and the machines those tags select — " +
+                 "name, tags, agent status when not online, `disabled` when the agent is switched " +
+                 "off. The selection is the one Azure DevOps makes: a machine is selected when it " +
+                 "carries all of the phase's tags, compared case-insensitively, and a phase with no " +
+                 "tags (`allMachines: true`) selects every machine in the group, including any added " +
+                 "later. Read `machines` against the group's `machineCount`: an empty list means the " +
+                 "tags match nothing, so a deploy would report success having deployed to nothing; " +
+                 "fewer than machineCount means the tags exclude the rest. A phase that runs on an " +
+                 "agent pool or on the server reports its `type` and no machines. A group this " +
+                 "credential cannot read, or that no longer exists, is reported in that phase's " +
+                 "`error` rather than failing the whole answer. Agent capabilities are not returned. " +
+                 "`definition` may be a numeric id or a name. Costs one request per distinct group.")]
+    public Task<ReleaseTargetsDto> GetReleaseDefinitionTargets(
+        [Description("Release definition id (number) or name")] string definition,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        CancellationToken ct = default) => Run("get_release_definition_targets",
+        A("definition", definition) + A("project", project), async () =>
+    {
+        var client = await ado.GetClientAsync(ct);
+        var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+        var resolved = await ResolveReleaseDefinitionAsync(client, vsrm, resolvedProject, definition, ct);
+        var wire = await ReadReleaseDefinitionAsync(client, vsrm, resolvedProject, resolved.Id, ct);
+
+        // One read per distinct group, machines included, however many phases share it. A group
+        // that cannot be read becomes that phase's error instead of failing the call: the other
+        // stages still resolve, and "the group is gone" is useful in itself.
+        var groups = new Dictionary<int, WireDeploymentGroup>();
+        var errors = new Dictionary<int, string>();
+        foreach (var id in Mapping.ReferencedDeploymentGroups(wire))
+        {
+            try
+            {
+                groups[id] = await ReadDeploymentGroupAsync(client, resolvedProject, id, ct);
+            }
+            catch (AdoApiException e)
+            {
+                log.Line(LogLevel.Warning, Ev.ToolFail,
+                    "deployment group unreadable; reporting it on the phase" +
+                    A("group", id) + A("status", e.Status) + A("reason", e.Message));
+                errors[id] = $"Azure DevOps error {e.Status}: {e.Message}";
+            }
+        }
+        return Targeting.Resolve(wire, groups, errors, client.OrgUrl, resolvedProject.Name);
+    });
+
+    [McpServerTool(Name = "list_deployment_groups", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. List a project's deployment groups — the sets of machines classic " +
+                 "release stages deploy to — and, with include_machines (default true), each group's " +
+                 "machines: name, tags, agent status when not online, `disabled` when the agent is " +
+                 "switched off, agent version and OS. These are not the Environments YAML pipelines " +
+                 "deploy to; Azure DevOps keeps the two apart and so does this server. A machine's " +
+                 "tags are what a stage selects on (see get_release_definition_targets). Agent " +
+                 "capabilities are not returned. Costs one request, plus one per group when machines " +
+                 "are included.")]
+    public Task<List<DeploymentGroupDto>> ListDeploymentGroups(
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Include each group's machines (default true)")] bool include_machines = true,
+        [Description("Maximum groups to return (default 100, max 200)")] int limit = 100,
+        CancellationToken ct = default) => Run("list_deployment_groups",
+        A("project", project) + A("include_machines", include_machines) + A("limit", limit), async () =>
+    {
+        limit = Math.Clamp(limit, 1, 200);
+        var client = await ado.GetClientAsync(ct);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+        var groups = await ListDeploymentGroupsInternal(client, resolvedProject.Id, limit, ct);
+        if (!include_machines)
+        {
+            return groups.Select(g => Mapping.DeploymentGroup(g, includeMachines: false)).ToList();
+        }
+        var results = new List<DeploymentGroupDto>(groups.Count);
+        foreach (var summary in groups)
+        {
+            results.Add(Mapping.DeploymentGroup(
+                await ReadDeploymentGroupAsync(client, resolvedProject, summary.Id, ct), includeMachines: true));
+        }
+        return results;
     });
 
     [McpServerTool(Name = "search_release_definitions", UseStructuredContent = true, ReadOnly = true)]
@@ -986,6 +1076,70 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         {
             log.Line(LogLevel.Warning, Ev.ToolFail,
                 "variable group names unavailable; reporting ids only" +
+                A("groups", string.Join(",", ids)) + A("status", e.Status) + A("reason", e.Message));
+            return new Dictionary<int, string>();
+        }
+    }
+
+    /// <summary>
+    /// One deployment group with its machines. The listing rejects <c>$expand=machines</c> (400:
+    /// "no longer supported... query individual deployment group"), so machines always come from a
+    /// by-id read, and this is the only place that asks for the expansion. Capabilities are a
+    /// different expansion on a different endpoint and are never requested.
+    /// </summary>
+    private static async Task<WireDeploymentGroup> ReadDeploymentGroupAsync(
+        AdoClient client, Named project, int id, CancellationToken ct) =>
+        await client.GetAsync<WireDeploymentGroup>(
+            $"{Escape(project.Id)}/_apis/distributedtask/deploymentgroups/{id}?{Api}&$expand=machines", ct);
+
+    /// <summary>The project's deployment groups as summaries: name and machine count, no machines.</summary>
+    private async Task<List<WireDeploymentGroup>> ListDeploymentGroupsInternal(
+        AdoClient client, string projectId, int limit, CancellationToken ct)
+    {
+        var results = new List<WireDeploymentGroup>();
+        string? token = null;
+        do
+        {
+            var path = $"{Escape(projectId)}/_apis/distributedtask/deploymentgroups?{Api}&$top=100" +
+                       (token is null ? "" : $"&continuationToken={Uri.EscapeDataString(token)}");
+            var (page, next) = await client.GetPageAsync<ListResponse<WireDeploymentGroup>>(path, ct);
+            results.AddRange(page.Value ?? []);
+            token = next;
+            if (token is not null && results.Count < limit)
+            {
+                log.Line(LogLevel.Debug, Ev.Page, "list_deployment_groups next page" + A("so far", results.Count));
+            }
+        }
+        while (token is not null && results.Count < limit);
+        return results.Count > limit ? results[..limit] : results;
+    }
+
+    /// <summary>
+    /// Names for the deployment groups a definition's phases reference by id. Same terms as
+    /// <see cref="VariableGroupNamesAsync"/>: a convenience, logged and swallowed on failure,
+    /// because the id identifies the group and a missing permission on the task agent service must
+    /// not turn a definition read into an error.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<int, string>> DeploymentGroupNamesAsync(
+        AdoClient client, Named project, IReadOnlyList<int> ids, CancellationToken ct)
+    {
+        if (ids.Count == 0)
+        {
+            return new Dictionary<int, string>();
+        }
+        try
+        {
+            var response = await client.GetAsync<ListResponse<WireDeploymentGroup>>(
+                $"{Escape(project.Id)}/_apis/distributedtask/deploymentgroups?{Api}" +
+                $"&ids={string.Join(",", ids)}", ct);
+            return (response.Value ?? [])
+                .Where(g => g.Name is { Length: > 0 })
+                .ToDictionary(g => g.Id, g => g.Name!);
+        }
+        catch (AdoApiException e)
+        {
+            log.Line(LogLevel.Warning, Ev.ToolFail,
+                "deployment group names unavailable; reporting ids only" +
                 A("groups", string.Join(",", ids)) + A("status", e.Status) + A("reason", e.Message));
             return new Dictionary<int, string>();
         }
@@ -1693,6 +1847,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "when the path does not name one. `filter` narrows the response: dot-separated " +
                  "property names with [] to map over an array and [n] to index one, e.g. " +
                  "value[].name — it is a projection, not jq, and matching nothing yields json: null. " +
+                 "Arrays arrive in the service's own order, which is not always a meaningful one: a " +
+                 "release definition's environments come in no particular order and only their " +
+                 "`rank` says which deploys first — the typed tools sort by it, this does not. " +
                  "Values Azure DevOps marks secret come back as \"[redacted]\". A response larger " +
                  "than max_chars is returned as truncated text instead of json, which a narrower " +
                  "`filter` or the endpoint's own $top is the way out of. A `body` that is a JSON " +
@@ -2388,6 +2545,14 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         ReleaseDefinitionSearchResult s =>
             A("results", s.Results.Count) + A("scanned", s.Scanned) +
             (s.HasMore is true ? A("hasMore", true) : ""),
+        ReleaseTargetsDto t =>
+            A("definition", t.Id) + A("name", t.Name) +
+            A("environments", t.Environments.Count) +
+            A("phases", t.Environments.Sum(e => e.Phases.Count)) +
+            A("machines", t.Environments.Sum(e => e.Phases.Sum(p => p.Machines?.Count ?? 0))) +
+            // The two findings the tool exists for, countable from the log alone.
+            A("emptyPhases", t.Environments.Sum(e => e.Phases.Count(p => p.Machines is { Count: 0 }))) +
+            A("errors", t.Environments.Sum(e => e.Phases.Count(p => p.Error is not null))),
         ApiResponseDto a =>
             A("status", a.Status) + A("contentType", a.ContentType) +
             A("chars", a.Json?.GetRawText().Length ?? a.Text?.Length ?? 0) +

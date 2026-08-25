@@ -342,6 +342,12 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         project. No tool returns a value Azure DevOps marks secret; the name and `isSecret` are the
         whole answer, and asking again another way will not produce it.
 
+        Where a stage lands is configuration too, and a stage's name is a label rather than evidence
+        of it. get_release_definition_targets resolves each stage to the machines its deployment
+        group and tags select now, and is the answer to "which servers does this touch";
+        deployment_status says what version is out, not where. Deployment groups are not the
+        Environments of YAML pipelines — the two share a word and nothing else.
+
         When no tool covers what is needed, ado_api_request calls the REST API with this server's own
         credential rather than sending you looking for a personal access token, which is how a
         session ends up debugging a second, staler credential instead of the question it started

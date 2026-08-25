@@ -192,6 +192,67 @@ off as complete. Thirteen definitions take about three seconds.
 will not match on a secret's value either, only its name — matching on a value the tool then refuses
 to return would leak it a bit at a time.
 
+### Where a stage lands
+
+What a stage *runs* and where it *runs it* are separate configuration. A stage's deploy phase
+carries a `deploymentInput` — `queueId`, `tags`, the health option, a timeout and a condition — and
+none of it says which machines that is. A deployment group is a resource of the task agent service,
+project-scoped on the core host under `distributedtask/deploymentgroups`, and **not the ADO
+Environments YAML pipelines deploy to**, which live under `distributedtask/environments` on the same
+service. The two are unrelated, share a word, and are an easy way to wire the wrong endpoint.
+
+Three tools cover it:
+
+- `get_release_definition` reports each phase's `target`: the deployment group (id and name, the
+  name from one `deploymentgroups?ids=` lookup swallowed on failure exactly like the variable group
+  names) and either its `tags` or `allMachines: true`. `queueId` only means a deployment group on a
+  `machineGroupBasedDeployment` phase; on an `agentBasedDeployment` phase the same field is an agent
+  queue, reported as `agentQueue`, and `Targeting.IsMachineGroup` is what tells them apart.
+- `list_deployment_groups` lists the groups and their machines — name, tags, status when not
+  online, `disabled` when switched off, agent version and OS. **The listing refuses
+  `$expand=machines`** (400: "no longer supported. You need to query individual deployment group"),
+  so machines are one by-id read per group, and the tool's description says what it costs.
+- `get_release_definition_targets` is the one worth having: per environment in rank order, per
+  phase, the group with its `machineCount` and the machines the tags select now. Doing the same by
+  hand through the escape hatch took about a dozen requests and a manual intersection.
+
+The selection rule is Azure DevOps' own, and each half was pinned against the service before it was
+written down. A machine is selected when it carries **all** of the phase's tags — the targets
+endpoint documents its `tags` filter as "contain all these tags", and live, two tags selected only
+the machine carrying both. The comparison is **case-insensitive** — the deployment-group docs say
+so, and live, a stage tagged `clients` deployed to the machines tagged `Clients`. **No tags means
+every machine in the group**, including any registered later: that is `Enumerable.All` on an empty
+list doing exactly the right thing, and the least obvious of the three, so the result spells it out
+as `allMachines: true` rather than omitting an empty list. The logic is pure (`Targeting.cs`) and
+tested against fixtures shaped like the measured groups.
+
+Two findings are surfaced rather than smoothed over:
+
+- **A phase whose tags select nothing** reports `machines: []` beside the group's `machineCount`.
+  This is the one place in the server an empty array is emitted on purpose: a deploy against zero
+  targets succeeds, and reads as a successful deployment. Measured: a definition whose two stages
+  both name the production web group with the same tag, so its "Deploy to Staging" lands on
+  production servers and nothing at all is deployed to QA.
+- **A group that cannot be read** — deleted since the definition was saved, or a permission this
+  credential lacks — lands in that phase's `error`, the way `deployment_status` reports one broken
+  deployable. The other stages still have answers.
+
+**Agent capabilities are not returned, by decision rather than omission.** An agent's
+`systemCapabilities` are its process environment variables. They are genuinely useful
+(`DOTNET_ENVIRONMENT`, `USERDOMAIN`, the `Path`) and they carry secrets — a license key was sitting
+in one on a real agent next to `NUMBER_OF_PROCESSORS` — which Azure DevOps does **not** mark secret,
+so the `isSecret` rule cannot catch them and a value heuristic would miss whatever it did not
+anticipate. Of the three options — omit, allowlist, redact by heuristic — omitting is the narrowest
+that still answers "where does this land", and it costs nothing: the by-id group read with
+`$expand=machines` does not carry capabilities at all. Only
+`deploymentgroups/{id}/targets?$expand=capabilities` does, and no tool asks for it. The escape hatch
+serves the rare case, with the caller deciding what they are looking at.
+
+`deployment_status` is not this. It answers what *version* is out, through the external deployment
+map, because which deployables exist is organization-specific. Deployment groups and tags are Azure
+DevOps' own data, need no data file, and stay out of it: one tool says what shipped, the other where
+it lands.
+
 ### Task detail on a release
 
 `get_release` reports failures and counts what passed, which is right by default and wrong when the
@@ -520,6 +581,8 @@ answers `The controller for path '…' was not found`, which says considerably m
 | release definitions per project (`deployment_status`) | 500 | Warning: resolution may be incomplete |
 | release definitions per project (`list_release_definitions`) | `limit`, default 200, max 1000 | Paged to the limit |
 | release definitions read in full (`search_release_definitions`) | 200 | `hasMore` + Warning |
+| deployment groups per project (`list_deployment_groups`) | `limit`, default 100, max 200 | Paged to the limit; one more request per group when machines are included |
+| deployment group reads (`get_release_definition_targets`) | one per distinct group | A group that fails to read is that phase's `error` |
 | `ado_api_request` response | `max_chars`, default 20000, max 200000 | Returned as truncated text instead of json |
 | build definitions per project | 1000 | Warning: resolution may be incomplete |
 | environment deployment records | 100 | Reported as "no succeeded deployment in the last 100 records" |
@@ -533,7 +596,7 @@ answers `The controller for path '…' was not found`, which says considerably m
 Read: `list_projects`, `list_repos`, `list_pull_requests`, `get_pull_request`,
 `wait_for_pull_request`, `list_work_items`, `get_work_item`, `list_pipelines`, `list_pipeline_runs`,
 `get_pipeline_run`, `wait_for_pipeline_run`, `list_release_definitions`, `get_release_definition`,
-`search_release_definitions`, `list_releases`,
+`get_release_definition_targets`, `list_deployment_groups`, `search_release_definitions`, `list_releases`,
 `get_release`, `wait_for_release`, `search_code`, `search_work_items`, `search_wiki`,
 `deployment_status`, `ado_api_request`, `ado_auth_status`.
 

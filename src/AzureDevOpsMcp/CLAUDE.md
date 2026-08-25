@@ -48,6 +48,22 @@ first one have their own traps:
   agent service, and the one call in this server whose failure is logged and swallowed: the ids
   identify the groups without the names, and a missing permission there must not turn a definition
   read into an error. The groups' contents are never read at all.
+- **A deployment group is not an ADO Environment.** Both live under `distributedtask/` on the core
+  host; groups (`deploymentgroups`) are what classic release stages deploy to, Environments
+  (`environments`) are what YAML pipelines deploy to. A phase's `queueId` is a deployment group
+  only when `phaseType` is `machineGroupBasedDeployment` (`Targeting.IsMachineGroup`); on an
+  agent-based phase the same field is an agent queue. The listing refuses `$expand=machines`, so
+  machines are one by-id read per group (`ReadDeploymentGroupAsync`, the only place that expansion
+  is requested).
+- **Tag selection is all-of, case-insensitive, and empty means every machine** (`Targeting.Select`).
+  Each half was pinned against the service before it was coded, and a result spells the empty case
+  out as `allMachines: true`. `machines: []` is deliberate: a phase whose tags select nothing
+  deploys to nothing and reports success, and the empty list beside `machineCount` is the finding.
+- **Agent capabilities are never returned.** They are the agent's environment variables, unmarked
+  by Azure DevOps and carrying a license key on a real agent. No tool requests the `capabilities`
+  expansion (it lives on the `targets` endpoint, not the group read); the escape hatch serves the
+  rare case. Do not add an allowlist or a redaction heuristic — see `docs/azure-devops-server.md`
+  § Where a stage lands.
 - **Release paths are project-scoped on the vsrm host.** `{vsrm}/{project}/_apis/release/…`; without
   the project segment the service answers 404 with a plain-text body, which is why
   `AdoClient.ErrorAsync` surfaces a short plain-text error rather than `Not Found (404)`.

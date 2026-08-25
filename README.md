@@ -322,7 +322,9 @@ Read:
 | `get_pipeline_run` | Reports each failed task with its stage, job, errors and log tail |
 | `wait_for_pipeline_run` | Polls until the run finishes, then reports like `get_pipeline_run`. A timeout returns the run as it stands with `timedOut: true` |
 | `list_release_definitions` | Classic release pipelines, with the environments each deploys to |
-| `get_release_definition` | How one is configured: variables at both scopes, variable groups, and each environment's tasks with their inputs |
+| `get_release_definition` | How one is configured: variables at both scopes, variable groups, and each environment's tasks with their inputs and the deployment group and tags each phase targets |
+| `get_release_definition_targets` | Where each stage lands: its deployment group and the machines its tags select right now. An empty `machines` list is a stage that would deploy to nothing |
+| `list_deployment_groups` | The machines classic release stages deploy to, with their tags and agent status. Not the Environments YAML pipelines use |
 | `search_release_definitions` | Where a name or value appears across every definition — in a variable, a task input, or both |
 | `list_releases` | Releases of one definition, newest first, with every environment's status |
 | `get_release` | Artifacts, pending approvals, and each failed task with its phase, job, errors and log tail; `include_tasks` lists every task and `task_log` fetches one's log |
@@ -355,6 +357,13 @@ time, and which files its substitution tasks rewrite, which is what decides whet
 checked-in config file changes anything in production. `search_release_definitions` asks it across
 every definition in the project at once. Neither returns a value Azure DevOps marks secret: the name
 and `isSecret: true` are the answer, and that holds through `ado_api_request` too.
+
+Where a stage *lands* is a third question. `get_release_definition_targets` resolves each stage to
+the machines its deployment group and tags select — all of the tags, case-insensitively, and no
+tags meaning every machine in the group — so a stage named "Staging" that targets production
+servers, or tags that match nothing, is visible before a deploy rather than after. Agent
+capabilities (the agent's environment variables) are never returned: Azure DevOps does not mark
+them secret, and they carry keys.
 
 `list_work_items` takes either a full `wiql` query or filter arguments (`type`, `state`,
 `assigned_to`, `team`, `changed_since`, `title_contains`). When it builds the query itself it

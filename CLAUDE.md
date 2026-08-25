@@ -213,7 +213,9 @@ shaped the way it is.
   (`ApiRequest.Mask`, which walks any parsed response for an object carrying `isSecret: true`), and
   configuration search alike, which matches a secret on its name only so a caller cannot narrow the
   value down by asking. Nothing holding secrets is expanded for decoration: a referenced variable
-  group is reported as id and name, never its contents. Do not add a heuristic that masks anything
+  group is reported as id and name, never its contents, and a deployment agent's capabilities — its
+  environment variables, which the service does not mark secret and which carry license keys — are
+  never requested at all. Do not add a heuristic that masks anything
   *looking* like a key — it would hide `$(Stripe.ApiKey)` in a task input, which is the thing the
   caller needs to see. See `docs/tool-contract.md` § A secret's value is not output.
 - **Output is optimized for a model's context window.** The serializer omits nulls (configured in

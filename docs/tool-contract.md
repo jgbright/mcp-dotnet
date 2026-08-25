@@ -105,6 +105,11 @@ where a type does not:
   whether it starts with `whsec_` and be told.
 - Nothing that holds a secret is expanded for decoration. A referenced variable group is reported as
   id and name; its variables are never read.
+- One thing is withheld that the service does *not* mark: a deployment agent's capabilities, which
+  are its environment variables and have carried a license key on a real agent. No Azure DevOps tool
+  requests that expansion ([azure-devops-server.md](azure-devops-server.md#where-a-stage-lands)).
+  That is a decision about a whole bag, not a heuristic about values, which is why it does not
+  contradict the next paragraph.
 
 Heuristics on the value — masking anything that *looks* like a key — are deliberately not part of
 this. They would hide `$(Stripe.ApiKey)` in a task input, which is exactly what the caller needs to
