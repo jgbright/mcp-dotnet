@@ -363,6 +363,11 @@ public sealed record WorkItemDetailDto(
     string? IterationPath,
     List<string>? Tags,
     int? Priority,
+    double? OriginalEstimate,
+    double? RemainingWork,
+    double? CompletedWork,
+    double? StoryPoints,
+    double? Effort,
     string? Description,
     string? ReproSteps,
     string? AcceptanceCriteria,
@@ -968,6 +973,11 @@ internal static class Mapping
             TrimPath(Str(w.Fields, "System.IterationPath"), project),
             Tags(Str(w.Fields, "System.Tags")),
             Int(w.Fields, "Microsoft.VSTS.Common.Priority"),
+            Number(w.Fields, "Microsoft.VSTS.Scheduling.OriginalEstimate"),
+            Number(w.Fields, "Microsoft.VSTS.Scheduling.RemainingWork"),
+            Number(w.Fields, "Microsoft.VSTS.Scheduling.CompletedWork"),
+            Number(w.Fields, "Microsoft.VSTS.Scheduling.StoryPoints"),
+            Number(w.Fields, "Microsoft.VSTS.Scheduling.Effort"),
             description,
             repro,
             criteria,
@@ -1567,6 +1577,17 @@ internal static class Mapping
         fields is not null && fields.TryGetValue(name, out var value) &&
         value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var i)
             ? i
+            : null;
+
+    /// <summary>
+    /// The scheduling fields are doubles, not integers: half an hour of remaining work and half a
+    /// story point are ordinary values, and <see cref="Int"/> would round them away silently. Same
+    /// ValueKind guard, for the same reason.
+    /// </summary>
+    internal static double? Number(Dictionary<string, JsonElement>? fields, string name) =>
+        fields is not null && fields.TryGetValue(name, out var value) &&
+        value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var d)
+            ? d
             : null;
 
     internal static DateTimeOffset? Date(Dictionary<string, JsonElement>? fields, string name) =>

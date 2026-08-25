@@ -1828,12 +1828,18 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     [McpServerTool(Name = "update_work_item", UseStructuredContent = true, Destructive = true, Idempotent = false)]
     [Description("Write — requires ADO_MCP_ALLOW_WRITE=true in this server's environment. Update one " +
                  "work item: title, description/repro steps/acceptance criteria, state, assignee, " +
-                 "area/iteration path, tags, priority, parent link, and/or add a comment to the " +
-                 "discussion. Only the arguments given change; everything else is left alone. The " +
+                 "area/iteration path, tags, priority, estimates, parent link, and/or add a comment " +
+                 "to the discussion. Only the arguments given change; everything else is left " +
+                 "alone. The " +
                  "body fields replace what is there — read the item first if you mean to extend it — " +
                  "while `comment` appends to the discussion and `add_tags`/`remove_tags` merge with " +
                  "the tags already on the item. A work item has at most one parent, so `parent` " +
-                 "replaces whatever it is under and `remove_parent` leaves it unparented. Returns " +
+                 "replaces whatever it is under and `remove_parent` leaves it unparented. Which " +
+                 "estimate fields a work item has depends on its type and the project's process — " +
+                 "hours on a Task, story points on an Agile User Story, effort on a Scrum backlog " +
+                 "item — and writing one the type does not define is refused by Azure DevOps naming " +
+                 "the field. `original_estimate` does not imply `remaining_work`: a sprint burndown " +
+                 "reads the second, so set both when starting from an estimate. Returns " +
                  "the updated work item.")]
     public Task<WorkItemDetailDto> UpdateWorkItem(
         [Description("Work item id")] int id,
@@ -1844,6 +1850,11 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Tag(s) to add, comma-separated")] string? add_tags = null,
         [Description("Tag(s) to remove, comma-separated")] string? remove_tags = null,
         [Description("Priority, as this project's process defines it (commonly 1-4, 1 highest)")] int? priority = null,
+        [Description("Original estimate, in hours (Task)")] double? original_estimate = null,
+        [Description("Remaining work, in hours (Task); what a sprint burndown reads")] double? remaining_work = null,
+        [Description("Completed work, in hours (Task)")] double? completed_work = null,
+        [Description("Story points (User Story on the Agile process)")] double? story_points = null,
+        [Description("Effort (Product Backlog Item and Bug on the Scrum process)")] double? effort = null,
         [Description("Work item id to parent this item under, replacing any existing parent")] int? parent = null,
         [Description("Remove the parent link, leaving the item unparented")] bool remove_parent = false,
         [Description("New title, replacing the current one")] string? title = null,
@@ -1855,21 +1866,28 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         CancellationToken ct = default) => Run("update_work_item",
         A("id", id) + A("state", state) + A("assigned_to", assigned_to) + A("area", area) +
         A("iteration", iteration) + A("add_tags", add_tags) + A("remove_tags", remove_tags) +
-        A("priority", priority) + A("parent", parent) + A("remove_parent", remove_parent ? true : null) +
+        A("priority", priority) + A("original_estimate", original_estimate) +
+        A("remaining_work", remaining_work) + A("completed_work", completed_work) +
+        A("story_points", story_points) + A("effort", effort) +
+        A("parent", parent) + A("remove_parent", remove_parent ? true : null) +
         AdoMcpLog.ContentArg("title", title) + AdoMcpLog.ContentArg("description", description) +
         AdoMcpLog.ContentArg("repro_steps", repro_steps) +
         AdoMcpLog.ContentArg("acceptance_criteria", acceptance_criteria) +
         AdoMcpLog.ContentArg("comment", comment), async () =>
     {
         RequireWriteEnabled();
+        var estimates = new Writes.Estimates(
+            original_estimate, remaining_work, completed_work, story_points, effort);
         if (state is null && assigned_to is null && area is null && iteration is null &&
-            add_tags is null && remove_tags is null && priority is null && parent is null &&
+            add_tags is null && remove_tags is null && priority is null && !estimates.Any &&
+            parent is null &&
             !remove_parent && title is null && description is null && repro_steps is null &&
             acceptance_criteria is null && comment is null)
         {
             throw new McpException(
                 "Nothing to change: pass at least one of state, assigned_to, area, iteration, " +
-                "add_tags, remove_tags, priority, parent, remove_parent, title, description, " +
+                "add_tags, remove_tags, priority, original_estimate, remaining_work, " +
+                "completed_work, story_points, effort, parent, remove_parent, title, description, " +
                 "repro_steps, acceptance_criteria, or comment.");
         }
         if (parent is not null && remove_parent)
@@ -1907,8 +1925,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         }
 
         var ops = Writes.UpdatePatch(
-            state, assignee, area, iteration, tags, priority, title, description, repro_steps,
-            acceptance_criteria, comment);
+            state, assignee, area, iteration, tags, priority, estimates, title, description,
+            repro_steps, acceptance_criteria, comment);
         ops.AddRange(relationOps);
         if (ops.Count == 0)
         {
@@ -1931,7 +1949,12 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     [Description("Write — requires ADO_MCP_ALLOW_WRITE=true in this server's environment. Create a " +
                  "work item. `type` accepts the project's type names leniently (Bug, Task, \"User " +
                  "Story\", ...). On most process templates a Bug shows `repro_steps` where other " +
-                 "types show `description`. `parent` files it under an existing work item. Returns " +
+                 "types show `description`. `parent` files it under an existing work item. Which " +
+                 "estimate fields a work item has depends on its type and the project's process — " +
+                 "hours on a Task, story points on an Agile User Story, effort on a Scrum backlog " +
+                 "item — and passing one the type does not define is refused by Azure DevOps naming " +
+                 "the field. `original_estimate` does not imply `remaining_work`: a sprint burndown " +
+                 "reads the second, so set both when starting from an estimate. Returns " +
                  "the created work item with its id.")]
     public Task<WorkItemDetailDto> CreateWorkItem(
         [Description("Work item type, e.g. Bug, Task, \"User Story\"")] string type,
@@ -1947,13 +1970,20 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Priority, as this project's process defines it (commonly 1-4, 1 highest). " +
                      "Omitted means the process's own default, which is usually 2 — pass it to " +
                      "mean it.")] int? priority = null,
+        [Description("Original estimate, in hours (Task)")] double? original_estimate = null,
+        [Description("Remaining work, in hours (Task); what a sprint burndown reads")] double? remaining_work = null,
+        [Description("Completed work, in hours (Task)")] double? completed_work = null,
+        [Description("Story points (User Story on the Agile process)")] double? story_points = null,
+        [Description("Effort (Product Backlog Item and Bug on the Scrum process)")] double? effort = null,
         [Description("Work item id to parent the new item under")] int? parent = null,
         CancellationToken ct = default) => Run("create_work_item",
         A("project", project) + A("type", type) + AdoMcpLog.ContentArg("title", title) +
         AdoMcpLog.ContentArg("description", description) + AdoMcpLog.ContentArg("repro_steps", repro_steps) +
         AdoMcpLog.ContentArg("acceptance_criteria", acceptance_criteria) +
         A("assigned_to", assigned_to) + A("area", area) + A("iteration", iteration) + A("tags", tags) +
-        A("priority", priority) + A("parent", parent), async () =>
+        A("priority", priority) + A("original_estimate", original_estimate) +
+        A("remaining_work", remaining_work) + A("completed_work", completed_work) +
+        A("story_points", story_points) + A("effort", effort) + A("parent", parent), async () =>
     {
         RequireWriteEnabled();
         if (string.IsNullOrWhiteSpace(title))
@@ -1967,7 +1997,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
         var ops = Writes.CreatePatch(
             title, description, repro_steps, acceptance_criteria, assignee, area, iteration,
-            tags is null ? null : Writes.MergeTags(null, tags, null), priority);
+            tags is null ? null : Writes.MergeTags(null, tags, null), priority,
+            new Writes.Estimates(
+                original_estimate, remaining_work, completed_work, story_points, effort));
         if (parent is { } parentId)
         {
             // Nothing exists yet to be parented elsewhere, so this is always a bare add.
