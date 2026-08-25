@@ -1695,7 +1695,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "value[].name — it is a projection, not jq, and matching nothing yields json: null. " +
                  "Values Azure DevOps marks secret come back as \"[redacted]\". A response larger " +
                  "than max_chars is returned as truncated text instead of json, which a narrower " +
-                 "`filter` or the endpoint's own $top is the way out of. Any method other than GET " +
+                 "`filter` or the endpoint's own $top is the way out of. A `body` that is a JSON " +
+                 "Patch document — an array of {op, path, value} — is sent as " +
+                 "application/json-patch+json, which is the only type the work item endpoints " +
+                 "accept; `content_type` overrides that inference. Any method other than GET " +
                  "or HEAD requires ADO_MCP_ALLOW_WRITE=true in this server's environment and is " +
                  "refused otherwise, which no retry will change.")]
     public Task<ApiResponseDto> AdoApiRequest(
@@ -1703,12 +1706,15 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("HTTP method (default GET; anything but GET/HEAD needs ADO_MCP_ALLOW_WRITE=true)")] string method = "GET",
         [Description("Extra query string, e.g. $expand=environments&$top=10")] string? query = null,
         [Description("JSON request body, for a non-GET method")] string? body = null,
+        [Description("Media type for the body; inferred from it when omitted — a JSON Patch array " +
+                     "goes as application/json-patch+json, anything else as application/json")] string? content_type = null,
         [Description("Projection over the response, e.g. value[].name")] string? filter = null,
         [Description("Which host answers: core, vsrm, search, vssps; inferred from the path when omitted")] string? host = null,
         [Description("Maximum characters of response to return (default 20000)")] int max_chars = 20000,
         CancellationToken ct = default) => Run("ado_api_request",
         A("path", path) + A("method", method) + A("query", query) + A("filter", filter) +
-        A("host", host) + A("max_chars", max_chars) + AdoMcpLog.ContentArg("body", body), async () =>
+        A("host", host) + A("content_type", content_type) + A("max_chars", max_chars) +
+        AdoMcpLog.ContentArg("body", body), async () =>
     {
         max_chars = Math.Clamp(max_chars, 500, 200_000);
         // The gate is consulted before anything else, exactly as the write tools do it: a refusal
@@ -1716,8 +1722,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var verb = ApiRequest.Method(method);
         var client = await ado.GetClientAsync(ct);
         var url = ApiRequest.Url(client.OrgUrl, path, query, host);
+        var media = ApiRequest.ContentType(body, content_type);
 
-        var raw = await client.SendRawAsync(verb, url, body, ct);
+        var raw = await client.SendRawAsync(verb, url, body, media, ct);
         var trimmed = raw.Body.TrimStart();
         var isJson = trimmed.Length > 0 && trimmed[0] is '{' or '[';
         if (!isJson)

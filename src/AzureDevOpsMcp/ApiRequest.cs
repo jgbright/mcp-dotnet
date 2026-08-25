@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModelContextProtocol;
@@ -13,9 +14,9 @@ namespace AzureDevOpsMcp;
 /// the failure arrives as an HTML page inside a shell error several steps from the cause — while a
 /// live, valid credential sits unused in this process. So the escape hatch is another tool call.
 ///
-/// Everything here is pure: which host a path belongs to, whether a url is still inside this
-/// organization, masking what Azure DevOps marked secret, and projecting a response down to the
-/// part that was asked for.
+/// Everything here is pure: which host a path belongs to, which media type a body is sent under,
+/// whether a url is still inside this organization, masking what Azure DevOps marked secret, and
+/// projecting a response down to the part that was asked for.
 /// </summary>
 internal static class ApiRequest
 {
@@ -122,6 +123,66 @@ internal static class ApiRequest
             AdoTools.RequireWriteEnabled();
         }
         return new HttpMethod(name);
+    }
+
+    /// <summary>
+    /// Azure DevOps' two request media types, which are not interchangeable. The work item
+    /// endpoints take a JSON Patch document and answer anything sent as <c>application/json</c>
+    /// with a 400 naming <c>application/json-patch+json</c> as the only type they accept. The
+    /// release endpoints take an ordinary object and reject a patch document. Same split as
+    /// <see cref="AdoClient.PatchAsync{T}"/> against <see cref="AdoClient.PatchJsonAsync{T}"/>.
+    /// </summary>
+    internal const string JsonMediaType = "application/json";
+
+    /// <inheritdoc cref="JsonMediaType"/>
+    internal const string JsonPatchMediaType = "application/json-patch+json";
+
+    /// <summary>
+    /// Which media type the body goes out under. It is inferred from the body: a caller who wrote a
+    /// patch document has already said which one it is, since RFC 6902 makes it an array of objects
+    /// each carrying <c>op</c>, and nothing else Azure DevOps accepts looks like that. Without the
+    /// inference this tool cannot reach a work item endpoint at all: every PATCH is refused on the
+    /// content type before the document is read, which sends the work out to a shell and a second
+    /// credential, the case this tool exists to prevent. An explicit <c>content_type</c> wins, as an
+    /// explicit <c>host</c> does, so a wrong inference is not a dead end.
+    /// </summary>
+    internal static string ContentType(string? body, string? contentType)
+    {
+        if (contentType is { Length: > 0 })
+        {
+            var named = contentType.Trim();
+            return MediaTypeHeaderValue.TryParse(named, out _)
+                ? named
+                : throw new McpException(
+                    $"`content_type` is not a media type: {contentType}. Omit it to have the body's " +
+                    $"own shape choose between {JsonMediaType} and {JsonPatchMediaType}.");
+        }
+        return IsJsonPatch(body) ? JsonPatchMediaType : JsonMediaType;
+    }
+
+    /// <summary>
+    /// Whether the body is a JSON Patch document: a non-empty array of objects, each with an
+    /// <c>op</c>. A body that does not parse is not one. It goes as <c>application/json</c> so Azure
+    /// DevOps can say what is wrong with it, instead of this server guessing a media type for
+    /// something nobody can read.
+    /// </summary>
+    internal static bool IsJsonPatch(string? body)
+    {
+        if (body is null || !body.TrimStart().StartsWith('['))
+        {
+            return false;
+        }
+        JsonNode? parsed;
+        try
+        {
+            parsed = JsonNode.Parse(body);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        return parsed is JsonArray array && array.Count > 0 &&
+               array.All(element => element is JsonObject op && op.ContainsKey("op"));
     }
 
     /// <summary>

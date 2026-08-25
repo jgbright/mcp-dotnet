@@ -69,7 +69,11 @@ and do not add a third gate for anything whose only argument is that it feels ri
 **What the write tools reach is measured against what the read tools report**, because a field a
 model can see and cannot fix sends the work out through `az rest` instead. Every field
 `WorkItemDetailDto` carries is writable by one of the two work item tools; a new field added to
-that DTO should arrive with the argument that sets it. Two of them are not fields at all and each
+that DTO should arrive with the argument that sets it. The escape hatch is held to the same
+standard: `ado_api_request` sends a JSON Patch body as `application/json-patch+json`
+(`ApiRequest.ContentType`, overridable), because a hardcoded `application/json` there put every
+work item endpoint out of reach and sent the work out to a shell anyway — which is the one thing
+that tool exists to prevent. Two of the writable things are not fields at all and each
 has its own trap:
 - **Priority is an integer field**, so `PatchOp.Value` is `object?` rather than `string` and the
   op carries a JSON number. Omitting it on a create does not mean "no priority" — the process
