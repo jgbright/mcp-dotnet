@@ -331,7 +331,7 @@ Read:
 | `search_work_items` | Full text. `list_work_items` is the structured query |
 | `search_wiki` | |
 | `deployment_status` | Config-driven, see the deployment map section |
-| `ado_api_request` | One REST call this server has no typed tool for, on its own credential and its own organization only |
+| `ado_api_request` | One REST call this server has no typed tool for, on its own credential and its own organization only. A JSON Patch body is sent as `application/json-patch+json`, which is the only type the work item endpoints take; `content_type` overrides that |
 | `ado_auth_status` | Which credential is in use, whether it still works, and whether `AZURE_DEVOPS_PAT` does |
 
 `project`, `repo`, `pipeline`, `team`, `definition` and `environment` accept an id or a name. Names

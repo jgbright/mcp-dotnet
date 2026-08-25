@@ -549,13 +549,19 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     /// deserialization, because the whole point is an endpoint this server has no type for, and no
     /// paging, because the caller drives the endpoint's own. Failures still throw
     /// <see cref="AdoApiException"/> the way every other call does.
+    ///
+    /// The caller picks the media type (<see cref="ApiRequest.ContentType"/>). The work item
+    /// endpoints only accept <c>application/json-patch+json</c>, so a fixed <c>application/json</c>
+    /// would lock them all out.
     /// </summary>
     public async Task<RawResponse> SendRawAsync(
-        HttpMethod method, string url, string? jsonBody, CancellationToken ct)
+        HttpMethod method, string url, string? jsonBody, string contentType, CancellationToken ct)
     {
         using var content = jsonBody is null
             ? null
-            : new StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
+            // Parse instead of using the constructor, which rejects parameters such as charset=utf-8.
+            : new StringContent(
+                jsonBody, System.Text.Encoding.UTF8, MediaTypeHeaderValue.Parse(contentType));
         using var response = await SendAsync(method, url, content, ct);
         // A sign-in page arrives with a success status, so it would otherwise be handed back as
         // the response body — a page of HTML where a caller expected a resource.

@@ -463,6 +463,15 @@ another tool call:
   `Core/_apis/release/definitions/31`, not `_apis/release/definitions/31`.
 - **`api-version=7.1` is appended** when the path names no version, since the service refuses a
   request without one and a caller who did not think about it wants what every other tool uses.
+- **The body's media type is inferred from the body.** A JSON Patch document — an array, non-empty,
+  of objects each carrying `op`, which is what RFC 6902 makes it — goes as
+  `application/json-patch+json`; anything else goes as `application/json`. Without this the escape
+  hatch cannot reach a work item endpoint at all: every PATCH is answered 400 on the content type
+  before the document is looked at, which is exactly the case that sends a session out to a shell
+  and a second credential. An explicit `content_type` wins, the same way an explicit `host` does,
+  because an inference that is ever wrong must not be the end of the road. A body that will not
+  parse is not a patch document — it goes as `application/json` so the service says what is wrong
+  with it rather than this server guessing a media type for something nobody can read.
 - **`ApiRequest.Mask` walks the parsed body** and replaces the `value` of any object carrying
   `isSecret: true` with `[redacted]`. The walk is over the shape rather than the endpoint, which is
   the only way a passthrough can promise anything at all about a response it has no type for.

@@ -189,4 +189,42 @@ public class ApiRequestTests
         Assert.Null(ApiRequest.Filter(body, "value[9]"));
         Assert.Null(ApiRequest.Filter(body, "count[]"));
     }
+
+    [Fact]
+    public void A_patch_document_is_sent_as_json_patch_because_nothing_else_reaches_a_work_item()
+    {
+        // Why the inference exists: under application/json every work item PATCH gets a 400 on the
+        // content type, so the escape hatch cannot reach the endpoint at all.
+        Assert.Equal(
+            ApiRequest.JsonPatchMediaType,
+            ApiRequest.ContentType(
+                """[{"op":"add","path":"/fields/System.State","value":"Active"}]""", null));
+    }
+
+    [Theory]
+    [InlineData("""{"query":"SELECT [System.Id] FROM WorkItems"}""")]  // an object, not a patch
+    [InlineData("""["Dev","QA"]""")]                                   // an array of the wrong thing
+    [InlineData("[]")]                                                 // an empty one says nothing
+    [InlineData("""[{"path":"/fields/System.State"}]""")]              // objects, but no op
+    [InlineData("[{oops")]                                             // unparseable
+    [InlineData(null)]
+    public void Anything_that_is_not_a_patch_document_goes_as_plain_json(string? body)
+    {
+        Assert.Equal(ApiRequest.JsonMediaType, ApiRequest.ContentType(body, null));
+    }
+
+    [Fact]
+    public void An_explicit_content_type_wins_and_an_unusable_one_is_refused()
+    {
+        // Same rule as `host`: a wrong inference must not be a dead end.
+        Assert.Equal(
+            "application/octet-stream",
+            ApiRequest.ContentType("""[{"op":"add","path":"/x","value":1}]""", "application/octet-stream"));
+        Assert.Equal(
+            "application/json; charset=utf-8",
+            ApiRequest.ContentType(null, " application/json; charset=utf-8 "));
+
+        var e = Assert.Throws<McpException>(() => ApiRequest.ContentType(null, "not a media type"));
+        Assert.Contains("content_type", e.Message);
+    }
 }

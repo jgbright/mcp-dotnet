@@ -374,6 +374,47 @@ public class AdoClientTests : IDisposable
         Assert.Equal(17, result.Id);
     }
 
+    [Fact]
+    public async Task A_raw_send_uses_the_content_type_it_is_given()
+    {
+        // A fixed application/json here would lock ado_api_request out of every work item endpoint,
+        // whatever the caller sends.
+        var types = new List<string?>();
+        var client = Client(r =>
+        {
+            types.Add(r.Content?.Headers.ContentType?.ToString());
+            return Json("""{"id":17}""");
+        });
+
+        await client.SendRawAsync(
+            HttpMethod.Patch, "_apis/wit/workitems/17",
+            """[{"op":"add","path":"/fields/System.State","value":"Active"}]""",
+            ApiRequest.JsonPatchMediaType, default);
+        await client.SendRawAsync(
+            HttpMethod.Post, "Core/_apis/wit/wiql", """{"query":"SELECT [System.Id] FROM WorkItems"}""",
+            ApiRequest.JsonMediaType, default);
+
+        Assert.Equal(["application/json-patch+json", "application/json"], types);
+    }
+
+    [Fact]
+    public async Task A_raw_send_carries_a_media_type_with_parameters_through_intact()
+    {
+        // MediaTypeHeaderValue's constructor rejects parameters, so the value is parsed. A caller
+        // who passed a charset gets the charset.
+        string? type = null;
+        var client = Client(r =>
+        {
+            type = r.Content?.Headers.ContentType?.ToString();
+            return Json("""{"id":17}""");
+        });
+
+        await client.SendRawAsync(
+            HttpMethod.Post, "_apis/x", "{}", "application/json; charset=utf-8", default);
+
+        Assert.Equal("application/json; charset=utf-8", type);
+    }
+
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
