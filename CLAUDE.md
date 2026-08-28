@@ -46,7 +46,7 @@ nothing else with it.
 
 ```powershell
 dotnet tool restore                                 # once per clone: puts nbgv on `dotnet nbgv`
-dotnet build
+dotnet build -warnaserror                           # CI builds this way; a warning here is a red build there
 dotnet test
 dotnet pack                                         # both servers, as .NET tools, into artifacts/
 dotnet nbgv get-version                             # what this checkout would ship as
