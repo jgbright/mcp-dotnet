@@ -438,7 +438,7 @@ public class ReleaseDefinitionConfigTests
         var dto = Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, includeTasks: false, Org, "Core");
 
         Assert.True(dto.Variables!.Single().AllowOverride);
-        Assert.Equal("30", dto.Variables.Single().Value);
+        Assert.Equal("30", dto.Variables!.Single().Value);
     }
 
     [Theory]

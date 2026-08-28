@@ -3,10 +3,10 @@
 ## Build, test, pack
 
 ```powershell
-dotnet tool restore   # once per clone, the version comes from nbgv rather than a csproj
-dotnet build
+dotnet tool restore         # once per clone, the version comes from nbgv rather than a csproj
+dotnet build -warnaserror   # CI builds this way; a warning here is a red build there
 dotnet test
-dotnet pack           # both servers, as .NET tool packages, into artifacts/
+dotnet pack                 # both servers, as .NET tool packages, into artifacts/
 ```
 
 The version is `version.json` plus git height, so a normal change needs no version edit. `main`
