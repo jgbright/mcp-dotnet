@@ -42,6 +42,34 @@ like `like`; a custom org-uploaded reaction is keyed by its name), valued by the
 names falling back to id then `?`, so the list's length is always the count. Attribution is what
 lets a caller tell "somebody acknowledged this" from "I already reacted to this".
 
+## Downloading images
+
+A Teams message carries an image in one of two ways, and `download_message_images` handles both:
+
+- **Inline (pasted) images are hosted content.** The body HTML references
+  `.../messages/{id}/hostedContents/{id}/$value`, and the bytes live behind the message itself —
+  readable with the same `Chat.Read` / `ChannelMessage.Read.All` the read tools already use, which
+  is why this path needs no new consent. Two service behaviours shape the code: the
+  `hostedContents` *listing* answers `contentType` and `contentBytes` as null (only `/$value`
+  carries the payload), and nothing else names the image either, so the downloaded bytes are
+  sniffed for what they are (`Images.Sniff`, magic numbers) and the file is named
+  `{message_id}-{n}` plus the sniffed extension.
+- **Attached files are OneDrive/SharePoint references** (`contentType: "reference"`, a
+  `contentUrl` into the sender's drive). The bytes are fetched through
+  `/shares/{encoded contentUrl}/driveItem/content` — `Images.EncodeShareUrl` is Graph's
+  unpadded-base64url `u!` encoding — which needs a Files scope this server does not request.
+  Such an attachment failing is reported per file, `error` in place of `path`, never by failing
+  the call: the hosted-content images beside it still download. Non-image attachments (cards,
+  quote references, other files) are counted in `skippedAttachments` rather than dropped.
+
+The tool never overwrites: it writes into a directory the caller names and a collision gets a
+numbered stem (`pic-2.png`). The saved extension always comes from the bytes, not the attachment's
+name — a `.png` that sniffs as JPEG is saved `.jpg`, so what lands on disk opens.
+
+Chat message, channel root and channel reply are three different Kiota request-builder types with
+no common interface, which is why the tool collapses them into delegates before the shared
+download loop.
+
 ## The waiters, and why they need a cursor
 
 `wait_for_channel_messages` and `wait_for_chat_messages` poll `PageMessagesAsync` until something
@@ -258,6 +286,7 @@ same state.
 | `list_chats` | Filters by `member` or `topic` client-side; scan capped at 500 |
 | `read_channel_messages` | `include_replies` expands the thread |
 | `read_chat_messages` | |
+| `download_message_images` | Hosted content + OneDrive image references, saved to a local directory |
 | `wait_for_channel_messages` | Cursor-based, task-capable |
 | `wait_for_chat_messages` | Up to 20 chats in one call, cursor-based, task-capable |
 | `search_messages` | Search index |
@@ -277,3 +306,10 @@ requested only behind the gate.
 
 Adding a capability means adding to `ReadScopes` **and** the app registration's delegated
 permissions, then re-running `-- auth`.
+
+The known gap: `download_message_images` reaches an attached OneDrive/SharePoint file through
+`/shares/{id}/driveItem`, which wants a Files scope (e.g. `Files.Read.All`) that `ReadScopes`
+deliberately omits — inline hosted content, the common case, needs nothing beyond the message
+scopes, and widening every deployment's consent for the rare attached-file case is the wrong
+trade. The tool reports the missing scope per file instead of failing; adding the scope is the
+usual re-consent dance above.
