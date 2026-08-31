@@ -176,6 +176,7 @@ public static class Ev
     public static readonly EventId Resolve = new(33, "resolve");
     public static readonly EventId Page = new(34, "page");
     public static readonly EventId Poll = new(36, "poll");
+    public static readonly EventId Download = new(37, "download");
 }
 
 public interface ILineSink : IDisposable

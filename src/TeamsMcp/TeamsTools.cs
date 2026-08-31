@@ -264,6 +264,183 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             includeReplies: false, include_system, body_limit, ct);
     });
 
+    // The two ways a Teams message carries an image, and one tool for both:
+    //   - Inline (pasted) images are hosted content: the body HTML references
+    //     `.../hostedContents/{id}/$value` and the bytes live behind the message itself, readable
+    //     with the same Chat.Read / ChannelMessage.Read.All the read tools already use. The
+    //     hostedContents listing answers contentType/contentBytes as null, so the bytes are
+    //     sniffed for what they are.
+    //   - Attached files are OneDrive/SharePoint references (contentType "reference"): the bytes
+    //     live in the sender's drive, reached through `/shares/{encoded contentUrl}/driveItem`,
+    //     which needs a Files scope this server does not request. Such an attachment failing is
+    //     reported per file with the reason, never by failing the call — the hosted-content images
+    //     beside it still download.
+    [McpServerTool(Name = "download_message_images", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only against Teams; saves local files. Download the images a message carries — inline " +
+                 "(pasted) images and attached image files — into `directory`, which is created if missing; " +
+                 "existing files are never overwritten (a numbered name is used instead). Pass `chat` for a chat " +
+                 "message, or `team`+`channel` for a channel message (`reply_id` reaches a reply inside a " +
+                 "thread). Each image reports the saved path, sniffed contentType and byte count, or an `error` " +
+                 "for that image alone — one bad attachment does not fail the rest. `skippedAttachments` counts " +
+                 "non-image attachments (cards, quotes, other files). Returns {images, skippedAttachments?}.")]
+    public Task<DownloadedImagesResult> DownloadMessageImages(
+        [Description("Id of the message carrying the images")] string message_id,
+        [Description("Local directory to save into; created if it does not exist")] string directory,
+        [Description("Chat id, e.g. 19:...@thread.v2. Give this, or `team`+`channel`.")] string? chat = null,
+        [Description("Team id (GUID) or display name; requires `channel`")] string? team = null,
+        [Description("Channel id (19:...) or display name; requires `team`")] string? channel = null,
+        [Description("Id of a reply inside message_id's thread, when the images are on the reply " +
+                     "(channel messages only; a reply's replyToId names its root)")] string? reply_id = null,
+        CancellationToken ct = default) => Run("download_message_images",
+        A("message_id", message_id) + A("directory", directory) + A("chat", chat) + A("team", team) +
+        A("channel", channel) + A("reply_id", reply_id), async () =>
+    {
+        Images.RequireTarget(chat, team, channel, reply_id);
+        var client = await graph.GetClientAsync(ct);
+
+        // Chat message, channel root and channel reply are three different request-builder types
+        // with no shared interface, so the three shapes collapse into delegates here and the
+        // download logic below runs once.
+        Func<CancellationToken, Task<ChatMessage?>> fetchMessage;
+        Func<CancellationToken, Task<ChatMessageHostedContentCollectionResponse?>> firstHosted;
+        Func<string, CancellationToken, Task<ChatMessageHostedContentCollectionResponse?>> nextHosted;
+        Func<string, CancellationToken, Task<Stream?>> openHosted;
+        if (chat is not null)
+        {
+            var builder = client.Chats[chat].Messages[message_id];
+            fetchMessage = c => builder.GetAsync(cancellationToken: c);
+            firstHosted = c => builder.HostedContents.GetAsync(cancellationToken: c);
+            nextHosted = (url, c) => builder.HostedContents.WithUrl(url).GetAsync(cancellationToken: c);
+            openHosted = (id, c) => builder.HostedContents[id].Content.GetAsync(cancellationToken: c);
+        }
+        else
+        {
+            var (teamId, _) = await ResolveTeamAsync(client, team!, log, ct);
+            var channelId = await ResolveChannelAsync(client, teamId, channel!, log, ct);
+            var root = client.Teams[teamId].Channels[channelId].Messages[message_id];
+            if (reply_id is null)
+            {
+                fetchMessage = c => root.GetAsync(cancellationToken: c);
+                firstHosted = c => root.HostedContents.GetAsync(cancellationToken: c);
+                nextHosted = (url, c) => root.HostedContents.WithUrl(url).GetAsync(cancellationToken: c);
+                openHosted = (id, c) => root.HostedContents[id].Content.GetAsync(cancellationToken: c);
+            }
+            else
+            {
+                var reply = root.Replies[reply_id];
+                fetchMessage = c => reply.GetAsync(cancellationToken: c);
+                firstHosted = c => reply.HostedContents.GetAsync(cancellationToken: c);
+                nextHosted = (url, c) => reply.HostedContents.WithUrl(url).GetAsync(cancellationToken: c);
+                openHosted = (id, c) => reply.HostedContents[id].Content.GetAsync(cancellationToken: c);
+            }
+        }
+
+        var message = await fetchMessage(ct)
+            ?? throw new McpException($"Message '{message_id}' came back empty.");
+        Directory.CreateDirectory(directory);
+
+        var images = new List<DownloadedImageDto>();
+        var index = 0;
+
+        var page = await firstHosted(ct);
+        while (page is not null)
+        {
+            foreach (var hosted in page.Value ?? [])
+            {
+                if (hosted.Id is null)
+                {
+                    continue;
+                }
+                index++;
+                var bytes = await ReadAllAsync(openHosted(hosted.Id, ct));
+                if (bytes.Length == 0)
+                {
+                    images.Add(new DownloadedImageDto(null, "hostedContent", null, null, null,
+                        "Graph returned no bytes for this hosted content."));
+                    continue;
+                }
+                images.Add(await SaveImageAsync(
+                    name: null, source: "hostedContent", bytes, directory, message_id, index, ct));
+            }
+            if (page.OdataNextLink is null)
+            {
+                break;
+            }
+            page = await nextHosted(page.OdataNextLink, ct);
+        }
+
+        var skippedAttachments = 0;
+        foreach (var attachment in message.Attachments ?? [])
+        {
+            if (!Images.IsImageAttachment(attachment.Name, attachment.ContentType, attachment.ContentUrl))
+            {
+                skippedAttachments++;
+                continue;
+            }
+            index++;
+            if (!string.Equals(attachment.ContentType, "reference", StringComparison.OrdinalIgnoreCase) ||
+                attachment.ContentUrl is null)
+            {
+                images.Add(new DownloadedImageDto(attachment.Name, "attachment", null,
+                    attachment.ContentType, null,
+                    $"Unsupported attachment form (contentType '{attachment.ContentType}'): only " +
+                    "OneDrive/SharePoint file references and inline hosted content can be downloaded."));
+                continue;
+            }
+            try
+            {
+                var share = Images.EncodeShareUrl(attachment.ContentUrl);
+                var bytes = await ReadAllAsync(
+                    client.Shares[share].DriveItem.Content.GetAsync(cancellationToken: ct));
+                images.Add(await SaveImageAsync(
+                    attachment.Name ?? Images.UrlFileName(attachment.ContentUrl),
+                    source: "attachment", bytes, directory, message_id, index, ct));
+            }
+            catch (ODataError e)
+            {
+                // The drive lives behind a Files scope this server does not request, so a 401/403
+                // here is configuration, not a transient failure — say so per file and keep going.
+                var hint = e.ResponseStatusCode is 401 or 403
+                    ? " Downloading an attached OneDrive/SharePoint file needs a Files scope " +
+                      "(e.g. Files.Read.All) this sign-in has not consented to."
+                    : "";
+                log.Line(LogLevel.Warning, Ev.Download,
+                    "attachment download failed" + A("status", e.ResponseStatusCode) +
+                    A("code", e.Error?.Code) + TeamsMcpLog.ContentArg("name", attachment.Name));
+                images.Add(new DownloadedImageDto(attachment.Name, "attachment", null, null, null,
+                    $"Graph error {e.Error?.Code}: {e.Error?.Message}{hint}"));
+            }
+        }
+
+        return new DownloadedImagesResult(images, skippedAttachments == 0 ? null : skippedAttachments);
+    });
+
+    private static async Task<byte[]> ReadAllAsync(Task<Stream?> pending)
+    {
+        await using var stream = await pending ?? Stream.Null;
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+        return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// Writes one downloaded image, naming it from the attachment name (or message id + index)
+    /// plus what the bytes say they are, never overwriting whatever is already in the directory.
+    /// </summary>
+    private async Task<DownloadedImageDto> SaveImageAsync(
+        string? name, string source, byte[] bytes, string directory, string messageId, int index,
+        CancellationToken ct)
+    {
+        var sniffed = Images.Sniff(bytes);
+        var fileName = Images.FileNameFor(name, messageId, index, sniffed?.Extension);
+        var path = Images.UniquePath(directory, fileName, File.Exists);
+        await File.WriteAllBytesAsync(path, bytes, ct);
+        log.Line(LogLevel.Debug, Ev.Download,
+            "image saved" + A("source", source) + A("bytes", bytes.Length) +
+            A("contentType", sniffed?.ContentType) + TeamsMcpLog.ContentArg("file", path));
+        return new DownloadedImageDto(name, source, path, sniffed?.ContentType, bytes.Length, null);
+    }
+
     // ---------------------------------------------------------------- waiting
     //
     // Both waiters run the same loop over a different surface: poll for anything newer than a
@@ -1088,6 +1265,11 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         SearchWaitResult s => A("hits", s.Hits.Count) + A("total", s.Total) +
             A("waitedSeconds", s.WaitedSeconds) + (s.TimedOut is true ? A("timedOut", true) : ""),
         SentMessageDto sent => A("messageId", sent.Id),
+        DownloadedImagesResult d =>
+            A("images", d.Images.Count(i => i.Error is null)) +
+            (d.Images.Any(i => i.Error is not null) ? A("failed", d.Images.Count(i => i.Error is not null)) : "") +
+            A("bytes", d.Images.Sum(i => i.Bytes ?? 0)) +
+            (d.SkippedAttachments is { } s ? A("skippedAttachments", s) : ""),
         ReactionDto r => A("messageId", r.MessageId) + A("reaction", r.Reaction) +
             (r.Removed is true ? A("removed", true) : ""),
         System.Collections.ICollection c => A("count", c.Count),
@@ -1473,6 +1655,26 @@ public sealed record MessageDto(
     string? ChatId = null);
 
 public sealed record AttachmentDto(string? Name, string? ContentType);
+
+/// <summary>
+/// Envelope for download_message_images. <c>SkippedAttachments</c> counts attachments that are
+/// not images (cards, quotes, other files) and appears only when nonzero, so no images and no
+/// skips means the message simply carries none.
+/// </summary>
+public sealed record DownloadedImagesResult(List<DownloadedImageDto> Images, int? SkippedAttachments);
+
+/// <summary>
+/// One image the tool tried to download. Either <c>Path</c>+<c>Bytes</c> (it is on disk) or
+/// <c>Error</c> (why it is not) — never both. <c>ContentType</c> is sniffed from the bytes;
+/// <c>Name</c> is the attachment's own and absent for inline hosted content, which has none.
+/// </summary>
+public sealed record DownloadedImageDto(
+    string? Name,
+    string Source, // "hostedContent" (inline/pasted) or "attachment" (a file on the sender's drive)
+    string? Path,
+    string? ContentType,
+    long? Bytes,
+    string? Error);
 
 /// <summary>
 /// Envelope for a search. <c>total</c> is the service's estimate of everything matching, which
