@@ -1,16 +1,13 @@
-# How Git handles the files in this repository.
-#
-# Text is normalized to LF in the object database and converted back on
-# checkout, so a clean clone behaves the same on Windows and on Linux whatever
-# `core.autocrlf` the person cloning happens to have set. Only the files whose
-# line endings are functional rather than cosmetic pin `eol=` explicitly;
-# everything else is checked out with the platform's native ending.
+# Text is stored as LF and converted back on checkout, so a clean clone behaves
+# the same on Windows and Linux whatever `core.autocrlf` the cloner has set.
+# Only files whose endings actually do something pin `eol=`; the rest are
+# checked out with the platform's native ending.
 
-# Default for everything Git detects as text.
+# The default for anything Git detects as text.
 * text=auto
 
-# Declared rather than detected. `diff=` selects a built-in function-context
-# driver, so a hunk header names the enclosing member instead of a stray brace.
+# Declared text, not sniffed. `diff=` picks a built-in function-context driver,
+# so a hunk header names the enclosing member instead of a stray brace.
 *.cs            text diff=csharp
 *.md            text diff=markdown
 *.csproj        text
@@ -29,22 +26,23 @@
 .gitignore      text
 .editorconfig   text
 
-# Endings that are load-bearing: a POSIX shell chokes on a trailing CR, cmd.exe
-# mis-parses an LF-only batch file, and Visual Studio still wants CRLF in .sln.
+# Endings that break things if they change: a POSIX shell chokes on a trailing
+# CR, cmd.exe mis-parses an LF-only batch file, and Visual Studio still wants
+# CRLF in .sln.
 *.sh            text eol=lf
 *.bash          text eol=lf
 *.cmd           text eol=crlf
 *.bat           text eol=crlf
 *.sln           text eol=crlf
 
-# Byte-exact: a patch whose endings get rewritten no longer applies, and a
-# signing key is not text at all.
+# Byte-exact. A patch stops applying once its endings are rewritten, and a
+# signing key is not text.
 *.patch         -text
 *.diff          -text
 *.snk           binary
 *.pfx           binary
 
-# Binary: never converted, never diffed, never merged.
+# Binary: the macro for -text -diff -merge.
 *.png           binary
 *.jpg           binary
 *.jpeg          binary

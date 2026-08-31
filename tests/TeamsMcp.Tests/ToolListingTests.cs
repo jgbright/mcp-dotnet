@@ -7,7 +7,7 @@ using ModelContextProtocol.Server;
 namespace TeamsMcp.Tests;
 
 /// <summary>
-/// The tools/list surface: the SEP-2549 caching hints stamped on the listing, and the annotations
+/// The tools/list surface: the SEP-2549 caching hints prepared on the listing, and the annotations
 /// each tool declares. No tool can be called from a test, so these assert the declarations
 /// themselves, that they are present and that they match what the tool does.
 /// </summary>
@@ -17,38 +17,38 @@ public class ToolListingTests
         new() { Tools = [.. names.Select(n => new Tool { Name = n })] };
 
     [Fact]
-    public void Stamp_sets_the_caching_hints_a_2026_07_28_client_expects()
+    public void Prepare_sets_the_caching_hints_a_2026_07_28_client_expects()
     {
-        var stamped = ToolListing.Stamp(Result("list_teams"), requestCursor: null);
+        var prepared = ToolListing.Prepare(Result("list_teams"), requestCursor: null);
 
-        Assert.Equal(ToolListing.Ttl, stamped.TimeToLive);
-        Assert.Equal(CacheScope.Public, stamped.CacheScope);
+        Assert.Equal(ToolListing.Ttl, prepared.TimeToLive);
+        Assert.Equal(CacheScope.Public, prepared.CacheScope);
     }
 
     [Fact]
-    public void Stamp_orders_the_listing_so_it_is_the_same_on_every_build()
+    public void Prepare_orders_the_listing_so_it_is_the_same_on_every_build()
     {
-        var stamped = ToolListing.Stamp(
+        var prepared = ToolListing.Prepare(
             Result("search_messages", "list_teams", "list_channels"), requestCursor: null);
 
         Assert.Equal(
-            ["list_channels", "list_teams", "search_messages"], stamped.Tools.Select(t => t.Name));
+            ["list_channels", "list_teams", "search_messages"], prepared.Tools.Select(t => t.Name));
     }
 
     [Fact]
-    public void Stamp_leaves_a_paginated_page_in_the_order_the_handler_produced_it()
+    public void Prepare_leaves_a_paginated_page_in_the_order_the_handler_produced_it()
     {
         // Sorting one page of several would not make the whole sequence deterministic, and the
-        // cursor was issued against the handler's order. The TTL is still stamped.
+        // cursor was issued against the handler's order. The TTL is still prepared.
         var page = Result("search_messages", "list_teams");
         page.NextCursor = "next";
 
-        var stamped = ToolListing.Stamp(page, requestCursor: null);
+        var prepared = ToolListing.Prepare(page, requestCursor: null);
 
-        Assert.Equal(["search_messages", "list_teams"], stamped.Tools.Select(t => t.Name));
-        Assert.Equal(ToolListing.Ttl, stamped.TimeToLive);
+        Assert.Equal(["search_messages", "list_teams"], prepared.Tools.Select(t => t.Name));
+        Assert.Equal(ToolListing.Ttl, prepared.TimeToLive);
 
-        var second = ToolListing.Stamp(Result("search_messages", "list_teams"), requestCursor: "next");
+        var second = ToolListing.Prepare(Result("search_messages", "list_teams"), requestCursor: "next");
         Assert.Equal(["search_messages", "list_teams"], second.Tools.Select(t => t.Name));
         Assert.Equal(ToolListing.Ttl, second.TimeToLive);
     }
@@ -112,8 +112,8 @@ public class ToolListingTests
     [MemberData(nameof(Tools))]
     public void Every_tool_advertises_an_output_schema(MethodInfo tool)
     {
-        // The output schema is only generated when this flag is set, and it is what tells a model
-        // the shape of a result before it spends a call finding out.
+        // The output schema is only generated when this flag is set, and it tells a model the
+        // shape of a result before it spends a call finding out.
         Assert.True(tool.GetCustomAttribute<McpServerToolAttribute>()!.UseStructuredContent);
     }
 
@@ -122,9 +122,9 @@ public class ToolListingTests
     public void Message_content_is_called_the_same_thing_in_both_directions(MethodInfo tool)
     {
         // Reads return `body` and take `body_limit`; a send takes `body`. The parameter was `text`
-        // once, and a caller that had just read a conversation supplied `body` — one rejection and
-        // a re-send of the whole message. Nothing in either server may call message content `text`
-        // again: `text` is a value of `format`, which is a different question.
+        // once, and a caller that had just read a conversation supplied `body`: one rejection and a
+        // re-send of the whole message. Nothing in either server may call message content `text`
+        // again, because `text` is a value of `format`.
         var parameters = tool.GetParameters().Select(p => p.Name).ToList();
 
         Assert.DoesNotContain("text", parameters);

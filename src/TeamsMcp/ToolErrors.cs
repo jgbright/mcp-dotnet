@@ -9,36 +9,33 @@ namespace TeamsMcp;
 /// <summary>
 /// The gap either side of <see cref="TeamsTools.Run{T}"/>.
 ///
-/// Run() is what makes a failure diagnosable: it assigns the req=N the server's instructions
-/// promise, logs the exception in full, and hands the model a message it can act on. But Run() is
-/// the tool body, so anything that fails before the body is entered never reaches it. Argument
-/// marshalling is the case that matters — the SDK binds the arguments dictionary to the method's
-/// parameters and throws before invoking it, so a misnamed parameter produces no req=N, no log
-/// line naming the tool, and a model-facing message of "An error occurred invoking 'x'." with the
-/// detail dropped. That is indistinguishable from the server being broken, which is how a caller
-/// ends up investigating the wrong thing.
+/// Run() assigns the req=N the server instructions promise, logs the exception in full, and gives
+/// the model a message it can act on. It is the tool body, so anything failing before the body is
+/// entered never reaches it.
+/// Argument marshalling is the case that matters: the SDK binds the arguments dictionary to the
+/// method's parameters and throws before invoking it, so a misnamed parameter produces no req=N,
+/// no log line naming the tool, and a model-facing message of "An error occurred invoking 'x'."
+/// with the detail dropped. That looks the same as the server being broken.
 ///
-/// The binder throws <em>past</em> a call-tool filter rather than through it: the failure runs
-/// through this filter's frame and is caught above, in the SDK's own composed handler, which is
-/// where the detail is dropped. So a filter sits on both sides of the fault and closes it three
-/// ways, in the order they fire:
+/// The binder throws <em>past</em> a call-tool filter: the failure runs through this filter's
+/// frame and is caught one level up, in the SDK's own composed handler, which is where the detail
+/// is dropped. So this filter works both sides of the fault, in the order the steps fire:
 /// <list type="number">
-/// <item>Check the supplied names against the tool's own <c>inputSchema</c> before dispatching, the
-/// same thing <see cref="Call"/> already does for the command line. The common case — a parameter
-/// spelled in the wrong convention — is answered here, precisely, without running anything.</item>
-/// <item>Catch what escapes the tool, since the detail is still on the exception at this point and
-/// is gone one frame higher.</item>
-/// <item>Give a req to any error result that arrives without one. An error already carrying a req
-/// went through Run and is finished; anything else did not, whatever produced it.</item>
+/// <item>Check the supplied names against the tool's own <c>inputSchema</c> before dispatching,
+/// the same check <see cref="Call"/> makes for the command line. A parameter spelled in the wrong
+/// convention is answered here without running anything.</item>
+/// <item>Catch what escapes the tool, while the detail is still on the exception.</item>
+/// <item>Give a req to any error result that arrives without one; anything already carrying one
+/// went through Run.</item>
 /// </list>
 /// </summary>
 internal static class ToolErrors
 {
     /// <summary>
-    /// Wraps the call-tool pipeline so a failure that never reached Run() is reported the way Run()
-    /// would have reported it. <paramref name="schema"/> is the invoked tool's <c>inputSchema</c>,
-    /// or null when no tool matched — in which case there is no signature to check against and the
-    /// call is dispatched rather than refused on a guess.
+    /// Wraps the call-tool pipeline so a failure that never reached Run() is still reported the way
+    /// Run() reports one. <paramref name="schema"/> is the invoked tool's <c>inputSchema</c>, or
+    /// null when no tool matched: with no signature to check, the call is dispatched rather than
+    /// refused on a guess.
     /// </summary>
     internal static async ValueTask<CallToolResult> Guard(
         Func<ValueTask<CallToolResult>> next,
@@ -67,7 +64,7 @@ internal static class ToolErrors
         }
         catch (OperationCanceledException)
         {
-            // "It was cancelled" and "it failed" are different answers, and this is the first one.
+            // Cancellation is not a failure.
             throw;
         }
         catch (Exception e)
@@ -107,9 +104,9 @@ internal static class ToolErrors
         }
 
         /// <summary>
-        /// The reason these arguments cannot bind, or null when they can. Both halves are reported
-        /// together because the motivating case produces both at once: a name the tool does not
-        /// have, and the required one it was meant to be.
+        /// The reason these arguments cannot bind, or null when they can. Unknown and missing names
+        /// are reported together because the common case produces both at once: a name the tool
+        /// does not have, and the required one it was meant to be.
         /// </summary>
         internal string? Mismatch(string? tool, IReadOnlyList<string> supplied)
         {
@@ -140,9 +137,8 @@ internal static class ToolErrors
         }
 
         /// <summary>
-        /// Names an unknown argument that is a real parameter written in the wrong convention. That
-        /// is the whole of the motivating defect, and it is worth saying outright rather than
-        /// leaving the caller to diff two lists. A name that is merely wrong gets no guess.
+        /// Names an unknown argument that is a real parameter written in the wrong convention, so
+        /// the caller does not have to diff two lists. A name that is merely wrong gets no guess.
         /// </summary>
         private string Shape(IReadOnlyList<string> unknown)
         {
@@ -212,8 +208,8 @@ internal static class ToolErrors
 
     /// <summary>
     /// Whether an error has already been through Run(). Every message Run() produces ends in the
-    /// log reference, so the req is the marker — matching on the SDK's own wording instead would
-    /// break the first time it is reworded.
+    /// log reference, so the req is the marker. Matching on the SDK's own wording would break the
+    /// first time it is reworded.
     /// </summary>
     private static bool CarriesRequestId(string text) => text.Contains("req=", StringComparison.Ordinal);
 

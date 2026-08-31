@@ -1,18 +1,16 @@
 # Observability
 
-The log file is the primary diagnostic surface. When a server runs under an MCP client nobody sees
-stderr, so everything is also written to a file — and every error a tool call returns to the model
-carries its `req=N` and the log path, so an MCP error message leads straight to the lines that
-explain it. The one exception is a protocol-level refusal, an unknown tool or method name: it never
-reached a tool, so there is nothing to correlate and no `req=N` to give it.
+Under an MCP client nobody sees stderr, so everything is written to a file too. Every error a tool
+call returns carries its `req=N` and the log path, so an MCP error leads straight to the lines that
+explain it. The one error that cannot be correlated is a protocol-level refusal, an unknown tool or
+method name: it never reached a tool, so it has no `req=N`.
 
-The [`mcp-log-diagnostics`](../.claude/skills/mcp-log-diagnostics/SKILL.md) skill is the operational
-side of this: paths, recipes, and what the log already answers without adding code. This document is
-the design.
+The [`mcp-log-diagnostics`](../.claude/skills/mcp-log-diagnostics/SKILL.md) skill has the paths, the
+recipes, and what the log already answers without adding code.
 
 ## The stack
 
-Four pieces, duplicated near-identically between the servers in `Logging.cs`:
+`Logging.cs`, duplicated near-identically between the servers:
 
 | Piece | Role |
 | --- | --- |
@@ -23,14 +21,13 @@ Four pieces, duplicated near-identically between the servers in `Logging.cs`:
 
 `Program.cs` clears the default providers and registers two `CompactLoggerProvider`s, one per sink.
 `…McpLog.CreateFactory()` builds the same pair for the console verbs, so `auth` and `selftest` write
-to the same file the server does — which is what makes `selftest` a useful diagnostic rather than a
-separate universe.
+to the server's file.
 
 `FileLineSink` flushes each line so a crash still leaves the last event on disk, and opens with
-`FileShare.ReadWrite` so several server processes can append to the same file (they do — every MCP
-client that registers the server launches its own). A failed write complains to stderr, drops the
-stream and returns; a broken log must not break the server. The roll tolerates another process
-holding the file by continuing to append to the current one.
+`FileShare.ReadWrite`: every MCP client that registers the server launches its own process, and
+they all append to the same file. A failed write complains to stderr, drops the stream and
+returns; a broken log must not break the server. If another process holds the file, the roll gives
+up and keeps appending to the current one.
 
 ## The line format
 
@@ -48,24 +45,23 @@ holding the file by continuing to append to the current one.
 - The **event name** comes from the `EventId`, falling back to the shortened category. It is the
   grep anchor.
 - **`req=N`** is stamped by `CompactLogger` from `…McpLog.CurrentRequest`, an `AsyncLocal` that
-  `Run` sets — not passed down as a parameter. That is why HTTP handler lines and SDK events inside
-  a tool call carry it too.
-- The **message** is passed as a log *argument* rather than as the template
+  `Run` sets rather than a parameter passed down, which is why HTTP handler lines and SDK events
+  inside a tool call carry it too.
+- The **message** is a log *argument*, not the template
   (`log.Log(level, ev, ex, "{Msg}", message)`), so braces in a REST error body or a WIQL query can
   never break formatting.
-- An **exception** is appended underneath, indented, with type, message, stack and up to four levels
-  of inner exception, so the primary line stays greppable.
+- An **exception** is appended underneath, indented: type, message, stack, up to four levels of
+  inner exception. The primary line stays greppable.
 
 `Arg(name, value)` formats one ` name=value` pair and returns `""` for null, so an absent argument is
 omitted rather than written as `null`. Strings are quoted, truncated at 300 characters, and have
-quotes and newlines neutralized. Backslashes are deliberately **not** escaped: nearly every quoted
-value is a Windows path or an area path, and `C:\\Users\\…` is worse to read and to paste than the
-ambiguity is worth.
+quotes and newlines neutralized. Backslashes are **not** escaped: nearly every quoted value is a
+Windows path or an area path, and `C:\\Users\\…` is worse to read and paste.
 
 ## What is and is not logged verbatim
 
-**User-authored text is not logged unless `TEAMS_MCP_LOG_CONTENT` / `ADO_MCP_LOG_CONTENT` is
-`true`** — only `{field}.len=N`, which still distinguishes empty from non-empty.
+User-authored text is not logged unless `TEAMS_MCP_LOG_CONTENT` / `ADO_MCP_LOG_CONTENT` is `true`.
+Without it the log carries only `{field}.len=N`, which still distinguishes empty from non-empty.
 
 | Use | For |
 | --- | --- |
@@ -73,10 +69,10 @@ ambiguity is worth.
 | `A(…)` / `Arg` | Ids, counts, flags, timings |
 | `Arg`, in full | Organization names, project names, branch names, area paths, file paths |
 
-Addresses are logged in full on purpose: a wrong organization is otherwise invisible. Tenant and
-client ids are logged in full too, because they are OAuth public identifiers rather than secrets.
-**Tokens never are**, and the startup banner reports environment variables by presence and shape
-only — `Diagnostics.Describe` answers `<unset>`, `<guid 1a2b3c4d…>` or `<set len=44>`.
+Addresses are logged in full because a wrong organization is otherwise invisible. So are tenant and
+client ids, which are OAuth public identifiers, not secrets. Tokens never are. The startup banner
+reports environment variables by presence and shape only: `Diagnostics.Describe` answers `<unset>`,
+`<guid 1a2b3c4d…>` or `<set len=44>`.
 
 ## The event vocabulary
 
@@ -104,13 +100,13 @@ Stable names, identical in both servers except for the HTTP pair.
 | `config` | Information | A data file was loaded, with path, entry count and write time |
 
 The HTTP line carries the identifier the vendor's support asks for: Graph's `request-id` and
-`client-request-id`, Azure DevOps' `ActivityId` and `x-vss-e2eid`. Throttling shows as
-`retry-after` and, for Azure DevOps, `X-RateLimit-Delay`.
+`client-request-id`, Azure DevOps' `ActivityId` and `x-vss-e2eid`. Throttling shows as `retry-after`
+and, for Azure DevOps, `X-RateLimit-Delay`.
 
-The logging handler is registered **innermost** in both servers, so it sees each retry attempt
-individually rather than only the outcome the retry handler settled on. It also buffers a failed
-response body — replacing the content with an equivalent `ByteArrayContent` — so the body can be
-logged and still be read by the SDK's own error parser afterwards.
+The logging handler is registered **innermost** in both servers, so it sees each retry attempt and
+not just the outcome the retry handler settled on. It buffers a failed response body, replacing the
+content with an equivalent `ByteArrayContent`, so the body can be logged and still be read by the
+SDK's own error parser afterwards.
 
 ## Levels
 
@@ -120,21 +116,18 @@ logged and still be read by the SDK's own error parser afterwards.
 | `Debug` | Successful HTTP calls, paging, name resolution, per-poll lines |
 | `Trace` | The MCP SDK's own JSON-RPC traffic — how the `initialize` handshake and every request actually looked |
 
-`Trace` is how the protocol-level questions get answered; it is what established which capabilities
-Claude Code advertises.
+`Trace` answers protocol-level questions; it established which capabilities Claude Code advertises.
 
 ## Triage order
 
-1. **`-- selftest`.** It separates an auth problem from a tool problem and prints raw errors to the
+1. **`-- selftest`.** Separates an auth problem from a tool problem and prints raw errors to the
    console. For Azure DevOps, `-- config` does the same for the data files.
-2. **`-- call <tool> key=value…`.** Reproduces one tool call through the real server path — host,
-   silent auth, `Run` wrapper, filters — with the result on stdout and the server's log lines on
-   stderr, so a failure a model reported becomes a command to iterate on. It logs as `mode="call"`
-   to the same file the server writes.
-3. **The `startup` lines at the top of the log.** Which build, which tenant/client shape, which
-   organization, whether sign-in has happened, whether the gates are on, where the data files are
-   and whether they exist.
-4. **The failing `req=N`.** `grep "req=7"` gives the tool call, every HTTP request it made, and the
-   exception — in order.
+2. **`-- call <tool> key=value…`.** Reproduces one tool call through the real server path (host,
+   silent auth, `Run` wrapper, filters), result on stdout and log lines on stderr, so a reported
+   failure becomes a command to iterate on. It logs as `mode="call"` to the server's file.
+3. **The `startup` lines at the top of the log.** Build, tenant/client shape, organization, whether
+   sign-in has happened, whether the gates are on, where the data files are and whether they exist.
+4. **The failing `req=N`.** `grep "req=7"` gives the tool call, every HTTP request it made and the
+   exception, in order.
 5. **The `http.fail` line's `body=…`.** The service's own error message is almost always more
    specific than the mapped one.

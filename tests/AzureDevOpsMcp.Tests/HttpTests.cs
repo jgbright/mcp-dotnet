@@ -6,9 +6,9 @@ using Microsoft.Extensions.Logging;
 namespace AzureDevOpsMcp.Tests;
 
 /// <summary>
-/// This handler answers "which REST call failed and why" without adding code. Two behaviors matter:
-/// it logs the ids Azure DevOps support asks for, and it puts the error body back so the client can
-/// still parse the service's own message out of it.
+/// This handler answers "which REST call failed and why" without adding code. It logs the ids
+/// Azure DevOps support asks for, and it puts the error body back so the client can still parse
+/// the service's own message out of it.
 /// </summary>
 public class AdoLoggingHandlerTests : IDisposable
 {
@@ -140,8 +140,8 @@ public class AdoLoggingHandlerTests : IDisposable
 
 /// <summary>
 /// The REST wrapper turns every non-answer into an <see cref="AdoApiException"/> that says
-/// something useful, including the awkward case where Azure DevOps answers an unauthenticated
-/// request with a sign-in page and a success status.
+/// something useful, including where Azure DevOps answers an unauthenticated request with a
+/// sign-in page and a success status.
 /// </summary>
 public class AdoClientTests : IDisposable
 {
@@ -269,8 +269,8 @@ public class AdoClientTests : IDisposable
     [Fact]
     public async Task A_plain_text_failure_says_what_it_said()
     {
-        // A path sent to the wrong host answers in plain text, and what it says is the whole
-        // diagnosis: "Not Found (404)" would leave a caller looking for a definition that exists.
+        // A path sent to the wrong host answers in plain text, and that text is the diagnosis.
+        // "Not Found (404)" would leave a caller looking for a definition that exists.
         var client = Client(_ => new HttpResponseMessage(HttpStatusCode.NotFound)
         {
             Content = new StringContent(
@@ -286,8 +286,8 @@ public class AdoClientTests : IDisposable
     [Fact]
     public async Task An_html_error_page_is_reduced_to_the_sentence_inside_it()
     {
-        // The failure this exists for: an expired credential is answered with a whole page, and
-        // the one line that says so arrives buried in markup several steps from the cause.
+        // An expired credential is answered with a whole HTML page, and the one line that says
+        // so is buried in the markup.
         var client = Client(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
         {
             Content = new StringContent(
@@ -364,7 +364,7 @@ public class AdoClientTests : IDisposable
             return Json("""{"id":17,"fields":{"System.State":"Active"}}""");
         });
 
-        var result = await client.PatchAsync<WireWorkItem>(
+        var result = await client.JsonPatchAsync<WireWorkItem>(
             HttpMethod.Patch, "_apis/wit/workitems/17",
             Writes.UpdatePatch("Active", null, null, null, null, null, null, null, null, null, null, null),
             default);

@@ -4,16 +4,15 @@ using ModelContextProtocol;
 namespace AzureDevOpsMcp.Tests;
 
 /// <summary>
-/// The deployment map is data, not code: the server knows the chains (classic release, build/YAML
-/// pipeline) and TFVC path containment, and the file says which deployables exist. These pin the
-/// validation that makes a typo fail loudly (including the rule that a deployable names exactly one
-/// of releaseDefinition or pipeline), the vsrm host derivation, the build definition's TFVC
-/// workspace mapping parse, branch normalization, path containment, and the
-/// <see cref="DataFile{T}"/> loading mechanics the map rides on.
+/// The server knows the chains (classic release, build/YAML pipeline) and TFVC path containment;
+/// the deployment map file says which deployables exist. These pin the validation that makes a
+/// typo fail loudly (a deployable names exactly one of releaseDefinition or pipeline), the vsrm
+/// host derivation, the build definition's TFVC workspace mapping parse, branch normalization,
+/// path containment, and the <see cref="DataFile{T}"/> loading mechanics.
 /// </summary>
 public class DeploymentsTests
 {
-    // ---------------------------------------------------------------------- parsing
+    // parsing
 
     [Fact]
     public void A_valid_map_parses_with_optional_fields_carried_through()
@@ -125,7 +124,7 @@ public class DeploymentsTests
         Assert.Contains("pipeline", e.Message);
     }
 
-    // ----------------------------------------------------------------- vsrm host
+    // vsrm host
 
     [Theory]
     [InlineData("https://dev.azure.com/contoso", "https://vsrm.dev.azure.com/contoso")]
@@ -135,7 +134,7 @@ public class DeploymentsTests
         Assert.Equal(expected, Deployments.VsrmBaseUrl(org));
     }
 
-    // ------------------------------------------------- build definition tfvc mappings
+    // build definition tfvc mappings
 
     [Fact]
     public void Mapped_paths_are_kept_and_cloaked_ones_are_not()
@@ -160,7 +159,7 @@ public class DeploymentsTests
         Assert.Empty(Deployments.ParseTfvcMappings(json));
     }
 
-    // ------------------------------------------------------------ path containment
+    // path containment
 
     [Theory]
     [InlineData("$/Core/Websites/Trunk/Clients v2/Web.config", true)]
@@ -178,7 +177,7 @@ public class DeploymentsTests
         Assert.True(Deployments.UnderAny("$/CORE/websites/trunk/a.cs", ["$/Core/Websites/Trunk"]));
     }
 
-    // ---------------------------------------------------------- branch normalization
+    // branch normalization
 
     [Theory]
     [InlineData("refs/heads/main", "main")]
@@ -190,10 +189,8 @@ public class DeploymentsTests
         Assert.Equal(expected, Deployments.ShortBranch(branch));
     }
 
-    // -------------------------------------------------------------- loading the file
-    //
-    // The DataFile<T> mechanics every data file shares: the error for a missing or invalid file,
-    // the timestamp cache, and the reload.
+    // Loading the file. The DataFile<T> mechanics every data file shares: the error for a
+    // missing or invalid file, the timestamp cache, and the reload.
 
     private static string TempMap(string content)
     {

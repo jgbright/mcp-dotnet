@@ -133,8 +133,8 @@ public class ScopeConsentTests
 
 /// <summary>
 /// What Entra granted is read off the token's scp claim. It differs from the requested set: a scope
-/// consented to earlier comes back in the token even when this sign-in did not ask for it, and the
-/// token's set is what decides whether a later send works.
+/// consented to earlier comes back in the token even when this sign-in did not ask for it, and
+/// the token's set decides whether a later send works.
 /// </summary>
 public class TokenScopeTests
 {

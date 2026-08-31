@@ -145,9 +145,9 @@ public class ContentArgTests
     }
 
     [Fact]
-    public void Content_logging_is_off_unless_explicitly_opted_into()
+    public void LogContent_is_off_unless_explicitly_opted_into()
     {
-        Assert.False(TeamsMcpLog.Content);
+        Assert.False(TeamsMcpLog.LogContent);
     }
 }
 

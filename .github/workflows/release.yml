@@ -1,25 +1,25 @@
 # Cuts a release: build, test, pack, tag, publish a GitHub Release with the .nupkg files attached,
 # and push both packages to nuget.org.
 #
-# Dispatched by hand rather than triggered by a pushed tag. The version lives in version.json and
-# git height, so the workflow is the thing that knows it. Asking someone to type a matching tag
-# only creates a way for the tag and the packages to disagree.
+# Dispatched by hand rather than triggered by a pushed tag. The version comes from version.json
+# plus git height, so this workflow is what knows it. Asking someone to type a matching tag only
+# creates a way for the tag and the packages to disagree.
 name: release
 
 on:
   workflow_dispatch:
 
-# Everything this needs and nothing else. contents: write covers pushing the tag and creating the
-# release. id-token: write lets the job mint the GitHub OIDC token that nuget.org's trusted
-# publishing exchanges for a temporary push key — without it the login step fails with no token
-# available, which is the one failure here that does not look like a nuget.org problem. No
-# packages: write, which governs GitHub Packages and is not where these go.
+# Everything this needs and nothing else. contents: write authorizes the tag push and the release.
+# id-token: write lets the job mint the GitHub OIDC token that nuget.org's trusted publishing
+# exchanges for a temporary push key. Without it the login step fails with no token available,
+# the one failure here that does not look like a nuget.org problem. No packages: write, which
+# governs GitHub Packages and is not where these go.
 permissions:
   contents: write
   id-token: write
 
 # Never two releases at once, and never cancel one midway: a cancelled run can leave a pushed tag
-# with no release attached to it.
+# with no release attached.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -32,8 +32,8 @@ jobs:
       - name: Check out (full history and tags)
         uses: actions/checkout@v7
         with:
-          # nbgv derives the patch from git height and this job checks the tag it is about to
-          # create against the ones already there; a shallow clone has neither.
+          # nbgv derives the patch from git height, and this job checks the tag it is about to
+          # create against the ones already there. A shallow clone has neither.
           fetch-depth: 0
 
       - name: Set up .NET 10
@@ -44,8 +44,8 @@ jobs:
       - name: Restore local tools (nbgv)
         run: dotnet tool restore
 
-      # The gate runs before the build rather than after it. It is the same check either way, and
-      # failing in ten seconds beats failing after a build, a test run and a pack.
+      # The gate runs before the build. Same check either way, and failing in ten seconds beats
+      # failing after a build, a test run and a pack.
       - name: Check this ref can be released
         id: version
         shell: pwsh
@@ -60,8 +60,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'nbgv could not compute a version.' }
           $v = $raw | ConvertFrom-Json
 
-          # PublicRelease is nbgv matching the ref against publicReleaseRefSpec in version.json. If
-          # it is false the packages carry a -g<commit> suffix, and a prerelease is not a release.
+          # PublicRelease is nbgv matching the ref against publicReleaseRefSpec in version.json.
+          # If it is false the packages carry a -g<commit> suffix, which cannot ship as a release.
           if (-not $v.PublicRelease) {
             throw "nbgv says this is not a public release: version '$($v.NuGetPackageVersion)' " +
                   "from ref '$($v.BuildingRef)'. version.json's publicReleaseRefSpec decides this."
@@ -119,8 +119,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          # PowerShell does not expand a glob on behalf of a native command, so the paths are
-          # resolved here; passing the array then expands to one argument per file.
+          # PowerShell does not expand a glob for a native command, so the paths are resolved here.
+          # Passing the array expands to one argument per file.
           $packages = @(Get-ChildItem artifacts/*.nupkg | ForEach-Object { $_.FullName })
           if (-not $packages) { throw 'No .nupkg files in artifacts/ to attach.' }
           $packages | ForEach-Object { Write-Host "attaching $_" }
@@ -141,14 +141,14 @@ jobs:
       # No long-lived API key: nuget.org trusted publishing exchanges this job's GitHub OIDC token
       # for a temporary push key, against a policy registered on nuget.org naming this repository
       # owner, this repository and this workflow file by name (`release.yml`, no path). Renaming
-      # this file therefore breaks publishing until the policy is edited to match.
+      # this file breaks publishing until the policy is edited to match.
       #
       # Immediately before the push on purpose: the key it returns lives one hour and each OIDC
       # token buys exactly one key, so minting it early only shortens the window.
       #
       # NUGET_USER is the nuget.org profile name, not an email and not a credential. It is a secret
-      # only because nuget.org recommends it; publishing is authorized by the OIDC token and the
-      # policy behind it, so this value leaking would let nobody push anything.
+      # only because nuget.org recommends it. The OIDC token and the policy behind it authorize the
+      # push, so this value leaking would let nobody push anything.
       - name: Get a short-lived NuGet key (trusted publishing)
         uses: NuGet/login@v1
         id: nuget-login
@@ -156,12 +156,12 @@ jobs:
           user: ${{ secrets.NUGET_USER }}
 
       # Last, and the only irreversible step in the job: a published version can never be re-pushed
-      # or deleted, only unlisted. Everything that can fail cheaply — the ref and tag gate, the
-      # build, the tests — has already run, and the tag and GitHub Release exist, so a failure here
-      # leaves a release that is short a feed rather than a feed entry with no release behind it.
+      # or deleted, only unlisted. Everything that can fail cheaply (the ref and tag gate, the
+      # build, the tests) has already run, and the tag and GitHub Release exist, so a failure here
+      # leaves a release with no feed entry rather than a feed entry with no release behind it.
       #
       # --skip-duplicate makes a re-dispatch after a half-finished push a no-op on the package that
-      # already landed rather than a 409.
+      # already landed instead of a 409.
       - name: Push to NuGet
         shell: pwsh
         env:

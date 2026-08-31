@@ -40,8 +40,8 @@ public class FileLineSinkTests : IDisposable
         sink.Write("one");
         sink.Write("two");
 
-        // Read while the sink still holds the file. Every line is flushed as it is written, which is
-        // what makes the log usable after a crash.
+        // Read while the sink still holds the file. Every line is flushed as it is written, so
+        // the log is usable after a crash.
         Assert.Equal(["one", "two"], ReadAllLines(path));
     }
 

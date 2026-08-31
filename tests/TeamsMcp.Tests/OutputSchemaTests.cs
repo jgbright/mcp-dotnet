@@ -78,11 +78,11 @@ public class OutputSchemaTests
     }
 
     [Fact]
-    public void Stamping_the_listing_relaxes_it()
+    public void Preparing_the_listing_relaxes_it()
     {
-        // The filter in Program.cs only calls Stamp, so the relaxation has to happen underneath it.
-        var stamped = ToolListing.Stamp(Listing<List<TeamDto>>(), requestCursor: null);
+        // The filter in Program.cs only calls Prepare, so the relaxation has to happen underneath it.
+        var prepared = ToolListing.Prepare(Listing<List<TeamDto>>(), requestCursor: null);
 
-        Assert.Empty(Required(stamped.Tools[0], "items"));
+        Assert.Empty(Required(prepared.Tools[0], "items"));
     }
 }

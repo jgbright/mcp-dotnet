@@ -5,8 +5,8 @@ namespace AzureDevOpsMcp.Tests;
 /// <summary>
 /// `install` edits a file in someone's repository. These pin what it must never get wrong: which
 /// directory it decides is the root, which client's shape it writes, that identity stays a
-/// reference while addresses become literals, and that merging preserves everything already in the
-/// file (other servers, other properties, and an entry that differs, which is a refusal).
+/// reference while addresses become literals, and that merging preserves the other servers and
+/// properties already in the file. An entry that already differs is a refusal.
 /// </summary>
 public class InstallTests
 {
@@ -22,7 +22,7 @@ public class InstallTests
     private static JsonObject SampleEntry() =>
         Install.Entry("ado-mcp", [], [new("ADO_MCP_ORG_URL", "https://dev.azure.com/contoso")]);
 
-    // ------------------------------------------------------------------- finding the repo
+    // finding the repo
 
     [Fact]
     public void The_root_is_the_nearest_ancestor_holding_a_dot_git()
@@ -51,7 +51,7 @@ public class InstallTests
         Assert.Null(Install.FindRepoRoot(TempDir()));
     }
 
-    // -------------------------------------------------------------------------- detection
+    // detection
 
     [Theory]
     [InlineData(".mcp.json", "claude")]
@@ -107,7 +107,7 @@ public class InstallTests
         Assert.Equal(Path.Combine("r", ".vscode", "mcp.json"), Install.VsCode.PathIn("r"));
     }
 
-    // ------------------------------------------------------------------- launch command
+    // launch command
 
     [Fact]
     public void The_installed_tool_registers_itself_by_command_name()
@@ -149,7 +149,7 @@ public class InstallTests
         Assert.Equal(project, Install.FindProjectDir(Path.Combine(project, "bin", "Debug", "net10.0")));
     }
 
-    // --------------------------------------------------------------------- the env block
+    // the env block
 
     [Fact]
     public void Identity_is_referenced_never_copied()
@@ -238,7 +238,7 @@ public class InstallTests
         Assert.Equal(expected, Install.ReferencedVariable(value));
     }
 
-    // ------------------------------------------------------------------------- the entry
+    // the entry
 
     [Fact]
     public void An_entry_omits_args_when_there_are_none()
@@ -261,7 +261,7 @@ public class InstallTests
         Assert.Null(entry["env"]);
     }
 
-    // --------------------------------------------------------------------------- merging
+    // merging
 
     [Fact]
     public void Installing_into_no_file_at_all_produces_the_whole_document()
@@ -391,7 +391,7 @@ public class InstallTests
         Assert.EndsWith(Environment.NewLine, text);
     }
 
-    // --------------------------------------------------------------------- option parsing
+    // option parsing
 
     [Fact]
     public void Options_default_to_the_working_directory_the_detected_client_and_the_default_name()

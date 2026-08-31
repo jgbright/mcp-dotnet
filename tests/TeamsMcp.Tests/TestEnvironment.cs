@@ -11,7 +11,7 @@ namespace TeamsMcp.Tests;
 internal static class TestEnvironment
 {
     /// <summary>
-    /// <see cref="TeamsMcpLog.Level"/>, <see cref="TeamsMcpLog.Content"/> and
+    /// <see cref="TeamsMcpLog.Level"/>, <see cref="TeamsMcpLog.LogContent"/> and
     /// <see cref="TeamsMcpLog.Dir"/> are read once at type initialization, so whatever the developer
     /// has exported would otherwise decide what the tests assert. Clear them before any test touches
     /// the type, and point the log dir at a temp folder so a stray file sink cannot append to the

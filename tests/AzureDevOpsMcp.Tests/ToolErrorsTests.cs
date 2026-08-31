@@ -9,16 +9,15 @@ namespace AzureDevOpsMcp.Tests;
 /// Guard() covers the window either side of Run(): a call that fails before the tool body is
 /// entered still has to name the tool, carry a req=N, and say what actually went wrong.
 ///
-/// The case that motivated this is argument marshalling. get_release takes `release_id` and
+/// Argument marshalling is the case that motivated it. get_release takes `release_id` and
 /// list_releases takes `definition`; calling them with `releaseId` and `definitionId` threw inside
 /// the SDK's binder, and every one of those failures reached the caller as "An error occurred
 /// invoking 'get_release'." with no req and no detail.
 ///
-/// Guard answers it three ways, in the order they fire. It validates the supplied names against
-/// the tool's own inputSchema first, so the common case never dispatches at all. It catches what
-/// escapes the tool, because the binder throws past the filter rather than through it. And it
-/// gives a req to any error result that arrives without one, since anything already carrying a req
-/// went through Run and is finished.
+/// In the order they fire: Guard validates the supplied names against the tool's own inputSchema,
+/// so the common case never dispatches; it catches what escapes the tool, because the binder
+/// throws past the filter rather than through it; and it gives a req to any error result arriving
+/// without one, since anything already carrying a req went through Run.
 /// </summary>
 public class ToolErrorsTests : IDisposable
 {
@@ -56,7 +55,7 @@ public class ToolErrorsTests : IDisposable
         $"The arguments dictionary is missing a value for the required parameter '{name}'. " +
         "(Parameter 'arguments')");
 
-    // ------------------------------------------------------------------ the success path
+    // the success path
 
     [Fact]
     public async Task A_successful_call_is_passed_straight_through()
@@ -70,7 +69,7 @@ public class ToolErrorsTests : IDisposable
         Assert.Empty(_sink.Lines);
     }
 
-    // -------------------------------------------------- pre-validation against the input schema
+    // pre-validation against the input schema
 
     [Fact]
     public async Task A_misnamed_argument_is_rejected_before_the_tool_is_ever_reached()
@@ -171,14 +170,14 @@ public class ToolErrorsTests : IDisposable
         Assert.Empty(_sink.Lines);
     }
 
-    // ------------------------------------------------- what escapes the tool as an exception
+    // what escapes the tool as an exception
 
     [Fact]
     public async Task An_exception_thrown_past_the_tool_body_becomes_an_actionable_error()
     {
         // The binder throws through the filter, and the layer above turns anything it does not
-        // recognize into "An error occurred invoking 'get_release'." Catching it here is what keeps
-        // the detail.
+        // recognize into "An error occurred invoking 'get_release'." Catching it here keeps the
+        // detail.
         var result = await ToolErrors.Guard(
             () => Throws(MissingParameter("release_id")),
             "get_release", ["release_id"], GetRelease, _log);
@@ -224,12 +223,12 @@ public class ToolErrorsTests : IDisposable
         Assert.Matches(@"req=\d+", TextOf(result));
     }
 
-    // ------------------------------------------------- an error result that arrived without a req
+    // an error result that arrived without a req
 
     [Fact]
     public async Task An_error_result_with_no_request_id_is_given_one()
     {
-        // The backstop: whatever the layer below converts internally rather than throwing still has
+        // Backstop: whatever the layer below converts internally instead of throwing still has
         // to satisfy the server instructions' promise.
         var opaque = Error("An error occurred invoking 'get_release'.");
 
@@ -255,7 +254,7 @@ public class ToolErrorsTests : IDisposable
         Assert.Empty(_sink.Lines);
     }
 
-    // ------------------------------------------------------------------------------- helpers
+    // helpers
 
     private ValueTask<CallToolResult> Reject(string tool, string[] supplied, JsonElement schema) =>
         ToolErrors.Guard(

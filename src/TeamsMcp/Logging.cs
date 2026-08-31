@@ -7,9 +7,8 @@ namespace TeamsMcp;
 /// <summary>
 /// Logging configuration and formatting helpers.
 ///
-/// The server runs headless under an MCP client, so stderr is often swallowed. Everything is
-/// therefore also written to a file at <see cref="FilePath"/>. That file is the primary
-/// troubleshooting surface: one line per event, stable event names to grep for, and a
+/// Under an MCP client nobody sees stderr, so everything also goes to a file at
+/// <see cref="FilePath"/>: one line per event, stable event names to grep for, and a
 /// <c>req=N</c> correlation id tying a tool call to the Graph HTTP calls it made.
 /// </summary>
 public static class TeamsMcpLog
@@ -35,7 +34,7 @@ public static class TeamsMcpLog
     /// TEAMS_MCP_LOG_CONTENT=true logs message bodies and outgoing text. Off by default: the log
     /// file would otherwise accumulate real Teams conversation content in plain text.
     /// </summary>
-    public static bool Content { get; } =
+    public static bool LogContent { get; } =
         string.Equals(Environment.GetEnvironmentVariable("TEAMS_MCP_LOG_CONTENT"), "true",
             StringComparison.OrdinalIgnoreCase);
 
@@ -67,19 +66,19 @@ public static class TeamsMcpLog
 
     /// <summary>
     /// Message bodies and outgoing text: logged verbatim only when TEAMS_MCP_LOG_CONTENT=true,
-    /// otherwise reduced to a length so you can still tell empty from non-empty.
+    /// otherwise reduced to a length so empty still reads as empty.
     /// </summary>
     public static string ContentArg(string name, string? value) => value switch
     {
         null => "",
-        _ when Content => Arg(name, value),
+        _ when LogContent => Arg(name, value),
         _ => $" {name}.len={value.Length}",
     };
 
     private static string Quote(string s)
     {
-        // Backslashes are not escaped on purpose: nearly every quoted value here is a Windows
-        // path, and "C:\\Users\\..." is worse to read and to paste than the ambiguity is worth.
+        // Backslashes are not escaped on purpose: nearly every quoted value is a Windows path,
+        // and "C:\\Users\\..." is worse to read and paste than the ambiguity is.
         var text = s.Length > MaxValueChars ? s[..MaxValueChars] + "…" : s;
         text = text.Replace("\"", "'").Replace("\r", "").Replace("\n", "\\n");
         return $"\"{text}\"";
@@ -105,7 +104,7 @@ public static class TeamsMcpLog
 
 /// <summary>
 /// The startup banner: which build is running, whether the ids are set, whether sign-in has
-/// happened, and where the knobs sit. Read the top of the log file and you know the environment.
+/// happened, and where the knobs sit.
 /// </summary>
 public static class Diagnostics
 {
@@ -128,7 +127,7 @@ public static class Diagnostics
             TeamsMcpLog.Arg("TEAMS_MCP_AUTH", Describe("TEAMS_MCP_AUTH")) +
             TeamsMcpLog.Arg("sendEnabled", GraphContext.SendEnabled) +
             TeamsMcpLog.Arg("logLevel", TeamsMcpLog.Level.ToString()) +
-            TeamsMcpLog.Arg("logContent", TeamsMcpLog.Content) +
+            TeamsMcpLog.Arg("logContent", TeamsMcpLog.LogContent) +
             TeamsMcpLog.Arg("logFile", TeamsMcpLog.FilePath));
 
         var record = GraphContext.RecordPath;

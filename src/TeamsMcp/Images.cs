@@ -4,17 +4,15 @@ using ModelContextProtocol;
 namespace TeamsMcp;
 
 /// <summary>
-/// The local half of <c>download_message_images</c>: which target the caller named, what counts as
-/// an image, what bytes actually arrived, what to call the file, and how a OneDrive/SharePoint
-/// sharing URL is encoded for Graph's <c>/shares</c> endpoint. The Graph half (fetching hosted
-/// contents and drive items) lives in the tool, which is the part a test cannot run.
+/// The testable half of <c>download_message_images</c>: target validation, image detection, byte
+/// sniffing, file naming, and the base64url encoding Graph's <c>/shares</c> endpoint wants for a
+/// OneDrive/SharePoint sharing URL. Fetching hosted contents and drive items stays in the tool.
 /// </summary>
 internal static class Images
 {
     /// <summary>
-    /// One message, two addressings: `chat`, or `team`+`channel` (where `reply_id` can reach into
-    /// a thread). Anything else is a caller error worth naming precisely, because the tool cannot
-    /// guess which conversation was meant.
+    /// A message is addressed by `chat`, or by `team`+`channel` (with `reply_id` to reach into a
+    /// thread). Anything else fails naming what was wrong; the tool cannot guess the conversation.
     /// </summary>
     internal static void RequireTarget(string? chat, string? team, string? channel, string? replyId)
     {
@@ -42,8 +40,8 @@ internal static class Images
     }
 
     /// <summary>
-    /// Extensions treated as an image when deciding whether an attachment is worth downloading.
-    /// The saved file's extension never comes from here — the bytes decide (<see cref="Sniff"/>).
+    /// Extensions that mark an attachment worth downloading. The saved file's extension comes from
+    /// the bytes instead (<see cref="Sniff"/>).
     /// </summary>
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -54,9 +52,9 @@ internal static class Images
         !string.IsNullOrWhiteSpace(name) && ImageExtensions.Contains(GetExtensionSafe(name.Trim()));
 
     /// <summary>
-    /// Whether an attachment carries an image: an image/* content type says so directly, otherwise
-    /// the file name or the URL's last segment has to look like one. Quote cards, adaptive cards
-    /// and code snippets all fail this and are counted as skipped rather than failed.
+    /// Whether an attachment carries an image: an image/* content type, else the file name or the
+    /// URL's last segment. Quote cards, adaptive cards and code snippets fail this and are counted
+    /// as skipped, not failed.
     /// </summary>
     internal static bool IsImageAttachment(string? name, string? contentType, string? contentUrl) =>
         contentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true ||
@@ -70,7 +68,7 @@ internal static class Images
         {
             return null;
         }
-        // A trailing slash names a folder, which has no file name to offer.
+        // A trailing slash names a folder, so there is no file name.
         var segment = uri.Segments.LastOrDefault();
         if (segment is null || segment.EndsWith('/'))
         {
@@ -82,9 +80,9 @@ internal static class Images
 
     /// <summary>
     /// What the bytes are, from their magic numbers. Graph's hostedContents listing answers
-    /// contentType/contentBytes as null (only <c>/$value</c> carries the payload), and an
-    /// attachment's file name can lie, so the downloaded bytes are the one honest source. Null
-    /// means unrecognized, which the caller saves as <c>.bin</c> with no content type claimed.
+    /// contentType and contentBytes as null (only <c>/$value</c> carries the payload) and a file
+    /// name can lie, so the downloaded bytes are the only reliable source. Null means unrecognized;
+    /// the caller saves those as <c>.bin</c> with no content type claimed.
     /// </summary>
     internal static (string Extension, string ContentType)? Sniff(ReadOnlySpan<byte> bytes)
     {
@@ -143,8 +141,8 @@ internal static class Images
     }
 
     /// <summary>
-    /// Graph's sharing-URL encoding: unpadded base64url of the URL, prefixed <c>u!</c>. This is
-    /// what turns an attachment's <c>contentUrl</c> into an id `/shares/{id}/driveItem` accepts.
+    /// Graph's sharing-URL encoding: unpadded base64url of the URL, prefixed <c>u!</c>. Turns an
+    /// attachment's <c>contentUrl</c> into an id `/shares/{id}/driveItem` accepts.
     /// </summary>
     internal static string EncodeShareUrl(string url) =>
         "u!" + Convert.ToBase64String(Encoding.UTF8.GetBytes(url))
@@ -164,9 +162,8 @@ internal static class Images
     }
 
     /// <summary>
-    /// The name to save one image under: the attachment's own (sanitized) name when there is one,
-    /// else <c>{messageId}-{index}</c>, with the sniffed extension replacing one the name does not
-    /// have or has wrong. Never trusts a claimed extension over the bytes.
+    /// The name to save one image under: the attachment's sanitized name when there is one, else
+    /// <c>{messageId}-{index}</c>. The sniffed extension wins over whatever the name claims.
     /// </summary>
     internal static string FileNameFor(string? name, string messageId, int index, string? sniffedExtension)
     {
@@ -185,8 +182,8 @@ internal static class Images
 
     /// <summary>
     /// A path in <paramref name="directory"/> that <paramref name="exists"/> says is free,
-    /// numbering the stem rather than overwriting: this tool writes into a directory it does not
-    /// own, so clobbering is never the answer to a collision.
+    /// numbering the stem on a collision. This tool writes into a directory it does not own, so it
+    /// never overwrites.
     /// </summary>
     internal static string UniquePath(string directory, string fileName, Func<string, bool> exists)
     {
@@ -208,8 +205,8 @@ internal static class Images
     }
 
     /// <summary>
-    /// <see cref="Path.GetExtension(string)"/> that answers "" instead of throwing on names
-    /// carrying characters a local path cannot (a URL query string, say).
+    /// <see cref="Path.GetExtension(string)"/> that answers "" instead of throwing on names with
+    /// characters a local path cannot hold, such as a URL query string.
     /// </summary>
     private static string GetExtensionSafe(string name)
     {

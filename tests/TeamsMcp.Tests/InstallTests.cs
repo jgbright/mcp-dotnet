@@ -3,10 +3,10 @@ using System.Text.Json.Nodes;
 namespace TeamsMcp.Tests;
 
 /// <summary>
-/// `install` edits a file in someone else's repository. These pin what it must never get wrong:
-/// which directory it takes as the root, which client's shape it writes, that identity stays a
-/// reference and the send gate is never installed for a repository, and that merging preserves
-/// everything already in the file. An entry that differs is refused rather than overwritten.
+/// `install` edits a file in someone else's repository, so these pin what it must never get
+/// wrong: which directory it takes as the root, which client's shape it writes, identity staying a
+/// reference, the send gate never being installed for a repository, and merging preserving
+/// everything already in the file. An entry that differs is refused, not overwritten.
 /// </summary>
 public class InstallTests
 {

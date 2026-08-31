@@ -5,7 +5,7 @@ namespace TeamsMcp.Tests;
 
 /// <summary>
 /// The query a search tool asks with. The <c>sent&gt;</c> term is off by a day on purpose, see
-/// <see cref="SearchQueries.Build"/>.
+/// <see cref="Search.Build"/>.
 /// </summary>
 public class SearchQueryTests
 {
@@ -14,7 +14,7 @@ public class SearchQueryTests
     [Fact]
     public void Mentions_ask_the_service_to_do_the_filtering()
     {
-        Assert.Equal("IsMentioned:true", SearchQueries.Build(null, null, mentionsOnly: true));
+        Assert.Equal("IsMentioned:true", Search.Build(null, null, mentionsOnly: true));
     }
 
     [Fact]
@@ -22,7 +22,7 @@ public class SearchQueryTests
     {
         // Graph's `sent>2026-07-28` excludes the 28th outright, so asking from 14:30 that day has
         // to ask from the 27th and let IsAtOrAfter trim the morning off.
-        Assert.Equal("sent>2026-07-27", SearchQueries.Build(null, Since, mentionsOnly: false));
+        Assert.Equal("sent>2026-07-27", Search.Build(null, Since, mentionsOnly: false));
     }
 
     [Fact]
@@ -31,7 +31,7 @@ public class SearchQueryTests
         // 2026-07-28T20:00-07:00 is the 29th in UTC. The scope is built from the instant.
         var evening = new DateTimeOffset(2026, 7, 28, 20, 0, 0, TimeSpan.FromHours(-7));
 
-        Assert.Equal("sent>2026-07-28", SearchQueries.Build(null, evening, mentionsOnly: false));
+        Assert.Equal("sent>2026-07-28", Search.Build(null, evening, mentionsOnly: false));
     }
 
     [Fact]
@@ -39,7 +39,7 @@ public class SearchQueryTests
     {
         Assert.Equal(
             "IsMentioned:true sent>2026-07-27 from:Alice invoice",
-            SearchQueries.Build("  from:Alice invoice  ", Since, mentionsOnly: true));
+            Search.Build("  from:Alice invoice  ", Since, mentionsOnly: true));
     }
 
     [Fact]
@@ -47,16 +47,16 @@ public class SearchQueryTests
     {
         // The service rejects an empty query string with an opaque error, so the tool refuses first
         // with a readable one.
-        Assert.Equal("", SearchQueries.Build(null, null, mentionsOnly: false));
-        Assert.Equal("", SearchQueries.Build("   ", null, mentionsOnly: false));
+        Assert.Equal("", Search.Build(null, null, mentionsOnly: false));
+        Assert.Equal("", Search.Build("   ", null, mentionsOnly: false));
     }
 
     [Fact]
     public void A_hit_at_the_boundary_counts_as_at_or_after()
     {
-        Assert.True(SearchQueries.IsAtOrAfter(Hit(Since), Since));
-        Assert.True(SearchQueries.IsAtOrAfter(Hit(Since.AddSeconds(1)), Since));
-        Assert.False(SearchQueries.IsAtOrAfter(Hit(Since.AddSeconds(-1)), Since));
+        Assert.True(Search.IsAtOrAfter(Hit(Since), Since));
+        Assert.True(Search.IsAtOrAfter(Hit(Since.AddSeconds(1)), Since));
+        Assert.False(Search.IsAtOrAfter(Hit(Since.AddSeconds(-1)), Since));
     }
 
     [Fact]
@@ -64,8 +64,8 @@ public class SearchQueryTests
     {
         // A hit with no timestamp cannot be shown to satisfy the filter, and a waiter that took one
         // would report an arrival it has no evidence for.
-        Assert.True(SearchQueries.IsAtOrAfter(Hit(null), null));
-        Assert.False(SearchQueries.IsAtOrAfter(Hit(null), Since));
+        Assert.True(Search.IsAtOrAfter(Hit(null), null));
+        Assert.False(Search.IsAtOrAfter(Hit(null), Since));
     }
 
     private static SearchHitDto Hit(DateTimeOffset? created) =>
@@ -120,7 +120,7 @@ public class SearchHitMappingTests
     [Fact]
     public void A_chat_hit_carries_the_chat_id_and_nothing_about_channels()
     {
-        var dto = SearchQueries.Map(Hit(), bodyLimit: 1000);
+        var dto = Search.MapHit(Hit(), bodyLimit: 1000);
 
         Assert.Equal("1785237731950", dto.MessageId);
         Assert.Equal("19:42e04e7f7fab49abba7152c7167dba2e@thread.v2", dto.ChatId);
@@ -135,7 +135,7 @@ public class SearchHitMappingTests
     [Fact]
     public void A_channel_hit_carries_the_pair_a_channel_read_needs_and_drops_the_duplicate()
     {
-        var dto = SearchQueries.Map(Hit(resource: ChannelResource()), bodyLimit: 1000);
+        var dto = Search.MapHit(Hit(resource: ChannelResource()), bodyLimit: 1000);
 
         Assert.Equal("be65e069-1d66-4884-ae91-cfc2bc206657", dto.TeamId);
         Assert.Equal("19:032a4714d2da4fc1b237e090206b008e@thread.tacv2", dto.ChannelId);
@@ -150,7 +150,7 @@ public class SearchHitMappingTests
         var resource = ChatResource();
         resource["channelIdentity"] = Obj(("channelId", Str("19:jason_alice@unq.gbl.spaces")));
 
-        var dto = SearchQueries.Map(Hit(resource: resource), bodyLimit: 1000);
+        var dto = Search.MapHit(Hit(resource: resource), bodyLimit: 1000);
 
         Assert.Null(dto.ChannelId);
         Assert.Null(dto.TeamId);
@@ -164,16 +164,16 @@ public class SearchHitMappingTests
         // from.emailAddress.name. Both name the same person.
         var resource = ChatResource();
         resource["from"] = Obj(("user", Obj(("displayName", Str("Alice")))));
-        Assert.Equal("Alice", SearchQueries.Map(Hit(resource: resource), 1000).Sender);
+        Assert.Equal("Alice", Search.MapHit(Hit(resource: resource), 1000).Sender);
 
         resource["from"] = Obj(("application", Obj(("displayName", Str("Alertmanager")))));
-        Assert.Equal("Alertmanager", SearchQueries.Map(Hit(resource: resource), 1000).Sender);
+        Assert.Equal("Alertmanager", Search.MapHit(Hit(resource: resource), 1000).Sender);
     }
 
     [Fact]
     public void The_summary_is_the_content_and_body_limit_truncates_it()
     {
-        var dto = SearchQueries.Map(Hit(summary: new string('x', 50)), bodyLimit: 10);
+        var dto = Search.MapHit(Hit(summary: new string('x', 50)), bodyLimit: 10);
 
         Assert.Equal(new string('x', 10), dto.Summary);
         Assert.True(dto.Truncated);
@@ -189,7 +189,7 @@ public class SearchHitMappingTests
 
         Assert.Equal(
             new DateTimeOffset(2026, 7, 28, 11, 22, 13, TimeSpan.Zero),
-            SearchQueries.Map(Hit(resource: resource), 1000).Created);
+            Search.MapHit(Hit(resource: resource), 1000).Created);
     }
 
     [Fact]
@@ -200,15 +200,15 @@ public class SearchHitMappingTests
 
         Assert.Equal(
             new DateTimeOffset(2026, 7, 28, 11, 22, 13, TimeSpan.Zero),
-            SearchQueries.Map(Hit(resource: resource), 1000).Created);
+            Search.MapHit(Hit(resource: resource), 1000).Created);
     }
 
     [Fact]
     public void A_hit_stripped_of_everything_maps_to_what_is_left_rather_than_throwing()
     {
         // A service-side shape change lands on this untyped seam first. A hit that lost its
-        // resource still has an id and a summary, and those are worth returning.
-        var dto = SearchQueries.Map(Hit(withResource: false), bodyLimit: 1000);
+        // resource still has an id and a summary, so those are still returned.
+        var dto = Search.MapHit(Hit(withResource: false), bodyLimit: 1000);
 
         Assert.Equal("AAMkAD-long-exchange-id=", dto.MessageId);
         Assert.Equal("hello there", dto.Summary);

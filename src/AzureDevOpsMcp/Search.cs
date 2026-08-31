@@ -3,17 +3,16 @@ using System.Text.Json.Serialization;
 namespace AzureDevOpsMcp;
 
 /// <summary>
-/// The Search service (code, work item and wiki search). Like Release Management it answers on
-/// its own host, almsearch.dev.azure.com, and unlike the core API it takes POST bodies. The pure
-/// parts live here so they are testable without an organization behind them. The tools themselves
-/// are in <c>AdoTools</c>.
+/// The Search service (code, work item and wiki search). It answers on its own host,
+/// almsearch.dev.azure.com, and takes POST bodies where the core API does not. The pure parts
+/// live here so they are testable without an organization behind them; the tools are in
+/// <c>AdoTools</c>.
 /// </summary>
 internal static class Search
 {
     /// <summary>
-    /// The Search API host: dev.azure.com/{org} answers the core APIs,
-    /// almsearch.dev.azure.com/{org} answers search. Same split as
-    /// <see cref="Deployments.VsrmBaseUrl"/>.
+    /// The Search API host: almsearch.dev.azure.com/{org}. Same per-service host split as
+    /// <see cref="Deployments.VsrmBaseUrl"/>, which spells it out.
     /// </summary>
     internal static string BaseUrl(string orgUrl)
     {
@@ -31,8 +30,8 @@ internal static class Search
 
     /// <summary>
     /// One search request body, shared by all three result endpoints. <c>$top</c> and <c>$skip</c>
-    /// are literal property names in this API, and filter keys are case-sensitive identifiers
-    /// ("Repository", "Path"), which the camelCase serializer leaves untouched because they are
+    /// are literal property names in this API. Filter keys are case-sensitive identifiers
+    /// ("Repository", "Path"); the camelCase serializer leaves them alone because they are
     /// dictionary keys. <c>IncludeSnippet</c> exists only on code search, so it stays off the wire
     /// (null) for the other two.
     /// </summary>
@@ -47,7 +46,7 @@ internal static class Search
     /// <summary>
     /// The TFVC repository that contains a server path ("$/Core/Schema" is in "$/Core"), which is
     /// how code search names TFVC content. The service refuses a Path filter without a Repository
-    /// filter, and for TFVC the path already says which one that is.
+    /// filter, and for TFVC the path already says which repository it is.
     /// </summary>
     internal static string? TfvcRepository(string path)
     {
@@ -60,7 +59,7 @@ internal static class Search
         return repository.Length > 2 ? repository : null;
     }
 
-    /// <summary>Builds a request. Filters without a value are left out, and none at all is null.</summary>
+    /// <summary>Filters without a value are left out; no filters at all is null.</summary>
     internal static Request BuildRequest(string query, int top, params (string Key, string? Value)[] filters)
     {
         Dictionary<string, List<string>>? built = null;

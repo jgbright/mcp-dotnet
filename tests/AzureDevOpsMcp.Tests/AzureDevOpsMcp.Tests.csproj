@@ -5,8 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
-    <!-- The project under test is an Exe with top-level statements; InternalsVisibleTo makes its
-         generated Program class visible here, which would collide with the test host's. -->
+    <!-- The project under test is an Exe with top-level statements, and InternalsVisibleTo brings
+         its generated Program class in here, where it collides with the test host's. -->
     <NoWarn>$(NoWarn);CS0436</NoWarn>
   </PropertyGroup>
 

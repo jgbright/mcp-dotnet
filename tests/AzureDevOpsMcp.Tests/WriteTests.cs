@@ -91,8 +91,8 @@ public class PatchDocumentTests
 
     /// <summary>
     /// Azure DevOps unions an "add" on System.Tags with the tags already on the item, so a removal
-    /// sent that way comes back 200 having changed nothing. The op verb is as load-bearing as the
-    /// merged value, which is why it is pinned on the wire rather than on the object.
+    /// sent that way comes back 200 having changed nothing. The op verb matters as much as the
+    /// merged value, so it is pinned on the wire.
     /// </summary>
     [Fact]
     public void Tags_are_written_with_replace_because_an_add_can_only_grow_the_list()
@@ -160,8 +160,8 @@ public class PatchDocumentTests
 
 /// <summary>
 /// The parent link is a relation addressed by its index, not a field addressed by name, so getting
-/// it wrong removes the wrong link rather than failing. A work item has at most one parent, which
-/// is what makes re-parenting a remove followed by an add.
+/// it wrong removes the wrong link rather than failing. A work item has at most one parent, so
+/// re-parenting is a remove followed by an add.
 /// </summary>
 public class ParentLinkTests
 {
@@ -207,7 +207,7 @@ public class ParentLinkTests
     public void The_existing_link_is_matched_by_id_rather_than_by_url_spelling()
     {
         // Azure DevOps answers with the url it has, which need not be spelled the way this server
-        // spells one — a different host casing or a project segment must not read as a different parent.
+        // spells one. A different host casing or a project segment is still the same parent.
         List<WireRelation> relations =
             [new("System.LinkTypes.Hierarchy-Reverse", "https://DEV.azure.com/contoso/proj/_apis/wit/workItems/7847", null)];
 

@@ -4,9 +4,9 @@ using ModelContextProtocol.Protocol;
 namespace TeamsMcp.Tests;
 
 /// <summary>
-/// The `call` verb's pure halves: command-line tokens into tool arguments against the tool's input
-/// schema, and a tool result into console output. The transport wiring around them is verified by
-/// hand (`-- call`), like everything else that drives the real server.
+/// The `call` verb's pure halves: command-line tokens into tool arguments against the tool's
+/// input schema, and a tool result into console output. The transport wiring around them is
+/// verified by hand (`-- call`).
 /// </summary>
 public class CallTests
 {

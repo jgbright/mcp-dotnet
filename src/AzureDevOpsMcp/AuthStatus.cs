@@ -7,20 +7,18 @@ using Microsoft.Extensions.Logging;
 namespace AzureDevOpsMcp;
 
 /// <summary>
-/// What credential this server is using, and whether it still works.
-///
-/// This exists because "the tool call failed" and "the credential is dead" look the same from the
-/// outside, and the usual next move — reach for AZURE_DEVOPS_PAT and call the REST API by hand —
-/// fails a second time for a reason nobody has checked either. So both are reported together, and
-/// the PAT is probed rather than assumed: it is never this server's credential and is never used
-/// to make a tool's request, it is checked because a session is about to build on it.
+/// What credential this server is using, and whether it still works. "The tool call failed" and
+/// "the credential is dead" look the same from the outside, and the usual next move, reaching for
+/// AZURE_DEVOPS_PAT and calling the REST API by hand, fails a second time for a reason nobody has
+/// checked either. So both are reported together. The PAT is probed rather than assumed: it is
+/// never this server's credential and never makes a tool's request, it is checked because a
+/// session is about to build on it.
 /// </summary>
 internal static class AuthStatus
 {
     /// <summary>
-    /// The persisted sign-in, read for reporting only. Deliberately not through
-    /// <see cref="AdoContext"/>: this has to answer on a box where building a credential is
-    /// exactly what fails.
+    /// The persisted sign-in, read for reporting only. Not through <see cref="AdoContext"/>: this
+    /// has to answer on a box where building a credential is what fails.
     /// </summary>
     internal static async Task<AuthenticationRecord?> ReadRecordAsync(CancellationToken ct)
     {
@@ -35,16 +33,16 @@ internal static class AuthStatus
         }
         catch (Exception)
         {
-            // A record that cannot be read is reported as no record. The tool's own error field
+            // A record that cannot be read is reported as no record. The tool's error field
             // carries what the credential build then said about it.
             return null;
         }
     }
 
     /// <summary>
-    /// AZURE_DEVOPS_PAT against connectionData, or null when the variable is unset — absent means
-    /// absent, and a report that the variable "is not valid" would read as though it were meant to
-    /// be set. Basic auth with an empty username is how Azure DevOps takes a PAT.
+    /// AZURE_DEVOPS_PAT against connectionData, or null when the variable is unset. Reporting an
+    /// unset variable as "not valid" would read as though it were meant to be set. Basic auth
+    /// with an empty username is how Azure DevOps takes a PAT.
     /// </summary>
     internal static async Task<PatStatusDto?> ProbePatAsync(ILogger log, CancellationToken ct)
     {
@@ -69,8 +67,8 @@ internal static class AuthStatus
             using var response = await http.SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
 
-            // The failure this is here to catch answers with an HTML page, and on a rejected token
-            // often with a success status, so neither the status nor the body can be trusted alone.
+            // A rejected token is answered with an HTML page, often under a success status, so
+            // neither the status nor the body can be trusted alone.
             if (Text.ErrorFromHtml(body) is { } page)
             {
                 return new PatStatusDto(false, null, page);

@@ -7,28 +7,28 @@ Rebuilds the MCP servers from source and reinstalls them as global .NET tools.
 Builds, tests, packs, then replaces the installed tools and verifies the replacement landed.
 This is the inner loop for changing a server and running the change under a real MCP client.
 
-Three failure modes make this a script instead of a remembered command line, and all three look
-like success:
+The failure modes it works around make this a script instead of a remembered command line, and
+each one looks like success:
 
 - `dotnet tool update` cannot pick up a rebuild. The version comes from Nerdbank.GitVersioning
   (version.json plus git height), so it moves on a commit but not on an edit. Update sees the
-  version already satisfied and exits 0 without replacing anything. Uninstall then install is
-  the only sequence that swaps the files at an unchanged version.
+  version already satisfied and exits 0 without replacing anything. Uninstall then install is the
+  only sequence that swaps the files at an unchanged version.
 - A running server holds its own DLL open, so the uninstall fails with access denied and the
-  install afterwards reports success against the untouched files. Instances are stopped
-  immediately before each uninstall, since a supervisor may relaunch one during the build. That
-  drops the MCP connection of any client currently using these servers.
-- `--add-source` adds a source rather than restricting to one, so an unpinned install resolves the
+  install afterwards reports success against untouched files. Instances are stopped immediately
+  before each uninstall, since a supervisor may relaunch one during the build. That drops the MCP
+  connection of any client currently using these servers.
+- `--add-source` adds a source instead of restricting to one, so an unpinned install resolves the
   highest version across every configured feed. That used to mean a stranger's package with the
   same id; now the ids are owner-prefixed it means whatever this repo has published to nuget.org,
   which is still not the local build. Installs therefore run against a config with every source
   cleared but artifacts/, with the version pinned.
 
-The install is verified: the assembly timestamp is compared before and after, and the tool
-command is checked. Either mismatch is a hard failure.
+The install is verified: the assembly timestamp is compared before and after, and the tool command
+is checked. Either mismatch is a hard failure.
 
-MCP clients launch their servers at startup, so a client already running when this finishes
-keeps the old binary until it restarts. Restart it.
+MCP clients launch their servers at startup, so a client already running when this finishes keeps
+the old binary until it restarts. Restart it.
 
 .EXAMPLE
 ./rebuild.ps1                        # both servers: build, test, pack, reinstall
@@ -37,7 +37,7 @@ keeps the old binary until it restarts. Restart it.
 
 .NOTES
 Run from anywhere. Paths resolve relative to the repository this script lives in.
-Nothing here needs the servers' environment variables or a sign-in, since it never starts a server.
+It never starts a server, so it needs none of their environment variables and no sign-in.
 #>
 [CmdletBinding()]
 param(
@@ -50,10 +50,9 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 $Artifacts = Join-Path $RepoRoot 'artifacts'
 
-# Read rather than assume: the install pins this version explicitly. It comes from
-# Nerdbank.GitVersioning, so it moves with git height, and it is the NuGet form because off main
-# that carries a -g<commit> suffix and the pinned install must ask for the version the package
-# was actually stamped with.
+# The install pins this version, so read it rather than assume it. The NuGet form, not the plain
+# one: off main it carries a -g<commit> suffix, and the pinned install has to ask for the version
+# the package was stamped with.
 Push-Location $RepoRoot
 try { $Version = & dotnet nbgv get-version --variable NuGetPackageVersion }
 finally { Pop-Location }
@@ -89,7 +88,7 @@ function Write-Step([string]$Text)
 }
 
 # The installed assembly, or $null when the tool is not installed. Its LastWriteTime is the only
-# honest evidence that an install replaced anything.
+# evidence that an install replaced anything.
 function Get-InstalledAssembly($Target)
 {
     $store = Join-Path $env:USERPROFILE ".dotnet\tools\.store\$($Target.PackageId.ToLowerInvariant())"
@@ -98,10 +97,10 @@ function Get-InstalledAssembly($Target)
         Select-Object -First 1
 }
 
-# Stops every instance of one server so its files can be replaced, returning whether it killed
-# anything. Called immediately before that server's uninstall rather than once up front: anything
-# supervising a server (an MCP client that reconnects, a watcher on a timer) relaunches it during
-# the build, and the lock is back by the time the uninstall runs.
+# Stops every instance of one server so its files can be replaced; returns whether it killed
+# anything. Called immediately before that server's uninstall, not once up front: a supervisor (an
+# MCP client that reconnects, a watcher on a timer) relaunches the server during the build, and the
+# lock is back by the time the uninstall runs.
 function Stop-ServerProcess($Target)
 {
     $running = Get-Process -Name $Target.ToolCommand -ErrorAction SilentlyContinue
@@ -116,7 +115,7 @@ function Stop-ServerProcess($Target)
     return $true
 }
 
-# dotnet writes its own diagnostics; this only needs to stop the script on a non-zero exit, which
+# dotnet writes its own diagnostics. This just stops the script on a non-zero exit, which
 # $ErrorActionPreference does not do for native commands.
 function Invoke-Dotnet([string[]]$DotnetArgs)
 {
@@ -124,11 +123,11 @@ function Invoke-Dotnet([string[]]$DotnetArgs)
     if ($LASTEXITCODE -ne 0) { throw "dotnet $($DotnetArgs -join ' ') failed with exit code $LASTEXITCODE" }
 }
 
-# `--add-source` ADDS a source rather than restricting to one, so NuGet still resolves the highest
-# version across every feed. An unpinned install therefore reports success while registering a
-# package that is not the local build — historically a stranger's AzureDevOpsMcp, and after these
-# servers publish, their own released version. So installs run against a config with every source
-# cleared but artifacts/, and pin the version besides.
+# `--add-source` ADDS a source instead of restricting to one, so NuGet still resolves the highest
+# version across every feed. An unpinned install then reports success while registering a package
+# that is not the local build: historically a stranger's AzureDevOpsMcp, and once these servers
+# publish, their own released version. So every source is cleared but artifacts/, and the install
+# pins the version besides.
 $NugetConfig = Join-Path ([System.IO.Path]::GetTempPath()) "mcp-rebuild-$PID.nuget.config"
 @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -159,14 +158,14 @@ try
     }
 
     # No --no-build here: PackAsTool runs a publish as part of packing, and suppressing the build
-    # takes that with it, producing a package whose tool payload is stale or missing.
+    # suppresses that too, producing a package whose tool payload is stale or missing.
     Write-Step 'Packing'
     Invoke-Dotnet @('pack', '--nologo')
 
     # ---------------------------------------------------------------- reinstall
 
-    # Collected explicitly rather than by capturing the loop: dotnet writes to stdout, so a captured
-    # loop body collects its chatter alongside the result objects.
+    # Collected explicitly, not by capturing the loop: dotnet writes to stdout, so a captured loop
+    # body picks up its chatter alongside the result objects.
     $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
     foreach ($t in $Targets)
@@ -181,13 +180,13 @@ try
         {
             [void](Stop-ServerProcess $t)
 
-            # Not Invoke-Dotnet: an access-denied here is the lock case, and it must not be papered
-            # over by the install that follows.
+            # Not Invoke-Dotnet: an access-denied here is the lock case, and the install that
+            # follows must not paper over it.
             & dotnet tool uninstall --global $t.PackageId
             if ($LASTEXITCODE -ne 0)
             {
                 # A supervisor can relaunch the server inside the window just used. One retry covers
-                # that; a second failure is something holding the files that this cannot see.
+                # that; a second failure is something else holding the files.
                 Write-Host '    uninstall blocked, retrying once' -ForegroundColor Yellow
                 [void](Stop-ServerProcess $t)
                 & dotnet tool uninstall --global $t.PackageId
@@ -210,8 +209,8 @@ try
                   'success without replacing anything.'
         }
 
-        # A package resolved from the wrong source brings its own tool command, and a wrong command
-        # name breaks every MCP registration pointing at it while `dotnet tool list` looks healthy.
+        # A package resolved from the wrong source brings its own tool command. A wrong command name
+        # breaks every MCP registration pointing at it while `dotnet tool list` looks healthy.
         $listed = (& dotnet tool list --global) -match "^\s*$($t.PackageId.ToLowerInvariant())\s"
         if ($listed -and $listed -notmatch "\s$([Regex]::Escape($t.ToolCommand))\s*$")
         {

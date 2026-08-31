@@ -190,7 +190,7 @@ public class CodeSearchMappingTests
     [Fact]
     public void A_git_result_carries_branch_match_count_and_a_browser_link()
     {
-        var dto = Mapping.CodeHit(
+        var dto = Mapping.CodeSearchHit(
             Result(snippets: ["var <highlighthit>retry</highlighthit> = 1;"]),
             bodyLimit: 0, "https://dev.azure.com/contoso", "Core");
 
@@ -206,7 +206,7 @@ public class CodeSearchMappingTests
     [Fact]
     public void A_tfvc_result_browses_under_version_control()
     {
-        var dto = Mapping.CodeHit(
+        var dto = Mapping.CodeSearchHit(
             Result(path: "$/Core/Websites/web.config", branch: null),
             bodyLimit: 0, "https://dev.azure.com/contoso", "Core");
 
@@ -219,7 +219,7 @@ public class CodeSearchMappingTests
     [Fact]
     public void Snippets_are_capped_but_the_match_count_still_says_how_many_places_matched()
     {
-        var dto = Mapping.CodeHit(
+        var dto = Mapping.CodeSearchHit(
             Result(snippets: ["one", "two", "three", "four", "five"]),
             bodyLimit: 0, "https://dev.azure.com/contoso", "Core");
 
@@ -230,7 +230,7 @@ public class CodeSearchMappingTests
     [Fact]
     public void A_filename_only_match_reports_no_match_count_rather_than_zero()
     {
-        var dto = Mapping.CodeHit(
+        var dto = Mapping.CodeSearchHit(
             new WireCodeResult("Retry.cs", "/src/Retry.cs", new WireCodeMatches(null, [new WireCodeHit(0, 5, null, null, null)]),
                 null, new WireSearchRepository("WebApp", "rid", "git"), null),
             bodyLimit: 0, "https://dev.azure.com/contoso", "Core");
@@ -309,7 +309,7 @@ public class WikiSearchMappingTests
     [Fact]
     public void A_page_carries_its_wiki_snippet_and_a_browser_link()
     {
-        var dto = Mapping.WikiHit(
+        var dto = Mapping.WikiSearchHit(
             new WireWikiResult(
                 "Deploys.md", "/Operations/Deploys", new WireProjectRef("pid", "Core"),
                 new WireWikiRef("wid", "Core.wiki", "/", "main"),
@@ -327,7 +327,7 @@ public class WikiSearchMappingTests
     [Fact]
     public void A_filename_highlight_is_not_repeated_as_the_snippet()
     {
-        var dto = Mapping.WikiHit(
+        var dto = Mapping.WikiSearchHit(
             new WireWikiResult(
                 "Deploys.md", "/Deploys", null, new WireWikiRef("wid", "Core.wiki", "/", "main"),
                 [new WireSearchHit("fileNames", ["<highlighthit>Deploys</highlighthit>.md"])]),

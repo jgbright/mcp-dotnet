@@ -8,7 +8,7 @@ namespace AzureDevOpsMcp;
 /// neither verbatim: work item fields and comments are HTML, pull request descriptions and
 /// comments are Markdown. Both are reduced to plain text that keeps what an agent acts on (links
 /// as <c>text (url)</c>, images as their alt text, list items as <c>- </c>, table cells separated
-/// by <c>|</c>) and drops everything else.
+/// by <c>|</c>) and drops the rest.
 /// </summary>
 internal static partial class Text
 {
@@ -23,14 +23,14 @@ internal static partial class Text
     }
 
     /// <summary>
-    /// Cuts at the limit, stepping back one when that would split a surrogate pair. Emoji are
-    /// routine in this text and half of one is an invalid character. Callers guarantee
+    /// Cuts at the limit, stepping back one when that would split a surrogate pair: emoji are
+    /// routine here and half of one is an invalid character. Callers guarantee
     /// <c>s.Length &gt; limit &gt;= 1</c>.
     /// </summary>
     internal static string Cut(string s, int limit) =>
         s[..(char.IsHighSurrogate(s[limit - 1]) ? limit - 1 : limit)];
 
-    /// <summary>Null or blank in, null out, so an empty field disappears from the result entirely.</summary>
+    /// <summary>Null or blank in, null out, so an empty field disappears from the result.</summary>
     internal static string? FromHtml(string? html) =>
         string.IsNullOrWhiteSpace(html) ? null : Blank(HtmlToText(html));
 
@@ -39,9 +39,9 @@ internal static partial class Text
 
     /// <summary>
     /// Search hits arrive with the matched terms wrapped in &lt;highlighthit&gt; markers and the
-    /// surrounding text HTML-encoded. Stripping the tags before decoding means an encoded angle
-    /// bracket in the text itself (routine in code and in work items about code) survives as text
-    /// instead of being mistaken for markup.
+    /// surrounding text HTML-encoded. Strip the tags before decoding, so an encoded angle bracket
+    /// in the text itself (routine in code, and in work items about code) survives as text
+    /// instead of being read as markup.
     /// </summary>
     internal static string? FromHighlight(string? highlight) =>
         string.IsNullOrWhiteSpace(highlight)
@@ -57,12 +57,11 @@ internal static partial class Text
     /// <summary>
     /// The readable part of an HTML error page, or null when the body is not one.
     ///
-    /// Azure DevOps answers a rejected or expired credential with a whole page — stylesheet,
-    /// scripts, navigation — wrapped around a sentence like "Access Denied: The Personal Access
-    /// Token used has expired." Handed on verbatim, that sentence arrives buried in a page of
-    /// markup, several steps removed from the cause; the point of extracting it is that an auth
-    /// failure should read as one line wherever it surfaces. Script and style blocks go first
-    /// because their *contents* are text and would otherwise be the first thing quoted.
+    /// Azure DevOps answers a rejected or expired credential with a whole page (stylesheet,
+    /// scripts, navigation) wrapped around a sentence like "Access Denied: The Personal Access
+    /// Token used has expired." Extracting that sentence is what makes an auth failure read as
+    /// one line wherever it surfaces. Script and style blocks go first because their contents are
+    /// text and would otherwise be the first thing quoted.
     /// </summary>
     internal static string? ErrorFromHtml(string? body)
     {
@@ -80,7 +79,7 @@ internal static partial class Text
 
     internal static string HtmlToText(string html)
     {
-        // Links carry what an agent acts on, so keep them as "text (url)".
+        // An agent acts on links, so keep them as "text (url)".
         var text = AnchorRegex().Replace(html, m =>
         {
             var url = m.Groups[1].Value;
@@ -115,8 +114,8 @@ internal static partial class Text
         text = RuleRegex().Replace(text, "");         // --- / *** separators
         text = QuoteRegex().Replace(text, "");        // leading > on quoted lines
         text = BulletRegex().Replace(text, "- ");     // *, +, - all normalize to "- "
-        // Emphasis markers are only stripped at word boundaries, so identifiers that merely
-        // contain one (body_limit, System.Title_2) survive intact.
+        // Emphasis markers are stripped only at word boundaries, so identifiers that contain one
+        // (body_limit, System.Title_2) survive intact.
         text = StrongRegex().Replace(text, "$1");
         text = StrongUnderscoreRegex().Replace(text, "$1");
         text = ItalicRegex().Replace(text, "$1");

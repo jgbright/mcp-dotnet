@@ -6,10 +6,10 @@ namespace AzureDevOpsMcp.Tests;
 
 /// <summary>
 /// Where a classic release stage lands. The fixtures match the organization as measured on
-/// 2026-08-24, because each oddity there is a rule that gives a wrong answer, not an error, when
-/// assumed away: a stage tagged <c>clients</c> against machines tagged <c>Clients</c>, a
-/// production stage with no tags, a definition whose raw environment order is the reverse of its
-/// rank order, and a stage whose tags select nothing.
+/// 2026-08-24; each oddity there gives a wrong answer rather than an error when assumed away: a
+/// stage tagged <c>clients</c> against machines tagged <c>Clients</c>, a production stage with no
+/// tags, a definition whose raw environment order is the reverse of its rank order, and a stage
+/// whose tags select nothing.
 /// </summary>
 public class TargetingTests
 {
@@ -120,8 +120,8 @@ public class TargetingTests
     [Fact]
     public void Tags_that_select_nothing_report_an_empty_list_beside_the_group_size()
     {
-        // A deploy to zero targets succeeds and looks like a good deployment. The empty list is the
-        // finding, so it is the one array this server emits empty.
+        // A deploy to zero targets succeeds and looks like a good deployment. The empty list is
+        // the finding, so it is the one array this server emits empty.
         var dto = Targeting.Resolve(
             Definition(Stage(67, "Deploy to QA", 1, Phase("Deploy", 43, "clients"))),
             Groups(Qa()), NoErrors, Org, "Core");
@@ -278,8 +278,8 @@ public class DeployTargetConfigTests
     [Fact]
     public void An_empty_tag_list_is_spelled_out_as_all_machines()
     {
-        // Here absence would mislead: no tags is the widest selection, not the narrowest, so it is
-        // said outright instead of left to the omit-when-uninteresting rule.
+        // No tags is the widest selection, not the narrowest, so it is said outright rather than
+        // left to the omit-when-uninteresting rule.
         var target = Mapping.DeployTarget(
             Phase(new WireDeploymentInput(43, [], "OneTargetAtATime", 0, 0, null)), new Dictionary<int, string>())!;
 

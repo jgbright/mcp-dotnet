@@ -4,18 +4,16 @@ using ModelContextProtocol;
 namespace AzureDevOpsMcp;
 
 /// <summary>
-/// Reading a classic release definition as configuration rather than as history.
+/// Reading a classic release definition as configuration rather than as history, to answer "does
+/// anything in this pipeline write over the value my repository checks in". No single field
+/// answers it. A definition- or environment-scope variable can override a setting by name alone,
+/// and a substitution task (File Transform, Replace Tokens, JSON variable substitution) names the
+/// files it rewrites in its own <c>inputs</c>, so a variable list without task inputs cannot tell
+/// "not overridden" from "overridden by whatever matches the file".
 ///
-/// The question this exists for is "does anything in this pipeline write over the value my
-/// repository checks in", and it has two halves that no single field answers. A definition- or
-/// environment-scope variable can override a setting by name alone, and a substitution task
-/// (File Transform, Replace Tokens, JSON variable substitution) names the files it rewrites in its
-/// own <c>inputs</c> — so a variable list without task inputs cannot tell "not overridden" from
-/// "overridden by whatever matches the file".
-///
-/// Everything here is pure: flattening a definition to the settings it holds, and deciding whether
-/// a pattern matches one. A secret's value is never a candidate — matching on a value the tool
-/// then refuses to return would leak it a bit at a time.
+/// Everything here is pure: flattening a definition to the settings it holds, and deciding
+/// whether a pattern matches one. A secret's value is never a candidate, since matching on a
+/// value the tool then refuses to return would leak it a bit at a time.
 /// </summary>
 internal static class ReleaseConfig
 {
@@ -30,12 +28,11 @@ internal static class ReleaseConfig
 
     /// <summary>
     /// One configured setting, wherever it lives. <c>Environment</c> is null at definition scope
-    /// and <c>Task</c> is null for a variable, which is exactly how the result DTO reports them.
+    /// and <c>Task</c> is null for a variable, which is how the result DTO reports them.
     /// </summary>
     internal readonly record struct Setting(
         string? Environment, string Kind, string? Task, string Key, string? Value, bool IsSecret);
 
-    /// <summary>What `scope` may say, and what it means.</summary>
     internal static (bool Variables, bool TaskInputs) ParseScope(string? scope) =>
         (scope ?? "both").ToLowerInvariant() switch
         {
@@ -48,8 +45,8 @@ internal static class ReleaseConfig
 
     /// <summary>
     /// The test a pattern describes: a case-insensitive substring by default, or the caller's own
-    /// regular expression when <paramref name="regex"/> is set. A regex that does not compile is
-    /// the caller's mistake and says so, rather than matching nothing.
+    /// regular expression when <paramref name="regex"/> is set. A regex that does not compile
+    /// fails loudly instead of silently matching nothing.
     /// </summary>
     internal static Func<string, bool> Matcher(string pattern, bool regex)
     {
@@ -78,16 +75,15 @@ internal static class ReleaseConfig
             }
             catch (RegexMatchTimeoutException)
             {
-                // Backtracking blew the budget on one value. Nothing else in the scan is at fault.
+                // Backtracking blew the budget on this one value; the rest of the scan is fine.
                 return false;
             }
         };
     }
 
     /// <summary>
-    /// Everything one definition configures, at both scopes, in the order a reader would look:
-    /// definition variables, then each environment's variables, then the inputs of each task it
-    /// runs.
+    /// Everything one definition configures, in the order a reader would look: definition
+    /// variables, then each environment's variables, then the inputs of each task it runs.
     /// </summary>
     internal static IEnumerable<Setting> Settings(
         WireReleaseDefinitionDetail definition, bool variables, bool taskInputs)
@@ -138,8 +134,8 @@ internal static class ReleaseConfig
     }
 
     /// <summary>
-    /// The settings of one definition that match, as results. A secret matches on its name only:
-    /// its value is neither tested nor returned.
+    /// The settings of one definition that match. A secret matches on its name only: its value is
+    /// neither tested nor returned.
     /// </summary>
     internal static IEnumerable<ReleaseDefinitionMatchDto> Matches(
         WireReleaseDefinitionDetail definition, bool variables, bool taskInputs,

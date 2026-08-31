@@ -13,16 +13,16 @@ using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
-// The verbs parse through System.CommandLine: a mistyped verb is a loud parse error instead of a
+// Verbs parse through System.CommandLine, so a mistyped verb is a loud parse error rather than a
 // silently started stdio server that looks hung. Zero arguments is the server itself, run as the
-// root command's own action — nothing on that path writes to stdout, which the transport owns.
+// root command's own action. Nothing on that path writes to stdout; the transport owns it.
 var root = new RootCommand("MCP stdio server for one Azure DevOps organization.");
 
 // `ado-mcp install [directory]` : find the repository around the working directory and register
-// this server in the MCP client config it uses, preserving whatever else that file holds. Run
-// this first in a new checkout, then `auth`.
+// this server in the MCP client config it uses, keeping whatever else that file holds. Run it
+// first in a new checkout, then `auth`.
 //
-// Install owns its parsing (`Install.Options`, which the tests drive); the declarations here
+// Install owns its parsing (`Install.Options`, which the tests drive). The declarations here
 // mirror it so `--help` and unknown-option errors read like every other verb's, and the action
 // hands the tokens straight back. A new install option means touching both.
 var installDirectory = new Argument<string?>("directory")
@@ -96,9 +96,9 @@ auth.SetAction(async (_, _) =>
 });
 root.Subcommands.Add(auth);
 
-// `dotnet run -- selftest` : console-mode silent-auth + REST round-trip with raw errors.
-// This is the fastest way to tell an auth problem apart from a tool problem, and it writes to
-// the same log file the server does.
+// `dotnet run -- selftest` : console-mode silent-auth + REST round-trip with raw errors. The
+// fastest way to tell an auth problem from a tool problem; it writes to the log file the server
+// uses.
 var selftest = new Command("selftest",
     "Silent-auth and a REST round-trip, with raw errors on the console.");
 selftest.SetAction(async (_, _) =>
@@ -137,8 +137,8 @@ selftest.SetAction(async (_, _) =>
 root.Subcommands.Add(selftest);
 
 // `dotnet run -- config` : load every data file the server would use and show what each says, so
-// an edit to the data can be checked without driving the tools through an MCP client. A missing
-// file is a note (the feature is opt-in). An invalid one is the failure this exists to catch.
+// a data edit can be checked without driving the tools through an MCP client. A missing file is a
+// note, since the feature is opt-in; an invalid one is the failure this catches.
 var config = new Command("config",
     "Validate and print the server's data files (deployment map).");
 config.SetAction(parseResult =>
@@ -179,11 +179,11 @@ config.SetAction(parseResult =>
 });
 root.Subcommands.Add(config);
 
-// `dotnet run -- call [tool] [arguments...]` : one shot of one tool without an MCP client on the
-// other end. The server is the real one — the same host, silent auth, Run wrapper and filters as
-// server mode — but transported over in-memory pipes, so stdout stays a console: the result JSON
-// is the only thing written there, logging stays on stderr and the file, and a tool error exits
-// non-zero. Bare `call` lists the tools.
+// `dotnet run -- call [tool] [arguments...]` : one shot of one tool with no MCP client on the
+// other end. The server is the real one, same host and silent auth and Run wrapper and filters as
+// server mode, but transported over in-memory pipes, so stdout stays a console: the result JSON is
+// all that goes there, logging stays on stderr and the file, and a tool error exits non-zero. Bare
+// `call` lists the tools.
 var callTool = new Argument<string?>("tool")
 {
     Arity = ArgumentArity.ZeroOrOne,
@@ -233,7 +233,7 @@ call.SetAction(async (parseResult, cancellationToken) =>
         var resolved = Call.ResolveTool([.. tools.Select(t => t.Name)], toolName);
         if (resolved != toolName)
         {
-            // The correction is worth a line, on the stream the result does not own.
+            // Print the correction on stderr, which the result does not own.
             Console.Error.WriteLine($"tool: {resolved}");
         }
         var match = tools.First(t => t.Name == resolved);
@@ -293,10 +293,10 @@ root.SetAction(async (_, cancellationToken) =>
 
 return await root.Parse(args).InvokeAsync();
 
-// The one MCP host, parameterized only by transport: no verb means stdio (an MCP client is on the
-// other end of this process), `call` means in-memory pipes (this process's own client is).
-// Everything else — the sinks, the serializer, the instructions, the tasks extension, the filters —
-// is identical on both paths, which is what makes a `call` result mean something about server mode.
+// The one MCP host, parameterized only by transport: no verb means stdio, with an MCP client on
+// the other end of this process; `call` means in-memory pipes to this process's own client.
+// Everything else (sinks, serializer, instructions, tasks extension, filters) is identical on both
+// paths, so a `call` result says something about server mode.
 IHost BuildMcpHost(Stream? input, Stream? output)
 {
     var builder = Host.CreateApplicationBuilder(args);
@@ -316,8 +316,8 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    // The instructions are sized like a system prompt. They carry only what a tool description
-    // cannot: how this server fails and what its silences mean.
+    // Sized like a system prompt. Only what a tool description cannot carry: how this server fails
+    // and what its silences mean.
     const string instructions = """
         Reads and writes one Azure DevOps organization, fixed by this server's environment.
 
@@ -369,10 +369,10 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         """;
 
     var mcp = builder.Services
-        // The SDK advertises the MCP `logging` capability unconditionally and McpServerOptions cannot
-        // switch it off. This server never emits notifications/message. It logs to stderr and its own
-        // file, which is the 2026-07-28 migration path off the deprecated logging feature, so the
-        // advertisement overstates what a client gets.
+        // The SDK advertises the MCP `logging` capability unconditionally and McpServerOptions
+        // cannot switch it off, so the advertisement overstates what a client gets. This server
+        // never emits notifications/message; it logs to stderr and its own file, which is the
+        // 2026-07-28 migration path off the deprecated logging feature.
         .AddMcpServer(options => options.ServerInstructions = instructions);
 
     mcp = input is not null && output is not null
@@ -381,30 +381,26 @@ IHost BuildMcpHost(Stream? input, Stream? output)
 
     mcp
         .WithToolsFromAssembly(serializerOptions: serializerOptions)
-        // Tasks (SEP-2663) exists here for the waiters. wait_for_pipeline_run and
-        // wait_for_pull_request can run for half an hour, which is too long to hold a request open
-        // when the client can poll instead.
-        //
-        // Every other tool stays Synchronous: they answer in a round trip or two, and turning a
-        // sub-second call into a task handle the caller has to chase makes it worse. The waiters are
-        // Optional rather than Required, so a client that never negotiated the extension still gets
-        // an answer by blocking. That is why each tool bounds its own wait instead of relying on the
-        // client to give up.
+        // Tasks (SEP-2663) is here for the waiters: wait_for_pipeline_run, wait_for_pull_request
+        // and wait_for_release can run for half an hour, too long to hold a request open when the
+        // client can poll instead. Every other tool stays Synchronous, since turning a sub-second call into a task
+        // handle the caller has to chase makes it worse. Optional rather than Required means a
+        // client that never negotiated the extension still gets an answer by blocking, so each
+        // waiter bounds its own wait instead of relying on the client to give up.
         .WithTasks(
             new InMemoryMcpTaskStore(),
             options => options.ExecutionModeSelector = request =>
                 ToolExecution.IsLongRunning(request.MatchedPrimitive)
                     ? McpTaskExecutionMode.Optional
                     : McpTaskExecutionMode.Synchronous)
-        // The list filter only trims what the SDK produced: tools/list is a cacheable result under
-        // 2026-07-28 and needs the caching hints stamped on it. The call filter does the same for a
-        // result carrying its payload twice once UseStructuredContent is on, but it is also the only
-        // place that sees a call which failed before the tool body was entered — Run() is inside the
-        // body, and the SDK drops the detail one frame above here. ToolErrors.Guard is why such a
-        // failure still names the tool and carries a req=N.
+        // The list filter stamps the caching hints tools/list needs under 2026-07-28 onto the
+        // listing the SDK produced. The call filter drops the duplicate payload
+        // UseStructuredContent produces, and is also the only place that sees a call which failed
+        // before the tool body was entered: Run() is inside the body, and the SDK drops the detail
+        // one frame above here. ToolErrors.Guard gives such a failure the tool name and a req=N.
         .WithRequestFilters(filters => filters
             .AddListToolsFilter(next => async (request, ct) =>
-                ToolListing.Stamp(await next(request, ct), request.Params?.Cursor))
+                ToolListing.Prepare(await next(request, ct), request.Params?.Cursor))
             .AddCallToolFilter(next => async (request, ct) =>
                 ToolResults.Trim(await ToolErrors.Guard(
                     () => next(request, ct),

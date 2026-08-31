@@ -1,13 +1,12 @@
 <Project>
 
   <!--
-    Shared NuGet metadata for the servers in this repo. Both ship as .NET global tools, so an
-    author or a tag set here is set once for every package instead of drifting between csproj
-    files. The test projects inherit these too and opt out of packing with IsPackable=false.
+    NuGet metadata shared by every project here, so it cannot drift between csproj files. The
+    test projects inherit it too and opt out of packing with IsPackable=false.
 
-    Not set, on purpose:
-      Version                      comes from version.json via Nerdbank.GitVersioning (below)
-      PackageId / ToolCommandName  per project, since they make each package a distinct tool
+    Not set here, on purpose:
+      Version                      Nerdbank.GitVersioning sets it from version.json (below)
+      PackageId / ToolCommandName  per project; they make each package a distinct tool
   -->
   <PropertyGroup>
     <Authors>Jason Bright</Authors>
@@ -19,21 +18,21 @@
     <RepositoryUrl>https://github.com/jgbright/mcp-dotnet</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
 
-    <!-- An SPDX expression rather than PackageLicenseFile: nuget.org renders it as a link to the
-         license text it already knows, so the package does not have to carry a copy. LICENSE at the
-         repository root is the same license for anyone reading the source. -->
+    <!-- An SPDX expression, not PackageLicenseFile: nuget.org links the license text it already
+         has, so the package carries no copy. LICENSE at the repository root is the same license
+         for anyone reading the source. -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
 
   <!--
-    Versioning for every project in the repo. Nerdbank.GitVersioning reads version.json, adds the
-    git height as the patch, and injects Version / AssemblyVersion / FileVersion / PackageVersion.
-    That is why there is no <Version> above: an explicit one conflicts with what it sets.
+    Nerdbank.GitVersioning reads version.json, adds the git height as the patch, and injects
+    Version / AssemblyVersion / FileVersion / PackageVersion for every project here. Hence no
+    <Version> above: an explicit one conflicts with what it sets.
 
-    PrivateAssets="all" keeps it a build-time dependency, out of both packages' dependency lists.
+    PrivateAssets="all" keeps it build-time only, out of both packages' dependency lists.
 
-    It needs real git history, so a shallow clone (CI's default) produces a wrong version or a
-    build failure. Both workflows check out with fetch-depth: 0 for that reason.
+    It needs real git history. A shallow clone (CI's default) produces a wrong version or a build
+    failure, so both workflows check out with fetch-depth: 0.
   -->
   <ItemGroup>
     <PackageReference Include="Nerdbank.GitVersioning" Version="3.10.91" PrivateAssets="all" />

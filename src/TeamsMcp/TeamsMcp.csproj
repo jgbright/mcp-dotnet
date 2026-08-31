@@ -7,14 +7,14 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <!-- Packs as a .NET global tool: `dotnet pack` then `dotnet tool install` puts `teams-mcp` on the
-       PATH, so an MCP client can launch it by name rather than by a dotnet run against this path. -->
+  <!-- Packs as a .NET global tool: `dotnet pack` then `dotnet tool install` puts `teams-mcp` on
+       the PATH, so an MCP client launches it by name instead of a dotnet run against this path. -->
   <PropertyGroup>
     <PackAsTool>true</PackAsTool>
-    <!-- Owner-prefixed because the obvious ids are gone: nuget.org already carries an unrelated
-         AzureDevOpsMcp, AdoMcp and AdoMcpServer, all from other authors. The prefix also groups the
-         servers in this repo and is reservable, which a generic id is not. The id is independent of
-         both the assembly name and ToolCommandName, so nothing else moves with it. -->
+    <!-- Owner-prefixed because the obvious ids are gone: nuget.org already carries unrelated
+         AzureDevOpsMcp, AdoMcp and AdoMcpServer packages from other authors. The prefix is
+         reservable and groups this repo's servers. The id is independent of the assembly name
+         and of ToolCommandName, so nothing else moves with it. -->
     <PackageId>JasonBright.Mcp.Teams</PackageId>
     <ToolCommandName>teams-mcp</ToolCommandName>
     <Description>

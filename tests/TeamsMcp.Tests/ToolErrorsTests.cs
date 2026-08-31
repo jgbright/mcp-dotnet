@@ -9,15 +9,14 @@ namespace TeamsMcp.Tests;
 /// Guard() covers the window either side of Run(): a call that fails before the tool body is
 /// entered still has to name the tool, carry a req=N, and say what actually went wrong.
 ///
-/// The case that motivated this reached the caller as "An error occurred invoking
-/// 'read_channel_messages'." with no req and no detail — everything the SDK's binder knew about
-/// the mismatch was dropped one frame above the filter.
+/// The case that motivated it reached the caller as "An error occurred invoking
+/// 'read_channel_messages'." with no req and no detail. Everything the SDK's binder knew about the
+/// mismatch was dropped one frame above the filter.
 ///
-/// Guard answers it three ways, in the order they fire. It validates the supplied names against
-/// the tool's own inputSchema first, so the common case never dispatches at all. It catches what
-/// escapes the tool, because the binder throws past the filter rather than through it. And it
-/// gives a req to any error result that arrives without one, since anything already carrying a req
-/// went through Run and is finished.
+/// In the order they fire: Guard validates the supplied names against the tool's own inputSchema,
+/// so the common case never dispatches; it catches what escapes the tool, because the binder
+/// throws past the filter rather than through it; and it gives a req to any error result arriving
+/// without one, since anything already carrying a req went through Run.
 /// </summary>
 public class ToolErrorsTests : IDisposable
 {
@@ -189,8 +188,8 @@ public class ToolErrorsTests : IDisposable
     public async Task An_exception_thrown_past_the_tool_body_becomes_an_actionable_error()
     {
         // The binder throws through the filter, and the layer above turns anything it does not
-        // recognize into "An error occurred invoking 'read_channel_messages'." Catching it here is
-        // what keeps the detail.
+        // recognize into "An error occurred invoking 'read_channel_messages'." Catching it here
+        // keeps the detail.
         var result = await ToolErrors.Guard(
             () => Throws(MissingParameter("channel")),
             "read_channel_messages", ["team", "channel"], ReadChannelMessages, _log);
@@ -241,8 +240,8 @@ public class ToolErrorsTests : IDisposable
     [Fact]
     public async Task An_error_result_with_no_request_id_is_given_one()
     {
-        // The backstop: whatever the layer below converts internally rather than throwing still has
-        // to satisfy the server instructions' promise.
+        // Backstop: whatever the layer below converts internally instead of throwing still has to
+        // satisfy the server instructions' promise.
         var opaque = Error("An error occurred invoking 'read_channel_messages'.");
 
         var result = await ToolErrors.Guard(
