@@ -5,9 +5,8 @@ using Microsoft.Extensions.Logging;
 namespace TeamsMcp.Tests;
 
 /// <summary>
-/// The handler answers "which Graph call failed and why". Two behaviors matter: log the ids
-/// Microsoft support asks for, and put the error body back so the SDK can still parse it into an
-/// ODataError.
+/// The handler answers "which Graph call failed and why": it logs the ids Microsoft support asks
+/// for, and puts the error body back so the SDK can still parse it into an ODataError.
 /// </summary>
 public class GraphLoggingHandlerTests : IDisposable
 {

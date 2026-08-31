@@ -4,7 +4,7 @@ using ModelContextProtocol;
 namespace TeamsMcp.Tests;
 
 /// <summary>
-/// Map() applies the output conventions: omit what is uninteresting, count what is filtered out,
+/// MapMessage() applies the output conventions: omit what is uninteresting, count what is filtered out,
 /// never drop anything silently.
 /// </summary>
 public class MapTests
@@ -23,7 +23,7 @@ public class MapTests
     {
         var counts = new TeamsTools.SkipCounter();
 
-        var dto = TeamsTools.Map(Message(), includeSystem: false, bodyLimit: 2000, includeReplies: false, counts);
+        var dto = TeamsTools.MapMessage(Message(), includeSystem: false, bodyLimit: 2000, includeReplies: false, counts);
 
         Assert.NotNull(dto);
         Assert.Equal("1", dto.Id);
@@ -45,7 +45,7 @@ public class MapTests
         var msg = Message();
         msg.DeletedDateTime = DateTimeOffset.UtcNow;
 
-        Assert.Null(TeamsTools.Map(msg, includeSystem: true, 2000, includeReplies: false, counts));
+        Assert.Null(TeamsTools.MapMessage(msg, includeSystem: true, 2000, includeReplies: false, counts));
         Assert.Equal(1, counts.Deleted);
         Assert.Equal(0, counts.System);
     }
@@ -57,7 +57,7 @@ public class MapTests
         var msg = Message();
         msg.MessageType = ChatMessageType.SystemEventMessage;
 
-        Assert.Null(TeamsTools.Map(msg, includeSystem: false, 2000, includeReplies: false, counts));
+        Assert.Null(TeamsTools.MapMessage(msg, includeSystem: false, 2000, includeReplies: false, counts));
         Assert.Equal(1, counts.System);
         Assert.Equal(new SkippedDto(null, 1), counts.ToDto());
     }
@@ -69,7 +69,7 @@ public class MapTests
         var msg = Message();
         msg.MessageType = ChatMessageType.SystemEventMessage;
 
-        var dto = TeamsTools.Map(msg, includeSystem: true, 2000, includeReplies: false, counts);
+        var dto = TeamsTools.MapMessage(msg, includeSystem: true, 2000, includeReplies: false, counts);
 
         Assert.Equal("SystemEventMessage", dto?.MessageType);
         Assert.Null(counts.ToDto());
@@ -83,7 +83,7 @@ public class MapTests
         msg.MessageType = ChatMessageType.SystemEventMessage;
         msg.DeletedDateTime = DateTimeOffset.UtcNow;
 
-        Assert.Null(TeamsTools.Map(msg, includeSystem: true, 2000, includeReplies: false, counts));
+        Assert.Null(TeamsTools.MapMessage(msg, includeSystem: true, 2000, includeReplies: false, counts));
         Assert.Equal(1, counts.Deleted);
         Assert.Equal(0, counts.System);
     }
@@ -94,7 +94,7 @@ public class MapTests
         var msg = Message();
         msg.From = new ChatMessageFromIdentitySet { Application = new Identity { DisplayName = "Azure Pipelines" } };
 
-        var dto = TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter());
+        var dto = TeamsTools.MapMessage(msg, false, 2000, false, new TeamsTools.SkipCounter());
 
         Assert.Equal("Azure Pipelines", dto?.Sender);
     }
@@ -104,7 +104,7 @@ public class MapTests
     {
         var msg = new ChatMessage { Id = "1", MessageType = ChatMessageType.Message };
 
-        var dto = TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter());
+        var dto = TeamsTools.MapMessage(msg, false, 2000, false, new TeamsTools.SkipCounter());
 
         Assert.NotNull(dto);
         Assert.Null(dto.Sender);
@@ -115,10 +115,10 @@ public class MapTests
     public void Edited_is_true_only_when_the_message_was_edited()
     {
         var msg = Message();
-        Assert.Null(TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Edited);
+        Assert.Null(TeamsTools.MapMessage(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Edited);
 
         msg.LastEditedDateTime = DateTimeOffset.UtcNow;
-        Assert.True(TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Edited);
+        Assert.True(TeamsTools.MapMessage(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Edited);
     }
 
     [Fact]
@@ -126,7 +126,7 @@ public class MapTests
     {
         var msg = Message(html: new string('x', 50));
 
-        var dto = TeamsTools.Map(msg, false, bodyLimit: 10, includeReplies: false, new TeamsTools.SkipCounter());
+        var dto = TeamsTools.MapMessage(msg, false, bodyLimit: 10, includeReplies: false, new TeamsTools.SkipCounter());
 
         Assert.Equal(new string('x', 10), dto?.Body);
         Assert.True(dto?.Truncated);
@@ -142,7 +142,7 @@ public class MapTests
             new ChatMessageAttachment { Name = null, ContentType = null },
         ];
 
-        var dto = TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter());
+        var dto = TeamsTools.MapMessage(msg, false, 2000, false, new TeamsTools.SkipCounter());
 
         Assert.Equal(new AttachmentDto("spec.docx", "reference"), Assert.Single(dto!.Attachments!));
     }
@@ -159,7 +159,7 @@ public class MapTests
             new ChatMessageReaction { ReactionType = null },
         ];
 
-        var reactions = TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Reactions;
+        var reactions = TeamsTools.MapMessage(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Reactions;
 
         Assert.Equal(new Dictionary<string, List<string>>
         {
@@ -184,7 +184,7 @@ public class MapTests
             new ChatMessageReaction { ReactionType = "👍" },
         ];
 
-        var reactions = TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Reactions;
+        var reactions = TeamsTools.MapMessage(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Reactions;
 
         Assert.Equal(["guid-1", "?"], reactions?["👍"]);
     }
@@ -197,7 +197,7 @@ public class MapTests
         custom.DisplayName = "party parrot";
         msg.Reactions = [custom];
 
-        var reactions = TeamsTools.Map(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Reactions;
+        var reactions = TeamsTools.MapMessage(msg, false, 2000, false, new TeamsTools.SkipCounter())?.Reactions;
 
         Assert.Equal(["Alice"], reactions?["party parrot"]);
     }
@@ -218,9 +218,9 @@ public class MapTests
             Reply("a", 1),
         ];
 
-        Assert.Null(TeamsTools.Map(msg, false, 2000, includeReplies: false, new TeamsTools.SkipCounter())?.Replies);
+        Assert.Null(TeamsTools.MapMessage(msg, false, 2000, includeReplies: false, new TeamsTools.SkipCounter())?.Replies);
 
-        var replies = TeamsTools.Map(msg, false, 2000, includeReplies: true, new TeamsTools.SkipCounter())?.Replies;
+        var replies = TeamsTools.MapMessage(msg, false, 2000, includeReplies: true, new TeamsTools.SkipCounter())?.Replies;
 
         Assert.Equal(new[] { "a", "b" }, replies!.Select(r => r.Id).ToArray());
     }
@@ -234,7 +234,7 @@ public class MapTests
         var msg = Message();
         msg.Replies = [deleted];
 
-        var dto = TeamsTools.Map(msg, false, 2000, includeReplies: true, counts);
+        var dto = TeamsTools.MapMessage(msg, false, 2000, includeReplies: true, counts);
 
         Assert.Null(dto?.Replies); // an empty replies array would only cost tokens
         Assert.Equal(1, counts.Deleted);
@@ -249,7 +249,7 @@ public class MapTests
         var msg = Message();
         msg.Replies = [child];
 
-        var replies = TeamsTools.Map(msg, false, 2000, includeReplies: true, new TeamsTools.SkipCounter())?.Replies;
+        var replies = TeamsTools.MapMessage(msg, false, 2000, includeReplies: true, new TeamsTools.SkipCounter())?.Replies;
 
         Assert.Null(Assert.Single(replies!).Replies);
     }

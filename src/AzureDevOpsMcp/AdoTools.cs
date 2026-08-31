@@ -10,12 +10,12 @@ using ModelContextProtocol.Server;
 
 namespace AzureDevOpsMcp;
 
-// Output conventions, chosen to keep results small in a model's context window:
+// Output conventions, to keep results small in a model's context window:
 // - Null fields are omitted from serialized results (configured in Program.cs).
 // - Fields that repeat the common case are set to null: a "wellFormed" project state, a
 //   "succeeded" merge status, a "completed" run status, an area path equal to the project.
-// - Deleted and system-generated pull request comments are skipped by default and surfaced as
-//   counts in the `skipped` envelope field, so "no discussion" is distinguishable from "filtered".
+// - Deleted and system-generated pull request comments are skipped by default and counted in
+//   the `skipped` envelope field, so "no discussion" differs from "filtered".
 // - Bodies are plain text (links kept as "text (url)"), truncated at body_limit with
 //   `truncated: true`.
 [McpServerToolType]
@@ -23,35 +23,34 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 {
     private const string Api = "api-version=7.1";
 
-    /// <summary>Work item comments are still preview-only in 7.1. There is no GA version of them.</summary>
+    /// <summary>Work item comments are preview-only in 7.1; there is no GA version.</summary>
     private const string CommentsApi = "api-version=7.1-preview.3";
 
-    /// <summary>The Search API is likewise preview-only. A bare 7.1 is rejected.</summary>
+    /// <summary>The Search API is preview-only too; a bare 7.1 is rejected.</summary>
     private const string SearchApi = "api-version=7.1-preview.1";
 
-    /// <summary>The identity service (vssps host) is likewise preview-only.</summary>
+    /// <summary>The identity service (vssps host) is preview-only too.</summary>
     private const string IdentityApi = "api-version=7.1-preview.1";
 
     /// <summary>
-    /// Variable groups are read from the task agent service, which is preview-only too — unlike
-    /// Release Management itself, whose endpoints all answer a bare 7.1.
+    /// Variable groups come from the task agent service, which is preview-only. Release
+    /// Management's own endpoints all answer a bare 7.1.
     /// </summary>
     private const string VariableGroupsApi = "api-version=7.1-preview.2";
 
     /// <summary>
-    /// Bodies echoed back from a write (the updated work item's description, the created comment)
-    /// use the same default cap as get_work_item. The caller mostly wants ids and fields back,
-    /// not a re-reading of prose it may itself have just written.
+    /// Bodies echoed back from a write (an updated description, a created comment) use the same
+    /// default cap as get_work_item; the caller wants ids and fields, not prose it just wrote.
     /// </summary>
     private const int WriteEchoBodyLimit = 4000;
 
     /// <summary>
-    /// A release description is a line or two that Azure DevOps generated ("Triggered by Build
-    /// 42"), so it gets a fixed cap rather than a `body_limit` argument nobody would set.
+    /// A release description is a line or two Azure DevOps generated ("Triggered by Build 42"),
+    /// so it gets a fixed cap instead of a `body_limit` argument.
     /// </summary>
     private const int ReleaseDescriptionLimit = 1000;
 
-    /// <summary>Shorthand for the logging helper. Every tool logs its arguments through it.</summary>
+    /// <summary>Shorthand for the logging helper every tool passes its arguments through.</summary>
     private static string A(string name, object? value) => AdoMcpLog.Arg(name, value);
 
     // ---------------------------------------------------------------- read tools
@@ -64,7 +63,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     {
         limit = Math.Clamp(limit, 1, 1000);
         var client = await ado.GetClientAsync(ct);
-        var projects = await ListProjectsInternal(client, limit, ct);
+        var projects = await ListProjectsAsync(client, limit, ct);
         return projects.Select(Mapping.Project).ToList();
     });
 
@@ -80,7 +79,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         limit = Math.Clamp(limit, 1, 1000);
         var client = await ado.GetClientAsync(ct);
         var resolved = await ResolveProjectAsync(client, project, ct);
-        var repos = await ListReposInternal(client, resolved.Id, ct);
+        var repos = await ListReposAsync(client, resolved.Id, ct);
         return repos.Take(limit).Select(Mapping.Repo).ToList();
     });
 
@@ -112,9 +111,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var results = new List<PullRequestDto>();
         var hasMore = false;
         var scanned = 0;
-        // Without an author filter every pull request the service returns is a result, so asking for
-        // one more than the limit answers `hasMore` in a single request. With one, the filtering
-        // happens here and full pages have to be scanned until the limit or the cap is reached.
+        // Without an author filter every pull request returned is a result, so asking for one over
+        // the limit answers `hasMore` in a single request. With one, the filtering happens here and
+        // full pages have to be scanned until the limit or the cap is reached.
         var pageSize = created_by is null ? Math.Min(limit + 1, 101) : 100;
         for (var skip = 0; skip < scanCap; skip += pageSize)
         {
@@ -180,16 +179,15 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     /// <summary>
     /// Reads one pull request with its threads. Shared by <c>get_pull_request</c> and
-    /// <c>wait_for_pull_request</c> so waiting for a pull request and asking about one report it
-    /// identically.
+    /// <c>wait_for_pull_request</c> so both report it identically.
     /// </summary>
     private async Task<PullRequestDetailDto> ReadPullRequestAsync(
         AdoClient client, int id, bool include_threads, bool include_system, int max_threads,
         int body_limit, CancellationToken ct)
     {
         max_threads = Math.Clamp(max_threads, 1, 500);
-        // The organization-level endpoint finds a pull request from its id alone, so the caller does
-        // not have to know which project or repository it lives in.
+        // The organization-level endpoint finds a pull request from its id alone, so the caller
+        // need not know which project or repository it lives in.
         var pr = await client.GetAsync<WirePullRequest>($"_apis/git/pullrequests/{id}?{Api}", ct);
 
         var counts = new SkipCounter();
@@ -254,8 +252,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         A("include_threads", include_threads) + A("include_system", include_system) +
         A("max_threads", max_threads) + A("body_limit", body_limit), async () =>
     {
-        // Bounded like wait_for_pipeline_run: a caller cannot ask it to wait forever, and it
-        // cannot poll hard enough to matter to the service.
+        // Bounded: a caller cannot ask it to wait forever, or poll hard enough to matter to the
+        // service.
         var timeout = TimeSpan.FromSeconds(Math.Clamp(timeout_seconds, 1, 21600));
         var interval = TimeSpan.FromSeconds(Math.Clamp(poll_seconds, 5, 600));
         var client = await ado.GetClientAsync(ct);
@@ -264,8 +262,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var polls = 0;
         while (true)
         {
-            // Only the pull request is fetched while waiting. The threads cost an extra request
-            // and are of no interest until there is an ended pull request to report.
+            // Only the pull request is fetched while waiting; the threads cost an extra request
+            // and are of no interest until it has ended.
             var pr = await client.GetAsync<WirePullRequest>($"_apis/git/pullrequests/{id}?{Api}", ct);
             polls++;
             if (Mapping.IsTerminalPullRequestStatus(pr.Status))
@@ -414,7 +412,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         limit = Math.Clamp(limit, 1, 1000);
         var client = await ado.GetClientAsync(ct);
         var resolved = await ResolveProjectAsync(client, project, ct);
-        var pipelines = await ListPipelinesInternal(client, resolved.Id, limit, ct);
+        var pipelines = await ListPipelinesAsync(client, resolved.Id, limit, ct);
         return pipelines.Select(Mapping.Pipeline).ToList();
     });
 
@@ -481,8 +479,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     /// <summary>
     /// Reads one run and summarizes why it failed. Shared by <c>get_pipeline_run</c> and
-    /// <c>wait_for_pipeline_run</c> so waiting for a run and asking about one report it
-    /// identically.
+    /// <c>wait_for_pipeline_run</c> so both report it identically.
     /// </summary>
     private async Task<PipelineRunDetailDto> ReadRunAsync(
         AdoClient client, Named resolvedProject, int run_id, bool include_logs,
@@ -503,8 +500,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
         if (include_logs && log_tail_lines > 0)
         {
-            // Each step carries its own record's log url, so fetching is a straight walk with no
-            // re-matching by name.
+            // Each step carries its own record's log url, so there is no re-matching by name.
             for (var i = 0; i < reported.Count; i++)
             {
                 if (failed[i].LogUrl is not { } url)
@@ -552,8 +548,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors),
         async () =>
     {
-        // Bounded like every other loop in this server: a caller cannot ask it to wait forever, and
-        // it cannot poll hard enough to matter to the service.
+        // Bounded: a caller cannot ask it to wait forever, or poll hard enough to matter to the
+        // service.
         var timeout = TimeSpan.FromSeconds(Math.Clamp(timeout_seconds, 1, 21600));
         var interval = TimeSpan.FromSeconds(Math.Clamp(poll_seconds, 5, 600));
         var client = await ado.GetClientAsync(ct);
@@ -563,8 +559,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var polls = 0;
         while (true)
         {
-            // Only the build is fetched while waiting. The timeline and any logs cost an extra
-            // request each and are of no interest until there is a finished run to explain.
+            // Only the build is fetched while waiting; the timeline and any logs cost a request
+            // each and are of no interest until the run has finished.
             var build = await client.GetAsync<WireBuild>(
                 $"{Escape(resolvedProject.Id)}/_apis/build/builds/{run_id}?{Api}", ct);
             polls++;
@@ -602,10 +598,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     // ------------------------------------------------------- classic release tools
     //
-    // Release Management answers on its own host (Deployments.VsrmBaseUrl) and has its own
-    // vocabulary, kept here rather than translated: a *release definition* is the classic pipeline,
-    // a *release* is one instance of it, and its stages are *environments*. The build/YAML tools
-    // above own the word "pipeline" and never mean a classic one.
+    // Release Management answers on its own host (Deployments.VsrmBaseUrl) and keeps its own
+    // vocabulary: a *release definition* is the classic pipeline, a *release* is one instance of
+    // it, and its stages are *environments*. The build/YAML tools above own the word "pipeline"
+    // and never mean a classic one.
 
     [McpServerTool(Name = "list_release_definitions", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. List the classic release pipelines (release definitions) of a project, " +
@@ -621,7 +617,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         limit = Math.Clamp(limit, 1, 1000);
         var client = await ado.GetClientAsync(ct);
         var resolved = await ResolveProjectAsync(client, project, ct);
-        var definitions = await ListReleaseDefinitionsInternal(
+        var definitions = await ListReleaseDefinitionsAsync(
             client, Deployments.VsrmBaseUrl(client.OrgUrl), resolved.Id, limit, ct);
         return definitions.Select(d => Mapping.ReleaseDefinition(d, client.OrgUrl, resolved.Name)).ToList();
     });
@@ -655,7 +651,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
         var resolved = await ResolveReleaseDefinitionAsync(client, vsrm, resolvedProject, definition, ct);
         var wire = await ReadReleaseDefinitionAsync(client, vsrm, resolvedProject, resolved.Id, ct);
-        var groups = await VariableGroupNamesAsync(client, resolvedProject, Mapping.ReferencedGroups(wire), ct);
+        var groups = await VariableGroupNamesAsync(client, resolvedProject, Mapping.ReferencedVariableGroups(wire), ct);
         // Phases are only reported with the tasks, so the group names are only fetched then.
         var deploymentGroups = include_tasks
             ? await DeploymentGroupNamesAsync(client, resolvedProject, Mapping.ReferencedDeploymentGroups(wire), ct)
@@ -692,8 +688,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var wire = await ReadReleaseDefinitionAsync(client, vsrm, resolvedProject, resolved.Id, ct);
 
         // One read per distinct group, machines included, however many phases share it. A group
-        // that cannot be read becomes that phase's error instead of failing the call: the other
-        // stages still resolve, and "the group is gone" is useful in itself.
+        // that cannot be read becomes that phase's error instead of failing the call, so the other
+        // stages still resolve.
         var groups = new Dictionary<int, WireDeploymentGroup>();
         var errors = new Dictionary<int, string>();
         foreach (var id in Mapping.ReferencedDeploymentGroups(wire))
@@ -732,7 +728,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         limit = Math.Clamp(limit, 1, 200);
         var client = await ado.GetClientAsync(ct);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
-        var groups = await ListDeploymentGroupsInternal(client, resolvedProject.Id, limit, ct);
+        var groups = await ListDeploymentGroupsAsync(client, resolvedProject.Id, limit, ct);
         if (!include_machines)
         {
             return groups.Select(g => Mapping.DeploymentGroup(g, includeMachines: false)).ToList();
@@ -776,8 +772,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
 
         // One over the cap, so "there are more definitions than were read" is answered without a
-        // second request — the same shape every other bounded scan in this server uses.
-        var definitions = await ListReleaseDefinitionsInternal(
+        // second request.
+        var definitions = await ListReleaseDefinitionsAsync(
             client, vsrm, resolvedProject.Id, ReleaseConfig.ScanCap + 1, ct);
         var capped = definitions.Count > ReleaseConfig.ScanCap;
         if (capped)
@@ -891,8 +887,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     /// <summary>
     /// Reads one release and explains every stage. Shared by <c>get_release</c>,
-    /// <c>wait_for_release</c> and both write tools, so however a caller arrives at a release it
-    /// is reported identically.
+    /// <c>wait_for_release</c> and both write tools, so a release is reported identically however
+    /// the caller reached it.
     /// </summary>
     private async Task<ReleaseDetailDto> ReadReleaseAsync(
         AdoClient client, string vsrm, Named project, int releaseId, bool includeLogs,
@@ -903,7 +899,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         maxErrors = Math.Clamp(maxErrors, 1, 50);
         logTailLines = Math.Clamp(logTailLines, 0, 500);
         // Naming a task to fetch presupposes the list it was named from, so asking for one is
-        // asking for the other. Refusing the combination would only make the caller call twice.
+        // asking for the other.
         includeTasks = includeTasks || taskLog is { Length: > 0 };
 
         var release = await ReadReleaseWireAsync(client, vsrm, project, releaseId, ct);
@@ -931,7 +927,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         {
             var env = ordered[index];
             // A task that passed is only "skipped" while nothing reports it. With include_tasks it
-            // is in the result, and counting it again would say it was filtered out.
+            // is in the result, and counting it again would claim it was filtered out.
             var failed = Mapping.ReleaseFailedSteps(env, maxErrors, counts, countSucceeded: !includeTasks);
             var reported = failed.Take(maxFailed).Select(f => f.Step).ToList();
             if (includeLogs && logTailLines > 0)
@@ -958,13 +954,13 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// <summary>
     /// Which listed task <c>task_log</c> named, as an index into the per-stage lists.
     ///
-    /// Neither half of a release task's identity is unique on its own, which is why this is not
-    /// one call to <see cref="Resolve"/>: an id is unique within a deployment attempt and repeats
-    /// across stages, and a stage deploying to several machines runs the *same task name* more
-    /// than once within itself (measured — two "File Transform" tasks in one production stage).
-    /// So an optional "stage / …" prefix scopes the search, an id is matched inside that scope,
-    /// and a name goes through the shared lenient rule against candidates carrying their own id,
-    /// so an ambiguous name is answered by a list that says how to pick.
+    /// Neither half of a release task's identity is unique, so this is not one call to
+    /// <see cref="Resolve"/>: an id is unique within a deployment attempt but repeats across
+    /// stages, and a stage deploying to several machines runs the same task name more than once
+    /// within itself (measured: two "File Transform" tasks in one production stage). An optional
+    /// "stage / …" prefix scopes the search, an id is matched inside that scope, and a name goes
+    /// through the shared lenient rule against candidates carrying their own id, so an ambiguous
+    /// name comes back as a list saying how to pick.
     /// </summary>
     internal (int Environment, int Task) ResolveReleaseTask(
         IReadOnlyList<WireReleaseEnvironment> environments,
@@ -1034,13 +1030,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     }
 
     /// <summary>
-    /// The release itself. <c>$expand=tasks</c> is what makes the per-task detail arrive; without
-    /// it every deployment looks like it ran no steps at all.
-    /// </summary>
-    /// <summary>
-    /// One release definition in full. The listing endpoint answers with a summary — no variables,
-    /// no deploy phases — so the by-id read is what "how is this configured" costs, and there is
-    /// no <c>$expand</c> that would let the listing carry it.
+    /// One release definition in full. The listing endpoint answers with a summary: no variables,
+    /// no deploy phases, and no <c>$expand</c> that would add them. Configuration costs a by-id
+    /// read.
     /// </summary>
     private static async Task<WireReleaseDefinitionDetail> ReadReleaseDefinitionAsync(
         AdoClient client, string vsrm, Named project, string definitionId, CancellationToken ct) =>
@@ -1049,12 +1041,13 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     /// <summary>
     /// Names for the variable groups a definition references, which arrive as bare ids. The groups
-    /// themselves are never read into a result: a variable group is a bag of values, half of them
-    /// secret, and the question a definition raises is only which ones it pulls in.
+    /// themselves are never read into a result: they hold secrets, and all a definition raises is
+    /// which ones it pulls in.
     ///
-    /// A failure here is logged and swallowed, alone in this server: the names are a convenience,
-    /// the ids identify the groups without them, and a permission this account happens not to have
-    /// on the task agent service must not turn a definition read into an error.
+    /// A failure here is logged and swallowed, as in <see cref="DeploymentGroupNamesAsync"/> and
+    /// nowhere else in this server. The names are a convenience, the ids identify the groups
+    /// without them, and a missing permission on the task agent service must not turn a definition
+    /// read into an error.
     /// </summary>
     private async Task<IReadOnlyDictionary<int, string>> VariableGroupNamesAsync(
         AdoClient client, Named project, IReadOnlyList<int> ids, CancellationToken ct)
@@ -1085,7 +1078,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// One deployment group with its machines. The listing rejects <c>$expand=machines</c> (400:
     /// "no longer supported... query individual deployment group"), so machines always come from a
     /// by-id read, and this is the only place that asks for the expansion. Capabilities are a
-    /// different expansion on a different endpoint and are never requested.
+    /// different expansion on a different endpoint, never requested.
     /// </summary>
     private static async Task<WireDeploymentGroup> ReadDeploymentGroupAsync(
         AdoClient client, Named project, int id, CancellationToken ct) =>
@@ -1093,7 +1086,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             $"{Escape(project.Id)}/_apis/distributedtask/deploymentgroups/{id}?{Api}&$expand=machines", ct);
 
     /// <summary>The project's deployment groups as summaries: name and machine count, no machines.</summary>
-    private async Task<List<WireDeploymentGroup>> ListDeploymentGroupsInternal(
+    private async Task<List<WireDeploymentGroup>> ListDeploymentGroupsAsync(
         AdoClient client, string projectId, int limit, CancellationToken ct)
     {
         var results = new List<WireDeploymentGroup>();
@@ -1117,8 +1110,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// <summary>
     /// Names for the deployment groups a definition's phases reference by id. Same terms as
     /// <see cref="VariableGroupNamesAsync"/>: a convenience, logged and swallowed on failure,
-    /// because the id identifies the group and a missing permission on the task agent service must
-    /// not turn a definition read into an error.
+    /// because the id identifies the group without the name.
     /// </summary>
     private async Task<IReadOnlyDictionary<int, string>> DeploymentGroupNamesAsync(
         AdoClient client, Named project, IReadOnlyList<int> ids, CancellationToken ct)
@@ -1145,6 +1137,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         }
     }
 
+    /// <summary>
+    /// The release itself. <c>$expand=tasks</c> is what makes the per-task detail arrive; without
+    /// it every deployment looks like it ran no steps at all.
+    /// </summary>
     private static async Task<WireRelease> ReadReleaseWireAsync(
         AdoClient client, string vsrm, Named project, int releaseId, CancellationToken ct) =>
         await client.GetAsync<WireRelease>(
@@ -1176,17 +1172,16 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         A("include_logs", include_logs) + A("log_tail_lines", log_tail_lines) +
         A("max_failed", max_failed) + A("max_errors", max_errors), async () =>
     {
-        // Bounded like every other loop in this server: a caller cannot ask it to wait forever, and
-        // it cannot poll hard enough to matter to the service.
+        // Bounded: a caller cannot ask it to wait forever, or poll hard enough to matter to the
+        // service.
         var timeout = TimeSpan.FromSeconds(Math.Clamp(timeout_seconds, 1, 21600));
         var interval = TimeSpan.FromSeconds(Math.Clamp(poll_seconds, 5, 600));
         var client = await ado.GetClientAsync(ct);
         var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
 
-        // Resolved once, against the first read: the environment being waited for cannot change
-        // identity mid-wait, and re-resolving each poll would turn a renamed stage into a failure
-        // halfway through.
+        // Resolved once, against the first read: re-resolving each poll would turn a renamed
+        // stage into a failure halfway through.
         var first = await ReadReleaseWireAsync(client, vsrm, resolvedProject, release_id, ct);
         var env = ResolveReleaseEnvironment(first, environment);
 
@@ -1233,7 +1228,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     //
     // The Search service answers on its own host (Search.BaseUrl) with POST bodies. All three
     // tools scope to one project through the route, ask for `limit` results in a single request,
-    // and answer hasMore from the service's total match count rather than fetching more.
+    // and answer hasMore from the service's total match count.
 
     [McpServerTool(Name = "search_code", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Full-text code search over the project's repositories (git and TFVC) " +
@@ -1260,10 +1255,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var client = await ado.GetClientAsync(ct);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
 
-        // The Repository filter matches by name, so an id argument is resolved back to one, and a
+        // The Repository filter matches by name, so an id argument is resolved back to one and a
         // wrong name fails here with the candidates listed instead of silently matching nothing.
-        // TFVC content lives in a repository named "$/Project", which the git repository list
-        // does not know, so a $/ value passes through as-is.
+        // TFVC content lives in a repository named "$/Project", which the git repository list does
+        // not know, so a $/ value passes through as-is.
         string? repoName = null;
         if (repo is not null)
         {
@@ -1273,7 +1268,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             }
             else
             {
-                var repos = await ListReposInternal(client, resolvedProject.Id, ct);
+                var repos = await ListReposAsync(client, resolvedProject.Id, ct);
                 var named = Resolve(
                     repo, IsGuid,
                     repos.Where(r => r.Id is not null && r.Name is not null)
@@ -1287,14 +1282,14 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         if (path is not null && repoName is null)
         {
             // The service refuses a Path filter without a Repository filter. A TFVC server path
-            // names its own repository. Anything else needs `repo` from the caller.
+            // names its own repository; anything else needs `repo` from the caller.
             repoName = Search.TfvcRepository(path) ?? throw new McpException(
                 "The Search service only filters `path` within one repository — pass `repo` " +
                 "together with `path`. (A TFVC path like $/Project/... implies its repository.)");
         }
 
-        // Project is scoped by the route, but the service refuses a Repository filter unless a
-        // Project filter accompanies it, so it is always sent.
+        // The route already scopes the project, but the service refuses a Repository filter
+        // without a Project filter, so it is always sent.
         var request = Search.BuildRequest(query, limit,
             ("Project", resolvedProject.Name), ("Repository", repoName), ("Path", path),
             ("Branch", branch)) with { IncludeSnippet = true };
@@ -1302,7 +1297,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             $"{Search.BaseUrl(client.OrgUrl)}/{Escape(resolvedProject.Id)}/_apis/search/codesearchresults?{SearchApi}",
             request, ct);
         var results = (response.Results ?? [])
-            .Select(r => Mapping.CodeHit(r, body_limit, client.OrgUrl, resolvedProject.Name))
+            .Select(r => Mapping.CodeSearchHit(r, body_limit, client.OrgUrl, resolvedProject.Name))
             .ToList();
         return new CodeSearchResult(results, response.Count, response.Count > results.Count ? true : null);
     });
@@ -1353,7 +1348,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             $"{Search.BaseUrl(client.OrgUrl)}/{Escape(resolvedProject.Id)}/_apis/search/wikisearchresults?{SearchApi}",
             Search.BuildRequest(query, limit), ct);
         var results = (response.Results ?? [])
-            .Select(r => Mapping.WikiHit(r, body_limit, client.OrgUrl, resolvedProject.Name))
+            .Select(r => Mapping.WikiSearchHit(r, body_limit, client.OrgUrl, resolvedProject.Name))
             .ToList();
         return new WikiSearchResult(results, response.Count, response.Count > results.Count ? true : null);
     });
@@ -1392,8 +1387,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var client = await ado.GetClientAsync(ct);
         var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
 
-        // When the caller asks about one changeset, its touched paths answer `affects` for every
-        // deployable, so they are fetched once, outside the loop.
+        // The changeset's touched paths answer `affects` for every deployable, so they are
+        // fetched once, outside the loop.
         List<string>? changesetPaths = null;
         if (changeset is { } askedId)
         {
@@ -1448,13 +1443,13 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         {
             try
             {
-                results.Add(await StatusAsync(
+                results.Add(await DeployableStatusAsync(
                     client, vsrm, d, DefinitionsAsync, BuildDefinitionsAsync, changeset, changesetPaths,
                     include_changesets, max_changesets, ct));
             }
             catch (Exception e) when (e is McpException or AdoApiException)
             {
-                // A fleet answer with one broken entry is still an answer. The entry says why.
+                // A fleet answer with one broken entry is still an answer; the entry says why.
                 log.Line(LogLevel.Warning, Ev.ToolFail,
                     "deployment_status entry failed" + A("deployable", d.Name) + A("reason", e.Message));
                 results.Add(new DeployableStatusDto(
@@ -1467,7 +1462,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     });
 
     /// <summary>Dispatches on the deployable's form. Both forms converge on VersionStateAsync.</summary>
-    private async Task<DeployableStatusDto> StatusAsync(
+    private async Task<DeployableStatusDto> DeployableStatusAsync(
         AdoClient client,
         string vsrm,
         Deployable d,
@@ -1509,7 +1504,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                 .Select(x => new Named(x.Id.ToString(CultureInfo.InvariantCulture), x.Name!)).ToList(),
             "release definition", log);
         // Resolve passes a numeric id straight through, so it can name a definition that is not
-        // in the list. Say so instead of failing with "sequence contains no matching element".
+        // in the list. Say so instead of "sequence contains no matching element".
         var definition = defs.FirstOrDefault(x => x.Id.ToString(CultureInfo.InvariantCulture) == def.Id)
             ?? throw new McpException(
                 $"No release definition with id {def.Id} in project '{project.Name}'. " +
@@ -1598,8 +1593,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                 "environment", log);
             environmentName = env.Name;
 
-            // Records arrive newest first, so the first succeeded record of this pipeline is the
-            // deployment that is out.
+            // Records arrive newest first, so the first succeeded record of this pipeline is what
+            // is deployed.
             const int recordCap = 100;
             var records = await client.GetAsync<ListResponse<WireEnvDeploymentRecord>>(
                 $"{Escape(project.Id)}/_apis/distributedtask/environments/{env.Id}" +
@@ -1650,9 +1645,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     /// <summary>
     /// What the deployed build pins down and what has landed since. A numeric sourceVersion is a
-    /// TFVC changeset, and undeployed work is the changesets under the deployable's paths past
-    /// it. Anything else is a git commit, and undeployed work is the commits on the branch ahead
-    /// of it.
+    /// TFVC changeset, so undeployed work is the changesets under the deployable's paths past it.
+    /// Anything else is a git commit, so undeployed work is the commits on the branch ahead of it.
     /// </summary>
     private sealed record VersionState(
         int? Changeset, string? Commit, string? Branch, string? Repository,
@@ -1711,9 +1705,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var hasMore = false;
         if (paths is { Count: > 0 })
         {
-            // One changeset query per path. A deployable with an absurd mapping count stays
-            // bounded, and hitting the cap is reported (hasMore plus a Warning) instead of
-            // silently understating.
+            // One changeset query per path, capped so a deployable with a huge mapping count stays
+            // bounded. Hitting the cap is reported (hasMore plus a Warning) rather than silently
+            // understating.
             const int pathSearchCap = 10;
             var searched = paths;
             if (paths.Count > pathSearchCap)
@@ -1782,16 +1776,15 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var branch = Deployments.ShortBranch(d.Branch ?? build.SourceBranch ?? "");
         if (repo?.Id is not { Length: > 0 } repoId || branch.Length == 0)
         {
-            // Enough to say what is deployed. Without a repository and branch the "since"
-            // question has no frame to be answered in.
+            // Enough to say what is deployed. Without a repository and branch there is no frame
+            // for the "since" question.
             return new VersionState(
                 null, deployedSha, null, repo?.Name, null, null, null, null, null, null, null);
         }
 
         // Undeployed = commits on the branch ahead of the deployed one. The branch is read newest
-        // first and walked until the deployed commit appears. A walk that runs out before finding
-        // it (deep drift, or a version no longer on the branch) reports hasMore rather than a
-        // number it cannot know.
+        // first and walked until the deployed commit appears. A walk that runs out first (deep
+        // drift, or a version no longer on the branch) reports hasMore, not a count it cannot know.
         var page = await client.GetAsync<ListResponse<WireGitCommitRef>>(
             $"{Escape(project.Id)}/_apis/git/repositories/{repoId}/commits?{Api}" +
             $"&searchCriteria.itemVersion.version={Uri.EscapeDataString(branch)}" +
@@ -1809,9 +1802,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             }
             ahead.Add(c);
         }
-        // Not found means the count is a page of branch history, not "commits since deploy":
-        // either the page was full and the walk ran out, or the deployed commit is no longer on
-        // the branch at all. Either way an exact count is not known.
+        // Not found means the count is a page of branch history, not "commits since deploy": the
+        // walk ran out, or the deployed commit is no longer on the branch.
         var hasMore = !found;
         if (ahead.Count > maxChangesets)
         {
@@ -1827,11 +1819,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     // ------------------------------------------------------- escape hatch and diagnostics
     //
-    // Two tools that exist because of how sessions fail rather than because of what Azure DevOps
-    // offers. When a typed tool does not cover something the next move is otherwise a shell and a
-    // personal access token — a second credential, usually a stale one, failing for a reason
-    // nobody has checked. So the escape hatch is another tool call on the credential this server
-    // already holds, and the credential itself can be asked whether it works.
+    // Without these, the next move when a typed tool falls short is a shell and a personal access
+    // token: a second credential, usually stale, failing for a reason nobody has checked. Instead
+    // the escape hatch runs on the credential this server holds, which can also be probed.
 
     [McpServerTool(Name = "ado_api_request", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only by default. Call one Azure DevOps REST endpoint directly, using this " +
@@ -1874,8 +1864,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         AdoMcpLog.ContentArg("body", body), async () =>
     {
         max_chars = Math.Clamp(max_chars, 500, 200_000);
-        // The gate is consulted before anything else, exactly as the write tools do it: a refusal
-        // must not depend on whether the rest of the arguments happened to be valid.
+        // The gate is consulted first, as in the write tools: a refusal must not depend on
+        // whether the other arguments happened to be valid.
         var verb = ApiRequest.Method(method);
         var client = await ado.GetClientAsync(ct);
         var url = ApiRequest.Url(client.OrgUrl, path, query, host);
@@ -1934,8 +1924,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             var client = await ado.GetClientAsync(ct);
             organization = client.OrgUrl;
             expires = await ado.TokenExpiresOnAsync(ct);
-            // connectionData is what the organization itself says this token is, which is the
-            // claim that matters: a record can name an account the organization has never seen.
+            // connectionData is what the organization says this token is. The local record can
+            // name an account the organization has never seen.
             var me = await client.GetAsync<WireConnectionData>(
                 "_apis/connectionData?api-version=7.1-preview", ct);
             identity = me.AuthenticatedUser?.DisplayName
@@ -1950,7 +1940,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         catch (Exception e) when (e is not OperationCanceledException)
         {
             // Reported, not thrown: "the credential is dead" is this tool's answer, and throwing
-            // would make it indistinguishable from the failures it is called to explain.
+            // would make it look like the failures it is called to explain.
             error = $"{e.GetType().Name}: {e.Message}";
             log.Line(LogLevel.Warning, Ev.AuthFail, "auth status reports a broken credential", e);
         }
@@ -1974,14 +1964,13 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     // ------------------------------------------------- write tools (ADO_MCP_ALLOW_WRITE)
     //
-    // Every tool below mutates something other people can see, so every one calls
-    // RequireWriteEnabled() before doing anything else, even validating its own arguments. The
-    // refusal is the same regardless of what was passed. Each returns the post-write state in the
-    // same null-omitting DTOs as the read tools, so the caller can confirm without a second call.
+    // Every tool below mutates something other people can see, so each calls
+    // RequireWriteEnabled() before anything else, even validating its arguments: the refusal must
+    // not depend on what was passed. Each returns the post-write state in the read tools'
+    // null-omitting DTOs, so the caller can confirm without a second call.
 
-    // Destructive: this one overwrites fields that already had values, unlike the two below,
-    // which only add. Not idempotent either, since a repeated call with the same `comment` posts
-    // it again.
+    // Destructive: it overwrites fields that already had values, unlike the two below, which
+    // only add. Not idempotent either: a repeated call with the same `comment` posts it again.
     [McpServerTool(Name = "update_work_item", UseStructuredContent = true, Destructive = true, Idempotent = false)]
     [Description("Write — requires ADO_MCP_ALLOW_WRITE=true in this server's environment. Update one " +
                  "work item: title, description/repro steps/acceptance criteria, state, assignee, " +
@@ -2061,7 +2050,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
         // Tags are one semicolon-joined field and the parent is a relation addressed by its index,
         // so both are read-merge-write. One read serves both, but `fields` and `$expand` cannot be
-        // combined — asking for the relations means taking every field along with them.
+        // combined, so asking for the relations means taking every field too.
         var reparenting = parent is not null || remove_parent;
         var merging = add_tags is not null || remove_tags is not null;
         string? tags = null;
@@ -2087,15 +2076,15 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         ops.AddRange(relationOps);
         if (ops.Count == 0)
         {
-            // The only thing asked for was a parent link that is already the way it was asked for.
+            // The only change asked for was a parent link that is already set that way.
             // Already-true is not a failure, and the read that established it is a whole work item.
             return Mapping.WorkItemDetail(current!, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null);
         }
 
-        var updated = await client.PatchAsync<WireWorkItem>(
+        var updated = await client.JsonPatchAsync<WireWorkItem>(
             HttpMethod.Patch,
-            // Relations are only in the response when asked for, and a parent change is not
-            // confirmable without them.
+            // Relations are only in the response when asked for, and a parent change cannot be
+            // confirmed without them.
             $"_apis/wit/workitems/{id}?{Api}" + (reparenting ? "&$expand=relations" : ""),
             ops,
             ct);
@@ -2149,7 +2138,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         }
         var client = await ado.GetClientAsync(ct);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
-        var resolvedType = await ResolveTypeAsync(client, resolvedProject.Id, type, ct);
+        var resolvedType = await ResolveWorkItemTypeAsync(client, resolvedProject.Id, type, ct);
         var assignee = assigned_to is null ? null : await ResolveIdentityAsync(client, assigned_to, ct);
 
         var ops = Writes.CreatePatch(
@@ -2163,7 +2152,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             ops.AddRange(Writes.SetParent(relations: null, parentId, client.OrgUrl));
         }
 
-        var created = await client.PatchAsync<WireWorkItem>(
+        var created = await client.JsonPatchAsync<WireWorkItem>(
             HttpMethod.Post,
             // The route's $ prefix on the type name is literal. The name itself may contain spaces.
             $"{Escape(resolvedProject.Id)}/_apis/wit/workitems/${Escape(resolvedType.Name)}?{Api}" +
@@ -2229,9 +2218,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     });
 
     // Queuing a run consumes agents and can deploy things, so it sits behind the same write gate
-    // as the tools that edit work items — a "read-only" registration must not be able to start
-    // builds. Not destructive (it adds a run, overwrites nothing) and not idempotent (each call
-    // queues another).
+    // as the work item tools: a "read-only" registration must not start builds. Not destructive
+    // (it adds a run, overwrites nothing) and not idempotent (each call queues another).
     [McpServerTool(Name = "run_pipeline", UseStructuredContent = true, Destructive = false, Idempotent = false)]
     [Description("Write — requires ADO_MCP_ALLOW_WRITE=true in this server's environment. Queue a " +
                  "run of a pipeline, optionally on a specific branch. Returns the queued run in " +
@@ -2251,8 +2239,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var definitionId = int.Parse(resolvedPipeline.Id, CultureInfo.InvariantCulture);
 
         // Queued through the build API for the same reason runs are read through it: the response
-        // is the same WireBuild shape every run tool speaks, so the queued run comes back exactly
-        // as list_pipeline_runs would report it — including the id wait_for_pipeline_run takes.
+        // is the same WireBuild shape every run tool speaks, so the queued run comes back as
+        // list_pipeline_runs would report it, including the id wait_for_pipeline_run takes.
         object body = branch is null
             ? new { definition = new { id = definitionId } }
             : new { definition = new { id = definitionId }, sourceBranch = FullBranch(branch) };
@@ -2261,10 +2249,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         return Mapping.Run(build, client.OrgUrl, resolvedProject.Name);
     });
 
-    // Deploying a stage is the button that ships something. It is Destructive because it replaces
-    // what is running in that environment — the annotation is what an MCP client gates its
-    // confirmation prompt on, and this is the call that most deserves one. Not idempotent: each
-    // call queues another deployment.
+    // Destructive because it replaces what is running in that environment, and the annotation is
+    // what an MCP client gates its confirmation prompt on. Not idempotent: each call queues
+    // another deployment.
     [McpServerTool(Name = "deploy_release", UseStructuredContent = true, Destructive = true, Idempotent = false)]
     [Description("Write — requires ADO_MCP_ALLOW_WRITE=true in this server's environment. Start " +
                  "deploying one environment of an existing release, which is the same action as the " +
@@ -2287,13 +2274,13 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var vsrm = Deployments.VsrmBaseUrl(client.OrgUrl);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
 
-        // The release is read before it is written: the environment argument is a name against
-        // this release's own stages, and an unknown one must fail listing them rather than
-        // PATCHing an id that means something else.
+        // The release is read before it is written: `environment` is a name against this
+        // release's own stages, and an unknown one must fail listing them rather than PATCHing an
+        // id that means something else.
         var release = await ReadReleaseWireAsync(client, vsrm, resolvedProject, release_id, ct);
         var env = ResolveReleaseEnvironment(release, environment);
 
-        await client.PatchJsonAsync<WireReleaseEnvironment>(
+        await client.PatchAsync<WireReleaseEnvironment>(
             $"{vsrm}/{Escape(resolvedProject.Id)}/_apis/release/releases/{release_id}" +
             $"/environments/{Uri.EscapeDataString(env.Id)}?{Api}",
             comment is null ? new { status = "inProgress" } : new { status = "inProgress", comment },
@@ -2301,17 +2288,17 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         log.Line(LogLevel.Information, Ev.ToolOk,
             "deployment started" + A("release_id", release_id) + A("environment", env.Name));
 
-        // Re-read rather than mapping the PATCH response: it answers with the one environment,
-        // and the post-write state a caller wants is the release as get_release would report it.
+        // Re-read rather than mapping the PATCH response, which answers with the one environment:
+        // the post-write state a caller wants is the release as get_release would report it.
         return await ReadReleaseAsync(
             client, vsrm, resolvedProject, release_id,
             includeLogs: false, logTailLines: 0, maxFailed: 5, maxErrors: 5,
             includeTasks: false, taskLog: null, ct);
     });
 
-    // Approving is not covered by the write gate (see AdoContext.ApprovalEnabled): it acts as the
-    // signed-in person in a control that exists to require a person. Destructive for the same
-    // reason deploy_release is — approving a pre-deploy gate is what lets the deployment proceed.
+    // The write gate does not cover approving (see AdoContext.ApprovalEnabled): it acts as the
+    // signed-in person in a control that exists to require a person. Destructive because
+    // approving a pre-deploy gate is what lets the deployment proceed.
     [McpServerTool(Name = "approve_release", UseStructuredContent = true, Destructive = true, Idempotent = false)]
     [Description("Write — requires BOTH ADO_MCP_ALLOW_WRITE=true and ADO_MCP_ALLOW_APPROVE=true in " +
                  "this server's environment; approving is gated separately from every other write " +
@@ -2345,7 +2332,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             .First(e => e.Id.ToString(CultureInfo.InvariantCulture) == env.Id);
         var approval = ChooseApproval(Mapping.PendingApprovals(wireEnv), approval_id, env.Name, release.Name);
 
-        var updated = await client.PatchJsonAsync<WireReleaseApproval>(
+        var updated = await client.PatchAsync<WireReleaseApproval>(
             $"{vsrm}/{Escape(resolvedProject.Id)}/_apis/release/approvals/{approval.Id}?{Api}",
             new { status = reject ? "rejected" : "approved", comments = comment },
             ct);
@@ -2362,10 +2349,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     });
 
     /// <summary>
-    /// Which pending approval to act on. One is unambiguous; several (parallel approvers, or a pre-
-    /// and a post-deploy approval at once) is a choice the caller has to make, listed rather than
-    /// guessed — the same rule <see cref="Resolve"/> follows, for the same reason: this one signs
-    /// something.
+    /// Which pending approval to act on. One is unambiguous; several (parallel approvers, or a
+    /// pre- and a post-deploy approval at once) are listed for the caller to choose between, never
+    /// guessed, the same rule <see cref="Resolve"/> follows.
     /// </summary>
     internal static WireReleaseApproval ChooseApproval(
         List<WireReleaseApproval> pending, int? approvalId, string environment, string? release)
@@ -2396,8 +2382,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     // ------------------------------------------------------------------- helpers
 
     /// <summary>
-    /// The gate every mutating tool calls first: writes are visible to other people, so they are
-    /// opt-in per environment rather than something a config file can switch on.
+    /// The gate every mutating tool calls first. Writes are visible to other people, so they are
+    /// opt-in per environment, not something a config file switches on.
     /// </summary>
     internal static void RequireWriteEnabled()
     {
@@ -2411,9 +2397,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     /// <summary>
     /// The second gate, which only <c>approve_release</c> calls, and only after
-    /// <see cref="RequireWriteEnabled"/>. It is separate because turning on writing says an agent
-    /// may change Azure DevOps, while this says it may sign a human's name to a production
-    /// deployment. See <see cref="AdoContext.ApprovalEnabled"/>.
+    /// <see cref="RequireWriteEnabled"/>. Separate because writing says an agent may change Azure
+    /// DevOps, while this says it may sign a human's name to a production deployment. See
+    /// <see cref="AdoContext.ApprovalEnabled"/>.
     /// </summary>
     internal static void RequireApprovalEnabled()
     {
@@ -2430,25 +2416,24 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     /// <summary>
     /// The next correlation id. <see cref="ToolErrors"/> allocates from the same sequence, so a
-    /// failure caught either side of <see cref="Run{T}"/> is indistinguishable in the log from one
-    /// caught inside it.
+    /// failure caught outside <see cref="Run{T}"/> looks the same in the log as one caught inside.
     /// </summary>
     internal static string NextRequest() =>
         Interlocked.Increment(ref _sequence).ToString(CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Wraps every tool call: assigns the <c>req=N</c> correlation id that the REST handler and
-    /// MCP SDK events are stamped with, times the call, and records arguments and outcome.
-    /// Failures log the full exception while the model sees a short message plus the req id,
-    /// which is enough to find the log lines.
+    /// MCP SDK events are stamped with, times the call, and records arguments and outcome. A
+    /// failure logs the full exception; the model gets a short message plus the req id, which is
+    /// enough to find those log lines.
     /// </summary>
-    internal async Task<T> Run<T>(string tool, string args, Func<Task<T>> action)
+    internal async Task<T> Run<T>(string tool, string argsLog, Func<Task<T>> action)
     {
         var req = NextRequest();
         var previous = AdoMcpLog.CurrentRequest;
         AdoMcpLog.CurrentRequest = req;
         var sw = Stopwatch.StartNew();
-        log.Line(LogLevel.Information, Ev.ToolStart, tool + args);
+        log.Line(LogLevel.Information, Ev.ToolStart, tool + argsLog);
         try
         {
             var result = await action();
@@ -2500,8 +2485,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     /// <summary>
     /// Summarizes a tool result for the log without dumping its content. Descriptions and comment
-    /// bodies go through <see cref="AdoMcpLog.ContentArg"/>, so by default the log records only
-    /// their length.
+    /// bodies go through <see cref="AdoMcpLog.ContentArg"/>, so by default only their length is
+    /// recorded.
     /// </summary>
     internal static string Describe(object? result) => result switch
     {
@@ -2574,8 +2559,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     // -------------------------------------------------------------- WIQL construction
 
     /// <summary>
-    /// Builds the query the filter arguments describe. Pure: everything it needs is passed in, and
-    /// the result is echoed back to the caller so a filter that matched nothing can be inspected.
+    /// Builds the query the filter arguments describe. Pure, and the result is echoed back to the
+    /// caller so a filter that matched nothing can be inspected.
     /// </summary>
     internal static string BuildWiql(
         string project,
@@ -2662,8 +2647,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// <summary>
     /// The one lenient-resolution rule, shared by projects, repositories, pipelines and teams: an
     /// input that already looks like an id passes straight through, otherwise names are matched
-    /// case-insensitively, exact first and substring second, and anything other than exactly one
-    /// match is an error that lists what was available.
+    /// case-insensitively, exact first and substring second. Anything but exactly one match is an
+    /// error listing what was available.
     /// </summary>
     internal static Named Resolve(
         string input, Func<string, bool> isId, IReadOnlyList<Named> candidates, string kind, ILogger log)
@@ -2705,12 +2690,12 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             ?? throw new McpException(
                 "No project given. Pass `project`, or set ADO_MCP_PROJECT in this server's environment " +
                 "to make one the default.");
-        var projects = await ListProjectsInternal(client, limit: 1000, ct);
+        var projects = await ListProjectsAsync(client, limit: 1000, ct);
         var candidates = projects.Where(p => p.Id is not null && p.Name is not null)
             .Select(p => new Named(p.Id!, p.Name!)).ToList();
         var resolved = Resolve(name, IsGuid, candidates, "project", log);
-        // A GUID passes straight through Resolve, but the list already knows its display name,
-        // which browser links and the Search service's Project filter need.
+        // A GUID passes straight through Resolve, but the list already knows the display name
+        // that browser links and the Search service's Project filter need.
         if (IsGuid(resolved.Name))
         {
             foreach (var candidate in candidates)
@@ -2726,7 +2711,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     private async Task<Named> ResolveRepoAsync(AdoClient client, string projectId, string repo, CancellationToken ct)
     {
-        var repos = await ListReposInternal(client, projectId, ct);
+        var repos = await ListReposAsync(client, projectId, ct);
         return Resolve(
             repo, IsGuid,
             repos.Where(r => r.Id is not null && r.Name is not null)
@@ -2737,7 +2722,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     private async Task<Named> ResolvePipelineAsync(
         AdoClient client, string projectId, string pipeline, CancellationToken ct)
     {
-        var pipelines = await ListPipelinesInternal(client, projectId, limit: 1000, ct);
+        var pipelines = await ListPipelinesAsync(client, projectId, limit: 1000, ct);
         return Resolve(
             pipeline, IsNumber,
             pipelines.Where(p => p.Name is not null)
@@ -2748,7 +2733,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     private async Task<Named> ResolveReleaseDefinitionAsync(
         AdoClient client, string vsrm, Named project, string definition, CancellationToken ct)
     {
-        var definitions = await ListReleaseDefinitionsInternal(client, vsrm, project.Id, limit: 1000, ct);
+        var definitions = await ListReleaseDefinitionsAsync(client, vsrm, project.Id, limit: 1000, ct);
         return Resolve(
             definition, IsNumber,
             definitions.Where(d => d.Name is not null)
@@ -2757,10 +2742,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     }
 
     /// <summary>
-    /// An environment against the release that holds it. The id this returns is the *release*
-    /// environment id, which is what the deploy endpoint addresses — not the definition
-    /// environment id, which is stable across releases and would silently target the wrong stage.
-    /// A numeric argument is taken as the former, since that is the id every result carries.
+    /// An environment against the release that holds it. The id returned is the *release*
+    /// environment id, which is what the deploy endpoint addresses, not the definition environment
+    /// id, which is stable across releases and would silently target the wrong stage. A numeric
+    /// argument is taken as the release environment id, the one every result carries.
     /// </summary>
     internal Named ResolveReleaseEnvironment(WireRelease release, string environment)
     {
@@ -2771,7 +2756,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             .ToList();
         var resolved = Resolve(environment, IsNumber, candidates, "environment", log);
         // Resolve passes a number straight through, so it can name an environment this release
-        // does not have. Say so rather than PATCHing an id that belongs to another release.
+        // does not have. Say so rather than PATCHing an id belonging to another release.
         return candidates.FirstOrDefault(c => c.Id == resolved.Id) is { Name: not null } match
             ? match
             : throw new McpException(
@@ -2779,7 +2764,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                 $"Available: {string.Join(", ", candidates.Select(c => $"{c.Name} ({c.Id})"))}");
     }
 
-    private async Task<Named> ResolveTypeAsync(
+    private async Task<Named> ResolveWorkItemTypeAsync(
         AdoClient client, string projectId, string type, CancellationToken ct)
     {
         var response = await client.GetAsync<ListResponse<WireWorkItemType>>(
@@ -2794,8 +2779,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// <summary>
     /// Resolves an assignee to a value identity fields accept. An email or a GUID passes through,
     /// since Azure DevOps resolves those exactly and fails loudly on a miss. A bare name goes
-    /// through the identity service on the vssps host with the usual lenient-match rule. Because
-    /// this feeds a write, an ambiguous name is an error listing the candidates, never a guess.
+    /// through the identity service on the vssps host with the usual lenient-match rule. This
+    /// feeds a write, so an ambiguous name is an error listing the candidates, never a guess.
     /// </summary>
     private async Task<string> ResolveIdentityAsync(AdoClient client, string input, CancellationToken ct)
     {
@@ -2828,8 +2813,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     }
 
     /// <summary>
-    /// The area paths a team owns. This is what "the work my team is doing" means in Azure DevOps:
-    /// a team is defined by its area paths, not by a field on the work item.
+    /// The area paths a team owns. That is what "the work my team is doing" means in Azure
+    /// DevOps: a team is defined by its area paths, not by a field on the work item.
     /// </summary>
     private async Task<List<string>> TeamAreaPathsAsync(
         AdoClient client, Named project, string team, CancellationToken ct)
@@ -2853,7 +2838,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     // ------------------------------------------------------------------ list helpers
 
-    private async Task<List<WireProject>> ListProjectsInternal(AdoClient client, int limit, CancellationToken ct)
+    private async Task<List<WireProject>> ListProjectsAsync(AdoClient client, int limit, CancellationToken ct)
     {
         var results = new List<WireProject>();
         string? token = null;
@@ -2873,16 +2858,16 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         return results.Count > limit ? results[..limit] : results;
     }
 
-    private static async Task<List<WireRepo>> ListReposInternal(
+    private static async Task<List<WireRepo>> ListReposAsync(
         AdoClient client, string projectId, CancellationToken ct)
     {
-        // This endpoint answers with every repository at once. There is no continuation to follow.
+        // This endpoint answers with every repository at once; there is no continuation to follow.
         var response = await client.GetAsync<ListResponse<WireRepo>>(
             $"{Escape(projectId)}/_apis/git/repositories?{Api}", ct);
         return response.Value ?? [];
     }
 
-    private async Task<List<WirePipeline>> ListPipelinesInternal(
+    private async Task<List<WirePipeline>> ListPipelinesAsync(
         AdoClient client, string projectId, int limit, CancellationToken ct)
     {
         var results = new List<WirePipeline>();
@@ -2904,12 +2889,11 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     }
 
     /// <summary>
-    /// The project's classic release definitions, with their environments. Expanding the
-    /// environments is what makes the listing worth having — a definition's stages are the
-    /// argument every other release tool takes — and it is the same request
+    /// The project's classic release definitions, with their environments expanded: a
+    /// definition's stages are the argument every other release tool takes. Same request
     /// <c>deployment_status</c> makes to resolve a deployable.
     /// </summary>
-    private async Task<List<WireReleaseDefinition>> ListReleaseDefinitionsInternal(
+    private async Task<List<WireReleaseDefinition>> ListReleaseDefinitionsAsync(
         AdoClient client, string vsrm, string projectId, int limit, CancellationToken ct)
     {
         var results = new List<WireReleaseDefinition>();
@@ -2933,8 +2917,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     }
 
     /// <summary>
-    /// Reads work items in batches. The endpoint caps a request at 200 ids and answers 400 (not a
-    /// truncated list) when given more, so the batching is required for correctness.
+    /// Reads work items in batches. The endpoint caps a request at 200 ids and answers 400, not a
+    /// truncated list, when given more, so the batching is required for correctness.
     /// </summary>
     private async Task<List<WireWorkItem>> GetWorkItemsAsync(
         AdoClient client, List<int> ids, CancellationToken ct)
@@ -2958,7 +2942,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         return results;
     }
 
-    /// <summary>Accepts "main" as readily as "refs/heads/main". The API only understands the latter.</summary>
+    /// <summary>Accepts "main" as readily as "refs/heads/main"; the API only takes the latter.</summary>
     internal static string FullBranch(string branch) =>
         branch.StartsWith("refs/", StringComparison.Ordinal) ? branch : "refs/heads/" + branch;
 

@@ -8,22 +8,20 @@ namespace TeamsMcp;
 /// `teams-mcp install` registers this server in a repository's MCP client configuration, so
 /// setting up a checkout is a command instead of a paste from the README.
 ///
-/// Three decisions shape it:
+/// It walks up from the working directory to the nearest <c>.git</c> and writes relative to that
+/// root, where an MCP client's config lives. Which client is decided from marker files already in
+/// the repository (see <see cref="Clients"/>). Clients differ only in the property holding the
+/// servers and how an environment variable is referenced, so they are data, not code paths.
 ///
-/// * <b>The repository is found rather than asked for.</b> Installing walks up from the working
-///   directory to the nearest <c>.git</c> and writes relative to that root, where the config an
-///   MCP client reads actually lives.
-/// * <b>The client is detected from what the repository already contains</b> (see
-///   <see cref="Clients"/>). Clients differ only in the property holding the servers and how an
-///   environment variable is referenced, so they are data rather than code paths.
-/// * <b>Identity is referenced, never copied.</b> Tenant and client ids go in as
-///   <c>${TEAMS_MCP_TENANT_ID}</c>, resolved from the environment at launch: an app registration
-///   belongs to whoever runs the server, and this file usually ends up committed.
-///   TEAMS_MCP_ALLOW_SEND is never written. Sending posts visibly as the signed-in user, so that
-///   gate belongs to an environment rather than to a repository.
+/// Identity is referenced, never copied: tenant and client ids go in as
+/// <c>${TEAMS_MCP_TENANT_ID}</c> and resolve from the environment at launch, because an app
+/// registration belongs to whoever runs the server and this file usually ends up committed.
+/// TEAMS_MCP_ALLOW_SEND is never written: sending posts visibly as the signed-in user, so that
+/// gate belongs to an environment, not to a repository.
 ///
 /// Existing content is preserved: other servers, other top-level properties, and an entry that
-/// already differs (which needs <c>--force</c>, so an install can never quietly undo a hand edit).
+/// already differs. Replacing that one needs <c>--force</c>, so an install cannot quietly undo a
+/// hand edit.
 /// </summary>
 internal static class Install
 {
@@ -48,9 +46,9 @@ internal static class Install
     // ------------------------------------------------------------------------ clients
 
     /// <summary>
-    /// One MCP client, as far as installing is concerned: where its per-repository config lives,
-    /// which property holds the servers, how it spells an environment reference, and what in a
-    /// repository suggests the client is used there.
+    /// One MCP client as far as installing is concerned: where its per-repository config lives,
+    /// which property holds the servers, how it spells an environment reference, and what marks a
+    /// repository as using it.
     /// </summary>
     internal sealed record Client(
         string Name, string ConfigFile, string ServersProperty, string EnvRefPrefix, string[] Markers)
@@ -107,7 +105,7 @@ internal static class Install
     // ------------------------------------------------------------------- the registration
 
     /// <summary>
-    /// How the client should start this server, derived from how this process was started: the
+    /// How the client should start this server, derived from how this process was started: an
     /// installed tool registers itself by command name, a checkout registers the `dotnet run` that
     /// reaches the same code.
     /// </summary>
@@ -141,8 +139,8 @@ internal static class Install
 
     /// <summary>
     /// The env block: identity by reference, then whatever <c>--set</c> says. Unlike the Azure
-    /// DevOps server this one reads nothing from the current environment, because it has no
-    /// address to pin. The tenant is the whole address and that is already a reference.
+    /// DevOps server's copy, nothing is read from the current environment: there is no address to
+    /// pin, and the tenant is already a reference.
     /// </summary>
     internal static List<KeyValuePair<string, string>> EnvEntries(
         Client client, IEnumerable<KeyValuePair<string, string>> overrides)
@@ -228,8 +226,7 @@ internal static class Install
 
     /// <summary>
     /// Merges the entry into the existing document, preserving every other server and every other
-    /// top-level property. Comments and formatting do not survive because the file is
-    /// reserialized.
+    /// top-level property. Comments and formatting do not survive the reserialize.
     /// </summary>
     internal static (JsonObject Root, Outcome Outcome, JsonNode? Existing) Merge(
         string? existingText, string serversProperty, string name, JsonObject entry, bool force)
@@ -280,8 +277,8 @@ internal static class Install
 
     private static readonly JsonSerializerOptions Format = new()
     {
-        // The output is a config file, not a web page: a value should read as itself rather than as
-        // escape sequences.
+        // A config file, not a web page: a value should read as itself rather than as escape
+        // sequences.
         WriteIndented = true,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
@@ -495,7 +492,7 @@ internal static class Install
     /// <summary>
     /// What is still needed before the registration works. The config only names the environment
     /// variables it defers to, so an unset one stays invisible until an MCP client fails
-    /// obscurely, and nothing works at all until `auth` has run once.
+    /// obscurely, and nothing works until `auth` has run once.
     /// </summary>
     private static void ReportReadiness(List<KeyValuePair<string, string>> env)
     {

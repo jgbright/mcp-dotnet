@@ -7,16 +7,16 @@ using ModelContextProtocol.Server;
 namespace TeamsMcp;
 
 /// <summary>
-/// The pure half of the `call` verb: command-line tokens into tool arguments against the tool's
-/// own input schema, and a tool result into console output. The wiring — the real server host
-/// over in-memory pipes, driven by an in-process MCP client — lives in Program.cs, so a call that
-/// succeeds there has exercised the same path an MCP client would.
+/// The pure half of the `call` verb: command-line tokens into tool arguments against the tool's own
+/// input schema, and a tool result into console output. Program.cs holds the wiring, running the
+/// real server host over in-memory pipes with an in-process MCP client, so a call that succeeds
+/// there has exercised the same path an MCP client would.
 /// </summary>
 internal static class Call
 {
     /// <summary>
-    /// The tool names, from the same attribute scan the server's registration reads. This backs
-    /// shell completion, so it must answer without building the host or touching the network.
+    /// The tool names, from the same attribute scan the server's registration reads. Backs shell
+    /// completion, so it must answer without building the host or touching the network.
     /// </summary>
     internal static IReadOnlyList<string> ToolNames() =>
         [.. typeof(TeamsTools).GetMethods(BindingFlags.Public | BindingFlags.Instance)
@@ -26,9 +26,8 @@ internal static class Call
 
     /// <summary>
     /// Lenient tool-name matching, the same shape the server's own resolvers use: exact
-    /// (case-insensitively) first, then substring, with no-match and ambiguity thrown as
-    /// <see cref="FormatException"/> listing the candidates — so a mistyped name is corrected
-    /// rather than dead-ended.
+    /// (case-insensitively) first, then substring. No match and ambiguity both throw
+    /// <see cref="FormatException"/> listing the candidates, so a mistyped name is correctable.
     /// </summary>
     internal static string ResolveTool(IReadOnlyList<string> names, string input)
     {
@@ -48,10 +47,10 @@ internal static class Call
     }
 
     /// <summary>
-    /// Three input forms, told apart by shape: a lone `-` reads a JSON object from stdin, a lone
-    /// token starting with `{` is a JSON object, and anything else is KEY=VALUE pairs with each
-    /// value coerced to what the schema declares for that key. Throws <see cref="FormatException"/>
-    /// with a message meant for the terminal.
+    /// Input forms, told apart by shape: a lone `-` reads a JSON object from stdin, a lone token
+    /// starting with `{` is a JSON object, anything else is KEY=VALUE pairs with each value coerced
+    /// to what the schema declares for that key. Throws <see cref="FormatException"/> with a message
+    /// meant for the terminal.
     /// </summary>
     internal static Dictionary<string, object?> ParseArguments(
         JsonElement inputSchema, IReadOnlyList<string> tokens, Func<string> readStdin)
@@ -160,9 +159,9 @@ internal static class Call
     }
 
     /// <summary>
-    /// Result to console: the structured payload — or the text blocks when there is none — goes to
-    /// stdout as the process's one product; an error's text goes to stderr. The exit code says
-    /// which happened, so a script can pipe stdout into a JSON reader and trust what arrives.
+    /// Result to console: the structured payload, or the text blocks when there is none, goes to
+    /// stdout; an error's text goes to stderr. The exit code says which happened, so a script can
+    /// pipe stdout into a JSON reader and trust what arrives.
     /// </summary>
     internal static int Render(CallToolResult result, TextWriter stdout, TextWriter stderr)
     {

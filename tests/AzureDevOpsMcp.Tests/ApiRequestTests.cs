@@ -4,9 +4,9 @@ using ModelContextProtocol;
 namespace AzureDevOpsMcp.Tests;
 
 /// <summary>
-/// The escape hatch's pure half. Three of these are the reason it can exist at all: it must not
-/// send this server's token anywhere but this organization, it must not hand back a value Azure
-/// DevOps marked secret, and it must refuse a method that writes unless writing is on.
+/// The escape hatch's pure half: it must not send this server's token anywhere but this
+/// organization, must not hand back a value Azure DevOps marked secret, and must refuse a
+/// writing method unless writing is on.
 /// </summary>
 public class ApiRequestTests
 {
@@ -20,8 +20,8 @@ public class ApiRequestTests
     [InlineData("_apis/identities", "vssps")]
     public void The_host_is_inferred_from_the_path_when_it_is_not_given(string path, string host)
     {
-        // Release Management is the one that costs a wrong answer rather than an error: a
-        // /_apis/release/ path on the core host answers 404, which reads as "no such definition".
+        // A /_apis/release/ path on the core host answers 404, which reads as "no such
+        // definition". Wrong answer, not an error.
         Assert.Equal(host, ApiRequest.ResolveHost(path, host: null));
     }
 
@@ -135,8 +135,8 @@ public class ApiRequestTests
     [Fact]
     public void The_mask_follows_the_flag_rather_than_the_endpoint()
     {
-        // The walk is over the parsed body, so a shape this server has never seen is masked on the
-        // same rule — which is the only way a passthrough can promise anything at all.
+        // The walk is over the parsed body, so a shape this server has never seen is masked on
+        // the same rule.
         var masked = ApiRequest.Mask(Parse(
             """{"some":{"thing":[{"nested":{"value":"hunter2","isSecret":true,"other":1}}]}}"""))!;
 
@@ -182,7 +182,7 @@ public class ApiRequestTests
     [Fact]
     public void A_filter_that_matches_nothing_is_null_rather_than_an_error()
     {
-        // "No such field" is an answer, and one the caller can act on without a second call.
+        // "No such field" is an answer the caller can act on without a second call.
         var body = Parse("""{"value":[{"name":"Dev"}]}""");
 
         Assert.Null(ApiRequest.Filter(body, "nope"));
@@ -193,8 +193,8 @@ public class ApiRequestTests
     [Fact]
     public void A_patch_document_is_sent_as_json_patch_because_nothing_else_reaches_a_work_item()
     {
-        // Why the inference exists: under application/json every work item PATCH gets a 400 on the
-        // content type, so the escape hatch cannot reach the endpoint at all.
+        // Under application/json every work item PATCH gets a 400 on the content type, so
+        // without the inference the escape hatch cannot reach the endpoint at all.
         Assert.Equal(
             ApiRequest.JsonPatchMediaType,
             ApiRequest.ContentType(

@@ -3,10 +3,9 @@ namespace AzureDevOpsMcp;
 /// <summary>
 /// Which machines a classic release stage would deploy to: the pure half of
 /// <c>get_release_definition_targets</c>. The tool reads the definition and the deployment groups
-/// it names; everything that decides what they add up to is here, so it can be tested without the
-/// service.
+/// it names; what they add up to is decided here, so it can be tested without the service.
 ///
-/// Three rules. Each gives a wrong answer, not an error, if assumed away:
+/// Each of these rules gives a wrong answer, not an error, if assumed away:
 /// <list type="bullet">
 /// <item><c>phaseType</c> decides what <c>queueId</c> means. On a <c>machineGroupBasedDeployment</c>
 /// phase it is a deployment group. On an <c>agentBasedDeployment</c> phase it is an agent queue,
@@ -21,10 +20,10 @@ namespace AzureDevOpsMcp;
 /// result says <c>allMachines: true</c> outright.</item>
 /// </list>
 ///
-/// Two findings are kept visible. A phase whose tags select nothing reports <c>machines: []</c>
-/// beside the group's <c>machineCount</c>, because a deploy to zero targets succeeds and looks
-/// like a good deployment. A group that could not be read puts the error on that phase instead of
-/// failing the whole definition, since the other stages still have answers.
+/// A phase whose tags select nothing reports <c>machines: []</c> beside the group's
+/// <c>machineCount</c>, because a deploy to zero targets succeeds and looks like a good
+/// deployment. A group that could not be read puts the error on that phase instead of failing the
+/// whole definition, since the other stages still have answers.
 /// </summary>
 internal static class Targeting
 {
@@ -55,9 +54,9 @@ internal static class Targeting
     }
 
     /// <summary>
-    /// A definition resolved to targets, with environments and phases in rank order. The raw arrays
-    /// are not (measured: one definition arrives Production-then-QA while the ranks say the
-    /// reverse). <paramref name="groups"/> holds the groups that were read and
+    /// A definition resolved to targets, with environments and phases sorted by rank. The raw
+    /// arrays are not sorted: measured, one definition arrives Production-then-QA while the ranks
+    /// say the reverse. <paramref name="groups"/> holds the groups that were read and
     /// <paramref name="errors"/> says why the others were not, both keyed by group id.
     /// </summary>
     internal static ReleaseTargetsDto Resolve(
@@ -85,8 +84,8 @@ internal static class Targeting
         var input = phase.DeploymentInput;
         if (!IsMachineGroup(phase.PhaseType))
         {
-            // Nothing to resolve: an agent pool or the server runs this. Report the type; the
-            // common case leaves it out.
+            // An agent pool or the server runs this, so there are no machines to resolve. Report
+            // the type; the common case leaves it out.
             return new PhaseTargetsDto(
                 phase.Name, phase.PhaseType, null, input?.QueueId is > 0 ? input.QueueId : null,
                 null, null, null, null);
@@ -107,7 +106,7 @@ internal static class Targeting
             return new PhaseTargetsDto(
                 phase.Name, null, Mapping.DeploymentGroup(group, includeMachines: false), null,
                 tagList, allMachines,
-                // Empty is the finding here, not padding: the tags selected nothing.
+                // An empty list is the finding: the tags selected nothing.
                 Mapping.DeploymentMachines(Select(group.Machines ?? [], tags)) ?? [],
                 null);
         }

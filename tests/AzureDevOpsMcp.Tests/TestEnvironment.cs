@@ -11,7 +11,7 @@ namespace AzureDevOpsMcp.Tests;
 internal static class TestEnvironment
 {
     /// <summary>
-    /// <see cref="AdoMcpLog.Level"/>, <see cref="AdoMcpLog.Content"/> and <see cref="AdoMcpLog.Dir"/>
+    /// <see cref="AdoMcpLog.Level"/>, <see cref="AdoMcpLog.LogContent"/> and <see cref="AdoMcpLog.Dir"/>
     /// are read once at type initialization, so a developer's exported values would otherwise decide
     /// what the tests assert. Clear them before any test touches the type, and point the log dir at a
     /// temp folder so a stray file sink cannot append to the real ado-mcp.log.

@@ -1,6 +1,6 @@
-# Validates a pull request, and main after it lands. Build and test only: nothing here publishes,
-# tags or touches the tool store, and nothing needs a secret. The servers' TEAMS_MCP_* /
-# ADO_MCP_* contract is a runtime concern, and no test talks to Graph or Azure DevOps.
+# Builds and tests a pull request, and main after it lands. Nothing here publishes, tags, touches
+# the tool store or needs a secret. No test talks to Graph or Azure DevOps, so the servers'
+# TEAMS_MCP_* / ADO_MCP_* environment never comes up.
 name: pr
 
 on:
@@ -12,7 +12,7 @@ on:
 permissions:
   contents: read
 
-# One run per pull request. Pushing again abandons the run that is now out of date. Keyed on the
+# One run per pull request; pushing again abandons the run that is now out of date. Keyed on the
 # pull request number where there is one and on the ref otherwise, so a push to main never cancels
 # a pull request's run or vice versa.
 concurrency:
@@ -21,8 +21,8 @@ concurrency:
 
 jobs:
   build:
-    # Windows-first on purpose, matching where these servers actually run: the MSAL token cache is
-    # DPAPI-protected here, and `install` detects clients by the paths a Windows checkout has.
+    # Windows, matching where these servers run: the MSAL token cache is DPAPI-protected here, and
+    # `install` detects clients by the paths a Windows checkout has.
     runs-on: windows-latest
 
     steps:
@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           # Nerdbank.GitVersioning derives the patch from git height, so a shallow clone (the
-          # default) produces a wrong version or fails the build outright.
+          # default) produces a wrong version or fails the build.
           fetch-depth: 0
 
       - name: Set up .NET 10
@@ -49,9 +49,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'nbgv could not compute a version.' }
           $v = $raw | ConvertFrom-Json
 
-          # A pull request is built from refs/pull/N/merge, which is not a public release ref, so
-          # this build is always a prerelease. SimpleVersion is what the same commit ships as once
-          # it is on main, the number the reviewer actually wants to see.
+          # A pull request builds refs/pull/N/merge, which is not a public release ref, so this
+          # build is always a prerelease. SimpleVersion is what the same commit ships as once it is
+          # on main, which is the number a reviewer wants.
           "### Version" | Out-File $env:GITHUB_STEP_SUMMARY -Append
           "" | Out-File $env:GITHUB_STEP_SUMMARY -Append
           "| | |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
@@ -68,13 +68,13 @@ jobs:
         run: dotnet restore McpServers.slnx
 
       # -warnaserror after an explicit restore, so a restore warning (a resolved-but-mismatched
-      # package, say) is reported where it happens rather than failing the compile step.
+      # package, say) is reported where it happens instead of failing the compile step.
       - name: Build
         run: dotnet build McpServers.slnx --configuration Release --no-restore -warnaserror
 
-      # `--logger trx` without a LogFileName on purpose: both test projects write into one results
-      # directory, and a fixed name means the second run silently overwrites the first. The
-      # default name disambiguates. Which project a file belongs to is read out of the file below.
+      # `--logger trx` with no LogFileName on purpose: both test projects write into one results
+      # directory, and a fixed name means the second run silently overwrites the first. The default
+      # name disambiguates. The step below reads which project a file belongs to out of the file.
       - name: Test
         run: >
           dotnet test McpServers.slnx --configuration Release --no-build
@@ -82,7 +82,7 @@ jobs:
           --results-directory artifacts/test-results
 
       - name: Summarise the test results
-        # Runs on failure too. A red build is exactly when the counts matter.
+        # Runs on failure too: a red build is when the counts matter.
         if: always()
         shell: pwsh
         run: |

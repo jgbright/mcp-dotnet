@@ -39,8 +39,8 @@ public class OutputSchemaTests
     [Fact]
     public void A_nullable_field_is_not_required()
     {
-        // list_projects returns these, and a project with no description is what broke a real
-        // session: the payload omits `description`, the schema demanded it, the client rejected it.
+        // A real session broke on this: list_projects hit a project with no description, so the
+        // payload omitted `description`, the schema demanded it, and the client rejected it.
         var relaxed = OutputSchemas.Relax(Listing<List<ProjectDto>>());
 
         Assert.Empty(Required(relaxed.Tools[0], "items"));
@@ -65,11 +65,11 @@ public class OutputSchemaTests
     }
 
     [Fact]
-    public void Stamping_the_listing_relaxes_it()
+    public void Preparing_the_listing_relaxes_it()
     {
-        // The filter in Program.cs only calls Stamp, so the relaxation has to happen underneath it.
-        var stamped = ToolListing.Stamp(Listing<List<ProjectDto>>(), requestCursor: null);
+        // The filter in Program.cs only calls Prepare, so the relaxation has to happen underneath it.
+        var prepared = ToolListing.Prepare(Listing<List<ProjectDto>>(), requestCursor: null);
 
-        Assert.Empty(Required(stamped.Tools[0], "items"));
+        Assert.Empty(Required(prepared.Tools[0], "items"));
     }
 }

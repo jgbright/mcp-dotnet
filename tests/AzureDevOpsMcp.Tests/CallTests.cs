@@ -4,9 +4,9 @@ using ModelContextProtocol.Protocol;
 namespace AzureDevOpsMcp.Tests;
 
 /// <summary>
-/// The `call` verb's pure halves: command-line tokens into tool arguments against the tool's input
-/// schema, and a tool result into console output. The transport wiring around them is verified by
-/// hand (`-- call`), like everything else that drives the real server.
+/// The `call` verb's pure halves: command-line tokens into tool arguments against the tool's
+/// input schema, and a tool result into console output. The transport wiring around them is
+/// verified by hand (`-- call`).
 /// </summary>
 public class CallTests
 {
@@ -27,7 +27,7 @@ public class CallTests
 
     private static string NoStdin() => throw new InvalidOperationException("stdin was read");
 
-    // ---------------------------------------------------------------- KEY=VALUE pairs
+    // KEY=VALUE pairs
 
     [Fact]
     public void Pairs_coerce_to_what_the_schema_declares()
@@ -62,7 +62,7 @@ public class CallTests
     public void No_tokens_means_no_arguments()
         => Assert.Empty(Call.ParseArguments(Schema, [], NoStdin));
 
-    // ------------------------------------------------------------------- refusals
+    // refusals
 
     [Fact]
     public void An_unknown_key_fails_listing_what_the_tool_takes()
@@ -104,7 +104,7 @@ public class CallTests
         Assert.Contains("limit", e.Message);
     }
 
-    // ------------------------------------------------------------- JSON object forms
+    // JSON object forms
 
     [Fact]
     public void A_single_json_object_argument_passes_through_untouched()
@@ -133,7 +133,7 @@ public class CallTests
             () => Call.ParseArguments(Schema, ["-"], () => "[1,2]"));
     }
 
-    // -------------------------------------------------------------------- rendering
+    // rendering
 
     private static (int Code, string Out, string Err) Rendered(CallToolResult result)
     {
@@ -184,7 +184,7 @@ public class CallTests
         Assert.Contains("req=3", stderr);
     }
 
-    // ------------------------------------------------------------- name resolution
+    // name resolution
 
     private static readonly string[] Names =
         ["get_work_item", "list_projects", "list_repos", "search_work_items"];
@@ -220,7 +220,7 @@ public class CallTests
         Assert.Contains("list_repos", e.Message);
     }
 
-    // ------------------------------------------------------------------- completion
+    // completion
 
     [Fact]
     public void Tool_names_back_shell_completion_without_building_the_server()

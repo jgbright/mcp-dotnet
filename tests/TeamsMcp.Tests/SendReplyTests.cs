@@ -4,8 +4,8 @@ namespace TeamsMcp.Tests;
 
 /// <summary>
 /// A quoted reply is refused in the self chat, where Graph accepts the call and silently drops the
-/// quote. The refusal is the whole feature here: the message it prevents looks sent and renders as
-/// an empty box, so nothing downstream would report a problem.
+/// quote. Without the refusal the message looks sent and renders as an empty box, so nothing
+/// downstream reports a problem.
 /// </summary>
 public class SendReplyTests
 {

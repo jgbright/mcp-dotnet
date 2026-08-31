@@ -8,11 +8,11 @@
   </PropertyGroup>
 
   <!-- Packs as a .NET global tool: `dotnet pack` then `dotnet tool install` puts `ado-mcp` on the
-       PATH, so an MCP client can launch it by name rather than by a dotnet run against this path. -->
+       PATH, so an MCP client launches it by name instead of a dotnet run against this path. -->
   <PropertyGroup>
     <PackAsTool>true</PackAsTool>
-    <!-- See the note in TeamsMcp.csproj: AzureDevOpsMcp, AdoMcp and AdoMcpServer are all taken on
-         nuget.org by unrelated packages, so the ids here carry an owner prefix. -->
+    <!-- Owner-prefixed: AzureDevOpsMcp, AdoMcp and AdoMcpServer are all taken on nuget.org by
+         unrelated packages. TeamsMcp.csproj has the rest of the reasoning. -->
     <PackageId>JasonBright.Mcp.AzureDevOps</PackageId>
     <ToolCommandName>ado-mcp</ToolCommandName>
     <Description>
@@ -33,8 +33,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- No Azure DevOps client SDK on purpose: the tools drive the REST API through a small typed
-         HttpClient wrapper so that paging, requested fields and HTTP logging stay under our control. -->
+    <!-- No Azure DevOps client SDK: the tools drive the REST API through a small typed HttpClient
+         wrapper, so paging, requested fields and HTTP logging stay under our control. -->
     <PackageReference Include="Azure.Identity" Version="1.21.0" />
     <PackageReference Include="System.CommandLine" Version="2.0.10" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />

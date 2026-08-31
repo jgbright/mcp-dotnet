@@ -5,27 +5,13 @@ using ModelContextProtocol.Server;
 
 namespace AzureDevOpsMcp;
 
-/// <summary>
-/// What a tool call sends back. <c>UseStructuredContent</c> is on for every tool because the
-/// <c>outputSchema</c> it puts in <c>tools/list</c> tells a model the shape of a result before it
-/// spends a call finding out, which makes a chain like <c>get_pull_request</c> then
-/// <c>add_pull_request_comment</c> plannable. That schema is a one-time cost, and
-/// <see cref="ToolListing"/> makes it a cacheable one.
-///
-/// The flag also makes the SDK fill both <c>content</c> (the result as escaped JSON inside a text
-/// block) and <c>structuredContent</c> (the same result as native JSON). Measured, they are byte
-/// for byte the same data, with the text copy larger since it escapes every quote, so
-/// <see cref="ToolResults.Trim"/> drops it.
-/// </summary>
+/// <summary>Which tools may answer as a task handle instead of holding the request open.</summary>
 internal static class ToolExecution
 {
     /// <summary>
-    /// The tools that may run long enough to hand back as a task handle instead of holding a
-    /// request open. Everything else answers in a round trip or two and stays synchronous.
-    ///
-    /// Named rather than derived, because nothing on a tool says it blocks.
-    /// <c>ToolListingTests</c> checks every name here is a tool that exists, so a rename cannot
-    /// quietly drop a waiter back to synchronous.
+    /// Tools that can run long enough to hand back a task handle. Nothing on a tool says it blocks,
+    /// so the names are listed here; <c>ToolListingTests</c> checks each one is a tool that exists,
+    /// so a rename cannot quietly drop a waiter back to synchronous.
     /// </summary>
     internal static readonly HashSet<string> LongRunning =
         ["wait_for_pipeline_run", "wait_for_pull_request", "wait_for_release"];
@@ -34,17 +20,25 @@ internal static class ToolExecution
         primitive is McpServerTool tool && LongRunning.Contains(tool.ProtocolTool.Name);
 }
 
+/// <summary>
+/// What a tool call sends back. Every tool sets <c>UseStructuredContent</c>, so <c>tools/list</c>
+/// carries an <c>outputSchema</c> and a model knows the shape of a result before spending a call to
+/// find out. That makes a chain like <c>get_pull_request</c> then <c>add_pull_request_comment</c>
+/// plannable, and <see cref="ToolListing"/> makes the schema a cached one-time cost.
+///
+/// The flag also makes the SDK fill both <c>content</c> (the result as escaped JSON inside a text
+/// block) and <c>structuredContent</c> (the same result as native JSON). Measured, they are byte
+/// for byte the same data, and the text copy is larger because it escapes every quote, so
+/// <see cref="ToolResults.Trim"/> drops it.
+/// </summary>
 internal static class ToolResults
 {
     /// <summary>
-    /// Drops the duplicated text block, keeping the native JSON. Two results keep their text:
-    /// <list type="bullet">
-    /// <item>An error, whose message is the one thing every caller must be able to read.</item>
-    /// <item>A structured payload that is not a JSON object. Only 2026-07-28 allows
-    /// <c>structuredContent</c> to be any JSON value, and these servers still answer older
-    /// clients, so the tools returning a bare array keep a text block those clients can
-    /// read.</item>
-    /// </list>
+    /// Drops the duplicated text block, keeping the native JSON. Two results keep their text: an
+    /// error, whose message is the one thing every caller must be able to read, and a structured
+    /// payload that is not a JSON object. <c>structuredContent</c> may be any JSON value only from
+    /// 2026-07-28 on, and these servers still answer older clients, so a tool returning a bare array
+    /// keeps a text block those clients can read.
     /// </summary>
     internal static CallToolResult Trim(CallToolResult result)
     {
@@ -62,31 +56,30 @@ internal static class ToolResults
 /// that revision logs a warning when a server omits <c>ttlMs</c>/<c>cacheScope</c>, and without
 /// them it must treat every listing as immediately stale.
 ///
-/// This server can answer honestly because its tool list is fixed at compile time. Every tool is
+/// This server can answer honestly because its tool list is fixed at compile time: every tool is
 /// declared by attribute and scanned once by <c>WithToolsFromAssembly</c>, and nothing appears or
-/// disappears at runtime. The write tools are always listed and refuse in
-/// <see cref="AdoTools.RequireWriteEnabled"/> at call time instead of being hidden, so even the
-/// mutation gate does not vary the listing. The same list goes to every caller, which is what
-/// <see cref="CacheScope.Public"/> asserts.
+/// disappears at runtime. The write tools are listed even when disabled and refuse in
+/// <see cref="AdoTools.RequireWriteEnabled"/> at call time, so the mutation gate does not vary the
+/// listing either. Every caller gets the same list, so <see cref="CacheScope.Public"/> is honest.
 ///
-/// The ordering serves the same intent. <c>WithToolsFromAssembly</c> lists tools in reflection
-/// order, which is not stable across builds, and the spec asks for a deterministic order so a
-/// client can cache the listing and a model's prompt cache stays warm.
+/// <c>WithToolsFromAssembly</c> lists tools in reflection order, which is not stable across builds,
+/// so the listing is sorted. The spec asks for a deterministic order so a client can cache the
+/// listing and a model's prompt cache stays warm.
 /// </summary>
 internal static class ToolListing
 {
     /// <summary>
-    /// Long enough that a client re-lists when it restarts the server rather than on a timer, short
-    /// enough that a version upgrade underneath a long-lived client is picked up the same day.
+    /// Long enough that a client re-lists on restart rather than on a timer, short enough that a
+    /// version upgrade under a long-lived client is picked up the same day.
     /// </summary>
     internal static readonly TimeSpan Ttl = TimeSpan.FromHours(1);
 
     /// <summary>
-    /// Stamps the caching hints and sorts the listing. Sorting is skipped for a paginated
-    /// response, where reordering one page of many would misreport the cursor the underlying
-    /// handler issued against its own order. The TTL is stamped on every page.
+    /// Stamps the caching hints and sorts the listing. A paginated response is not sorted:
+    /// reordering one page of many would misreport the cursor the underlying handler issued against
+    /// its own order. The TTL is stamped on every page.
     /// </summary>
-    internal static ListToolsResult Stamp(ListToolsResult result, string? requestCursor)
+    internal static ListToolsResult Prepare(ListToolsResult result, string? requestCursor)
     {
         OutputSchemas.Relax(result);
 
@@ -108,19 +101,18 @@ internal static class ToolListing
 /// Results are serialized with <c>DefaultIgnoreCondition = WhenWritingNull</c>, so a null field is
 /// absent from the payload rather than present as <c>null</c>. The schema generator does not know
 /// that. It derives <c>required</c> from the constructor, and a positional record parameter with no
-/// default value is required whether or not its type is nullable — so every DTO here advertises
-/// every field as required while the server omits the null ones.
+/// default value is required whether or not its type is nullable, so every DTO here advertises every
+/// field as required while the server omits the null ones.
 ///
-/// A client that validates <c>structuredContent</c> against the advertised schema therefore rejects
-/// an otherwise good result: a project with no description, a work item with no assignee, a build
-/// that has not finished. The whole call fails, and because <see cref="ToolResults.Trim"/> has
-/// already dropped the text copy there is nothing left to fall back on.
+/// A client that validates <c>structuredContent</c> against the advertised schema then rejects a
+/// good result: a project with no description, a work item with no assignee, a build that has not
+/// finished. The whole call fails, and <see cref="ToolResults.Trim"/> has already dropped the text
+/// copy, so there is nothing left to fall back on.
 ///
-/// Dropping the nullable fields from <c>required</c> is the honest fix: it makes the schema say what
-/// this server has always done, and it holds for DTOs added later without anyone remembering to
-/// annotate them. The alternative — a default value on every nullable record parameter — is what the
-/// generator would read, but it cannot be applied here without reordering positional parameters,
-/// since an optional parameter may not precede a required one.
+/// Dropping the nullable fields from <c>required</c> makes the schema say what this server actually
+/// does, and it covers DTOs added later without anyone remembering to annotate them. Giving every
+/// nullable record parameter a default value is what the generator would read, but it would mean
+/// reordering positional parameters, since an optional parameter may not precede a required one.
 /// </summary>
 internal static class OutputSchemas
 {
@@ -149,7 +141,7 @@ internal static class OutputSchemas
     /// <summary>
     /// Walks every schema node, dropping from each object's <c>required</c> list the properties
     /// whose own schema admits null. Returns whether anything changed, so a schema that needed
-    /// nothing is left byte for byte as the generator produced it.
+    /// nothing is left exactly as the generator produced it.
     /// </summary>
     private static bool Relax(JsonNode? node)
     {
@@ -194,8 +186,8 @@ internal static class OutputSchemas
                     }
                 }
 
-                // Nested shapes: property schemas, array items, $defs, and the composition
-                // keywords. Materialized first, since the loop above may have replaced a member.
+                // Nested shapes: property schemas, array items, $defs, composition keywords.
+                // Materialized first, since the loop above may have replaced a member.
                 foreach (var (_, value) in o.ToList())
                 {
                     changed |= Relax(value);
@@ -207,9 +199,9 @@ internal static class OutputSchemas
     }
 
     /// <summary>
-    /// Whether a property's schema permits null, which is what the serializer's null-omission turns
-    /// into an absent field. Covers the two forms the generator emits — <c>"type": "null"</c> and a
-    /// type union containing it — plus a null branch of <c>anyOf</c>/<c>oneOf</c>.
+    /// Whether a property's schema permits null, which the serializer turns into an absent field.
+    /// Covers the two forms the generator emits, <c>"type": "null"</c> and a type union containing
+    /// it, plus a null branch of <c>anyOf</c>/<c>oneOf</c>.
     /// </summary>
     private static bool AdmitsNull(JsonNode? schema)
     {

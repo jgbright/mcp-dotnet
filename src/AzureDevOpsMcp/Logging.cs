@@ -7,9 +7,8 @@ namespace AzureDevOpsMcp;
 /// <summary>
 /// Logging configuration and formatting helpers.
 ///
-/// The server runs headless under an MCP client, so stderr is often swallowed. Everything is
-/// therefore also written to a file at <see cref="FilePath"/>. That file is the primary
-/// troubleshooting surface: one line per event, stable event names to grep for, and a
+/// Under an MCP client nobody sees stderr, so everything also goes to a file at
+/// <see cref="FilePath"/>: one line per event, stable event names to grep for, and a
 /// <c>req=N</c> correlation id tying a tool call to the REST calls it made.
 /// </summary>
 public static class AdoMcpLog
@@ -34,9 +33,9 @@ public static class AdoMcpLog
     /// <summary>
     /// ADO_MCP_LOG_CONTENT=true logs work item descriptions, PR descriptions and comment bodies.
     /// Off by default: the log file would otherwise accumulate user-authored prose in plain text.
-    /// Organization and project names are not content and are always logged in full.
+    /// Organization and project names are addresses, not content, and are always logged in full.
     /// </summary>
-    public static bool Content { get; } =
+    public static bool LogContent { get; } =
         string.Equals(Environment.GetEnvironmentVariable("ADO_MCP_LOG_CONTENT"), "true",
             StringComparison.OrdinalIgnoreCase);
 
@@ -68,21 +67,19 @@ public static class AdoMcpLog
 
     /// <summary>
     /// User-authored prose (work item and PR descriptions, comment bodies): logged verbatim only
-    /// when ADO_MCP_LOG_CONTENT=true, otherwise reduced to a length so you can still tell empty
-    /// from non-empty.
+    /// when ADO_MCP_LOG_CONTENT=true, otherwise reduced to a length so empty still reads as empty.
     /// </summary>
     public static string ContentArg(string name, string? value) => value switch
     {
         null => "",
-        _ when Content => Arg(name, value),
+        _ when LogContent => Arg(name, value),
         _ => $" {name}.len={value.Length}",
     };
 
     private static string Quote(string s)
     {
-        // Backslashes are not escaped on purpose: nearly every quoted value here is a Windows
-        // path or an area path, and "C:\\Users\\..." is worse to read and to paste than the
-        // ambiguity is worth.
+        // Backslashes are not escaped on purpose: nearly every quoted value is a Windows path or
+        // an area path, and "C:\\Users\\..." is worse to read and paste than the ambiguity is.
         var text = s.Length > MaxValueChars ? s[..MaxValueChars] + "…" : s;
         text = text.Replace("\"", "'").Replace("\r", "").Replace("\n", "\\n");
         return $"\"{text}\"";
@@ -108,8 +105,7 @@ public static class AdoMcpLog
 
 /// <summary>
 /// The startup banner: which build is running, whether the ids and the organization are set,
-/// whether sign-in has happened, and where the knobs sit. Read the top of the log file and you
-/// know the environment.
+/// whether sign-in has happened, and where the knobs sit.
 /// </summary>
 public static class Diagnostics
 {
@@ -124,9 +120,9 @@ public static class Diagnostics
             AdoMcpLog.Arg("pid", AdoMcpLog.Pid) +
             AdoMcpLog.Arg("cwd", Environment.CurrentDirectory));
 
-        // Tenant and client ids are reported by shape only. The organization URL and the default
-        // project are addresses rather than credentials, so they are logged in full. A wrong
-        // organization is otherwise invisible in the log.
+        // Tenant and client ids are reported by shape only. The organization URL and default
+        // project are addresses, not credentials, so they are logged in full: a wrong organization
+        // is otherwise invisible in the log.
         log.Line(LogLevel.Information, Ev.Startup,
             "config" +
             AdoMcpLog.Arg("ADO_MCP_TENANT_ID", Describe("ADO_MCP_TENANT_ID")) +
@@ -143,7 +139,7 @@ public static class Diagnostics
             AdoMcpLog.Arg("writeEnabled", AdoContext.WriteEnabled) +
             AdoMcpLog.Arg("approvalEnabled", AdoContext.ApprovalEnabled) +
             AdoMcpLog.Arg("logLevel", AdoMcpLog.Level.ToString()) +
-            AdoMcpLog.Arg("logContent", AdoMcpLog.Content) +
+            AdoMcpLog.Arg("logContent", AdoMcpLog.LogContent) +
             AdoMcpLog.Arg("logFile", AdoMcpLog.FilePath));
 
         var record = AdoContext.RecordPath;

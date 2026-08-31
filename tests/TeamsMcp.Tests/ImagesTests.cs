@@ -8,7 +8,7 @@ namespace TeamsMcp.Tests;
 /// <summary>
 /// The local half of download_message_images: target validation, byte sniffing, share-URL
 /// encoding, and file naming. The Graph half (hosted contents, drive items) is verified by hand
-/// with `-- call`, like everything else that talks to the service.
+/// with `-- call`.
 /// </summary>
 public class ImagesTests
 {

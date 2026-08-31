@@ -5,11 +5,10 @@ namespace TeamsMcp;
 
 /// <summary>
 /// Markdown to Teams HTML, for the send tools' <c>format: "markdown"</c>. A model writes markdown
-/// far more reliably than hand-balanced HTML, so the conversion happens server-side, targeting
-/// only the subset Teams chat actually renders: paragraphs, headings, bold/italic, links, inline
-/// code and fenced blocks, lists, blockquotes and rules. Text content is HTML-escaped first, so
-/// markup in the input arrives as literal characters rather than being interpreted — the only
-/// tags in the output are the ones this converter emits.
+/// far more reliably than hand-balanced HTML, so the conversion happens server-side, covering only
+/// the subset Teams chat renders: paragraphs, headings, bold/italic, links, inline code and fenced
+/// blocks, lists, blockquotes and rules. Text content is HTML-escaped first, so the only tags in
+/// the output are the ones this converter emits.
 /// </summary>
 internal static partial class Markdown
 {
@@ -103,10 +102,10 @@ internal static partial class Markdown
 
     /// <summary>
     /// Spacing is explicit because Teams chat renders <c>&lt;p&gt;</c> with no margin (measured in
-    /// the web client — adjacent paragraphs touch). Consecutive paragraphs therefore merge into one
-    /// <c>&lt;p&gt;</c> separated by a double <c>&lt;br/&gt;</c>: a literal blank line on every
-    /// client, independent of CSS. A heading gets an <c>&amp;nbsp;</c> spacer paragraph above it —
-    /// the same idiom the Teams composer emits for a blank line — except at the start or under
+    /// the web client: adjacent paragraphs touch). Consecutive paragraphs merge into one
+    /// <c>&lt;p&gt;</c> separated by a double <c>&lt;br/&gt;</c>, which is a literal blank line on
+    /// every client, independent of CSS. A heading gets an <c>&amp;nbsp;</c> spacer paragraph above
+    /// it, the idiom the Teams composer emits for a blank line, except at the start or under
     /// another heading. Lists, code blocks and quotes carry their own margins and get nothing.
     /// </summary>
     private static string Assemble(List<(Block Kind, string Html)> blocks)
@@ -142,8 +141,9 @@ internal static partial class Markdown
     /// <summary>
     /// Inline markup on one already-block-parsed piece of text. Code spans, links and bare URLs
     /// are converted first and stashed as placeholder tokens, so the emphasis passes cannot reach
-    /// into a URL (underscores are routine there) or a code span; the ADO-style word-boundary
-    /// emphasis regexes then keep identifiers like <c>body_limit</c> intact in prose too.
+    /// into a URL (underscores are routine there) or a code span. The four emphasis regexes are
+    /// copies of the Azure DevOps server's in <c>Text.cs</c>: they match only at word boundaries,
+    /// so identifiers like <c>body_limit</c> stay intact in prose too.
     /// </summary>
     private static string Inline(string text)
     {

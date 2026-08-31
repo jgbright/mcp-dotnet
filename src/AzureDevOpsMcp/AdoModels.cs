@@ -5,17 +5,16 @@ namespace AzureDevOpsMcp;
 
 // ----------------------------------------------------------------------- wire models
 //
-// Shapes as Azure DevOps actually returns them. Everything is nullable on purpose: these are
-// deserialized straight off the wire and a field that is documented as present is still absent
-// often enough (older API versions, partial `fields` projections, records the caller cannot see)
-// that assuming presence is how a tool ends up throwing NullReferenceException at a user.
+// Shapes as Azure DevOps returns them. Everything is nullable because fields documented as
+// present are often absent anyway (older API versions, partial `fields` projections, records the
+// caller cannot see), and assuming presence throws NullReferenceException at a user.
 
 internal sealed record ListResponse<T>(int Count, List<T>? Value);
 
 internal sealed record WireIdentity(
     string? DisplayName, string? UniqueName, string? Id,
-    // connectionData names the signed-in user this way instead. Defaulted so it deserializes by
-    // name without disturbing positional construction everywhere else.
+    // connectionData names the signed-in user this way instead. Defaulted so it binds by name
+    // without disturbing positional construction elsewhere.
     string? ProviderDisplayName = null);
 
 internal sealed record WireConnectionData(WireIdentity? AuthenticatedUser);
@@ -69,16 +68,16 @@ internal sealed record WirePipeline(int Id, string? Name, string? Folder, int? R
 internal sealed record WireBuildDefinition(int Id, string? Name);
 
 /// <summary>
-/// A pipeline run as the build API returns it. A run id and a build id are the same number, and the
-/// build endpoints are the ones that take a run id without also needing its pipeline id, that
-/// filter and page properly, and that carry the timeline, so runs are read through them.
+/// A pipeline run as the build API returns it. A run id and a build id are the same number. Runs
+/// are read through the build endpoints: they take a run id without its pipeline id, filter and
+/// page properly, and carry the timeline.
 /// </summary>
 internal sealed record WireBuild(
     int Id, string? BuildNumber, string? Status, string? Result, DateTimeOffset? QueueTime,
     DateTimeOffset? StartTime, DateTimeOffset? FinishTime, string? SourceBranch,
     WireBuildDefinition? Definition, WireIdentity? RequestedFor, WireProjectRef? Project,
-    // Defaulted so they deserialize by name without disturbing positional construction elsewhere.
-    // For a TFVC build sourceVersion is the changeset number as a bare string. For git, a commit SHA.
+    // Defaulted so they bind by name without disturbing positional construction elsewhere.
+    // sourceVersion is the changeset number as a bare string for TFVC, a commit SHA for git.
     string? SourceVersion = null,
     WireBuildRepositoryRef? Repository = null);
 
@@ -103,8 +102,8 @@ internal sealed record WireTfvcChangesetRef(
     int ChangesetId, WireIdentity? Author, DateTimeOffset? CreatedDate, string? Comment);
 
 // Release Management (classic release pipelines). These live on the vsrm host (see
-// Deployments.VsrmBaseUrl), and the artifact reference is stringly typed on the wire:
-// definitionReference carries name/id pairs whose ids are numbers serialized as strings.
+// Deployments.VsrmBaseUrl). The artifact reference is stringly typed: definitionReference carries
+// name/id pairs whose ids are numbers serialized as strings.
 
 internal sealed record WireReleaseDefEnvironment(int Id, string? Name, int? Rank);
 
@@ -126,10 +125,10 @@ internal sealed record WireArtifactDefinitionReference(WireArtifactPart? Definit
 internal sealed record WireReleaseArtifact(
     string? Alias, string? Type, bool? IsPrimary, WireArtifactDefinitionReference? DefinitionReference);
 
-// A release read whole. `environments` arrives on the listing under $expand=environments and on a
-// single release always; the per-task detail inside deploySteps needs $expand=tasks, without which
-// releaseDeployPhases comes back empty and a failed deployment looks unexplained. The fields after
-// Artifacts are defaulted so deployment_status, which asks for none of them, still constructs.
+// A release read whole. `environments` needs $expand=environments on the listing and always
+// arrives on a single release. The per-task detail inside deploySteps needs $expand=tasks; without
+// it releaseDeployPhases comes back empty and a failed deployment looks unexplained. The fields
+// after Artifacts are defaulted so deployment_status, which asks for none, still constructs.
 internal sealed record WireRelease(
     int Id, string? Name, List<WireReleaseArtifact>? Artifacts,
     string? Status = null, string? Reason = null, string? Description = null,
@@ -142,8 +141,8 @@ internal sealed record WireReleaseEnvironment(
     List<WireReleaseApproval>? PreDeployApprovals, List<WireReleaseApproval>? PostDeployApprovals);
 
 /// <summary>
-/// One try at deploying a stage. A redeploy adds an attempt rather than replacing the last one,
-/// so what happened "this time" is the highest <c>attempt</c>, not the first in the list.
+/// One try at deploying a stage. A redeploy adds an attempt instead of replacing the last one, so
+/// what happened this time is the highest <c>attempt</c>, not the first in the list.
 /// </summary>
 internal sealed record WireDeploymentAttempt(
     int Attempt, int? DeploymentId, string? Status, string? OperationStatus,
@@ -154,7 +153,6 @@ internal sealed record WireReleaseDeployPhase(
     string? Name, string? PhaseType, int? Rank, string? Status, DateTimeOffset? StartedOn,
     List<WireDeploymentJob>? DeploymentJobs);
 
-/// <summary>The job itself plus the tasks inside it, both as the same ReleaseTask shape.</summary>
 internal sealed record WireDeploymentJob(WireReleaseTask? Job, List<WireReleaseTask>? Tasks);
 
 internal sealed record WireReleaseTask(
@@ -173,11 +171,10 @@ internal sealed record WireReleaseApproval(
     DateTimeOffset? CreatedOn, DateTimeOffset? ModifiedOn, string? Comments, bool? IsAutomated,
     int? Rank, int? Attempt, WireReleaseRef? Release, WireReleaseRef? ReleaseEnvironment);
 
-// A release definition read whole (the by-id endpoint; the listing returns a summary). This is
-// where a classic pipeline says what it is configured to *do* rather than what it did: variables at
-// two scopes, the variable groups it pulls in, and per environment the phases and the tasks inside
-// them with their inputs. A variable arrives as a map entry name -> {value,isSecret,allowOverride},
-// and `variableGroups` is a list of bare ids at both scopes — the names cost a second request.
+// A release definition read whole (the by-id endpoint; the listing returns a summary): variables
+// at two scopes, the variable groups it pulls in, and per environment the phases and their tasks
+// with inputs. A variable is a map entry name -> {value,isSecret,allowOverride}; `variableGroups`
+// is a list of bare ids at both scopes, and the names cost a second request.
 
 internal sealed record WireReleaseVariable(string? Value, bool? IsSecret, bool? AllowOverride);
 
@@ -205,15 +202,15 @@ internal sealed record WireDeploymentInput(
     int? QueueId, List<string>? Tags, string? DeploymentHealthOption, int? HealthPercent,
     int? TimeoutInMinutes, string? Condition);
 
-// Deployment groups: the machines classic release stages deploy to. They live on the task agent
-// service at distributedtask/deploymentgroups, project-scoped on the core host. They are not the
-// ADO Environments that YAML pipelines deploy to (WireEnvironmentInstance), which sit next to them
+// Deployment groups: the machines classic release stages deploy to, on the task agent service at
+// distributedtask/deploymentgroups, project-scoped on the core host. They are not the ADO
+// Environments that YAML pipelines deploy to (WireEnvironmentInstance), which sit next to them
 // under distributedtask/environments. The listing rejects $expand=machines (400, "no longer
 // supported"); only the by-id read returns machines.
 //
-// Agent capabilities are left out on purpose. They are the agent process's environment variables.
-// The service does not mark them secret, and on a real agent they held a license key. The by-id
-// read does not return them, and no tool calls the endpoint that does.
+// Agent capabilities are left out: they are the agent's own environment variables, the service
+// does not mark them secret, and on a real agent they held a license key. The by-id read does
+// not return them, and no tool calls the endpoint that does.
 
 internal sealed record WireDeploymentGroup(
     int Id, string? Name, string? Description, int? MachineCount, List<WireDeploymentMachine>? Machines);
@@ -224,9 +221,9 @@ internal sealed record WireDeploymentAgent(
     int Id, string? Name, string? Version, string? OsDescription, bool? Enabled, string? Status);
 
 /// <summary>
-/// One configured task. Not <see cref="WireReleaseTask"/>, which is one task as it *ran*: this is
-/// flat (<c>taskId</c>/<c>version</c> rather than a nested task reference) and carries the
-/// <c>inputs</c> that say which files a transform touches.
+/// One configured task. Not <see cref="WireReleaseTask"/>, which is a task as it ran: this one is
+/// flat (<c>taskId</c>/<c>version</c>, no nested task reference) and carries the <c>inputs</c>
+/// that say which files a transform touches.
 /// </summary>
 internal sealed record WireWorkflowTask(
     string? TaskId, string? Version, string? Name, bool? Enabled, string? Condition,
@@ -242,7 +239,7 @@ internal sealed record WireBuildDefinitionDetail(int Id, string? Name, WireBuild
 
 // Pipeline (modern/YAML) deployables. Deployments into an ADO Environment arrive as
 // distributedtask environmentdeploymentrecords, newest first. A record's `owner` is the run
-// (= build) that performed it and `definition` is the pipeline it belongs to.
+// (= build) that performed it; `definition` is the pipeline it belongs to.
 
 internal sealed record WireEnvironmentInstance(int Id, string? Name);
 
@@ -257,7 +254,7 @@ internal sealed record WireGitAuthor(string? Name, string? Email, DateTimeOffset
 internal sealed record WireGitCommitRef(string? CommitId, WireGitAuthor? Author, string? Comment);
 
 // Search (code, work item, wiki). These arrive from the almsearch host (see Search.BaseUrl) and
-// highlight the matched terms with <highlighthit> markers, which are stripped before output.
+// mark matched terms with <highlighthit>, stripped before output.
 
 internal sealed record WireSearchRepository(string? Name, string? Id, string? Type);
 
@@ -293,8 +290,8 @@ internal sealed record WireWorkItemType(string? Name, string? ReferenceName);
 
 /// <summary>
 /// An identity as the vssps identity service returns it (see <see cref="Writes.VsspsBaseUrl"/>).
-/// The account (UPN) hides in <c>properties</c> as a <c>{$type, $value}</c> envelope, unwrapped by
-/// <see cref="Writes.IdentityValue"/>.
+/// The account (UPN) sits in <c>properties</c> inside a <c>{$type, $value}</c> envelope, unwrapped
+/// by <see cref="Writes.IdentityValue"/>.
 /// </summary>
 internal sealed record WireIdentitySearchResult(
     string? Id, string? ProviderDisplayName, string? CustomDisplayName,
@@ -306,8 +303,8 @@ internal sealed record WireTeamFieldValues(string? DefaultValue, List<WireTeamFi
 
 // ------------------------------------------------------------------------ output DTOs
 //
-// Shaped for a model's context window: every field that is uninteresting is null, and the
-// serializer (configured in Program.cs) omits nulls entirely.
+// Shaped for a model's context window: uninteresting fields are null and the serializer
+// (configured in Program.cs) omits nulls.
 
 public sealed record ProjectDto(string? Id, string? Name, string? Description, string? State, string? Visibility);
 
@@ -348,7 +345,7 @@ public sealed record PullRequestDetailDto(
     bool? Truncated,
     List<ReviewerDto>? Reviewers,
     List<ThreadDto>? Threads,
-    // True when max_threads cut the list short. Capped is not the same as "that was all of them".
+    // True when max_threads cut the list short.
     bool? MoreThreads,
     SkippedDto? Skipped,
     string? WebUrl);
@@ -372,9 +369,9 @@ public sealed record WorkItemDto(
     string? WebUrl);
 
 /// <summary>
-/// Envelope for work item queries. <c>wiql</c> is the query the server generated from the filter
-/// arguments, echoed back so it can be refined and passed straight to the `wiql` parameter. It is
-/// null when the caller supplied the query itself.
+/// Envelope for work item queries. <c>wiql</c> is the query the server built from the filter
+/// arguments, echoed back so it can be refined and passed straight to the `wiql` parameter. Null
+/// when the caller supplied the query.
 /// </summary>
 public sealed record WorkItemsResult(List<WorkItemDto> WorkItems, bool? HasMore, string? Wiql);
 
@@ -418,10 +415,8 @@ public sealed record PipelineRunDto(
 public sealed record PipelineRunsResult(List<PipelineRunDto> Runs, bool? HasMore);
 
 /// <summary>
-/// The outcome of waiting for a run, as distinct from the run itself: the run is reported exactly
-/// as <c>get_pipeline_run</c> reports it, with the wait described alongside. <c>TimedOut</c> is
-/// present only when the wait gave up, so a caller can tell "it failed" from "it had not finished
-/// yet". The two look identical if only the run is returned.
+/// The run exactly as <c>get_pipeline_run</c> reports it, with the wait alongside. <c>TimedOut</c>
+/// is present only when the wait gave up, so a caller can tell "it failed" from "not finished".
 /// </summary>
 public sealed record PipelineRunWaitResult(
     PipelineRunDetailDto Run,
@@ -429,10 +424,8 @@ public sealed record PipelineRunWaitResult(
     bool? TimedOut);
 
 /// <summary>
-/// The outcome of waiting for a pull request, shaped like <see cref="PipelineRunWaitResult"/>:
-/// the pull request is reported exactly as <c>get_pull_request</c> reports it, with the wait
-/// described alongside, and <c>TimedOut</c> present only when the wait gave up — a pull request
-/// that is still open is a different answer from one that was abandoned.
+/// Shaped like <see cref="PipelineRunWaitResult"/>: the pull request as <c>get_pull_request</c>
+/// reports it, with <c>TimedOut</c> present only when the wait gave up.
 /// </summary>
 public sealed record PullRequestWaitResult(
     PullRequestDetailDto PullRequest,
@@ -455,7 +448,7 @@ public sealed record PipelineRunDetailDto(
 
 /// <summary>
 /// One failed timeline record with the stage/job it sits under, the issues Azure DevOps recorded
-/// against it, and (when asked for) the tail of its log, which is where the actual error text is.
+/// against it, and, when asked for, the tail of its log, where the error text actually is.
 /// </summary>
 public sealed record FailedStepDto(
     string? Stage,
@@ -467,29 +460,27 @@ public sealed record FailedStepDto(
     bool? Truncated);
 
 /// <summary>
-/// A failed step paired with its own timeline record's log url, so fetching the log needs no
-/// re-matching by task name (which is not unique across jobs). Internal: the url is an API
-/// address, not something the model should see.
+/// A failed step paired with its timeline record's log url, so fetching the log needs no
+/// re-matching by task name (not unique across jobs). Internal: the url is an API address.
 /// </summary>
 internal sealed record FailedStep(FailedStepDto Step, string? LogUrl);
 
 /// <summary>
-/// A listed release task paired with its own log url, for the same reason <see cref="FailedStep"/>
-/// carries one: the url is an API address rather than something the model should see.
+/// A listed release task paired with its log url. Internal for the same reason as
+/// <see cref="FailedStep"/>: the url is an API address.
 /// </summary>
 internal sealed record ReleaseTaskEntry(ReleaseTaskDto Task, string? LogUrl);
 
 // ------------------------------------------------------- classic release pipelines
 //
-// Kept in the vocabulary of the API and the deployment map: a *release definition* is the classic
+// Named as the API and the deployment map name them: a *release definition* is the classic
 // pipeline, a *release* is one instance of it, and its stages are *environments*. The build/YAML
-// tools own the word "pipeline" in this server and never mean a classic one, which is the
-// distinction ServerInstructions spells out for the model.
+// tools own the word "pipeline" here and never mean a classic one. ServerInstructions spells
+// that distinction out for the model.
 
 public sealed record ReleaseDefinitionDto(
     int Id, string? Name, string? Folder, List<string>? Environments, string? WebUrl);
 
-/// <summary>A release in a listing: what it is and where each of its stages stands.</summary>
 public sealed record ReleaseDto(
     int Id,
     string? Name,
@@ -506,7 +497,7 @@ public sealed record ReleaseEnvironmentDto(int Id, string? Name, string? Status)
 public sealed record ReleasesResult(List<ReleaseDto> Releases, bool? HasMore);
 
 /// <summary>
-/// One release read whole: what it shipped (the artifacts), and per stage, where it stands, what
+/// One release read whole: what it shipped (the artifacts), and per stage where it stands, what
 /// is waiting on a human, and what failed.
 /// </summary>
 public sealed record ReleaseDetailDto(
@@ -531,9 +522,8 @@ public sealed record ReleaseArtifactDto(
     string? Alias, string? Type, string? Definition, string? Version, int? BuildId, bool? Primary);
 
 /// <summary>
-/// One stage of a release. <c>pendingApprovals</c> is the reason a stage can sit at
-/// <c>queued</c> indefinitely with nothing wrong, and each entry carries the id
-/// <c>approve_release</c> takes.
+/// One stage of a release. <c>pendingApprovals</c> is why a stage can sit at <c>queued</c>
+/// indefinitely with nothing wrong; each entry carries the id <c>approve_release</c> takes.
 /// </summary>
 public sealed record ReleaseEnvironmentDetailDto(
     int Id,
@@ -546,18 +536,17 @@ public sealed record ReleaseEnvironmentDetailDto(
     string? RequestedFor,
     List<PendingApprovalDto>? PendingApprovals,
     List<FailedStepDto>? FailedSteps,
-    // Every task of the latest attempt, only when include_tasks asked for them. A stage that
-    // succeeded reports nothing else about what it ran, and `skipped.succeeded` is a count.
+    // Every task of the latest attempt, only when include_tasks asked for them. Otherwise a
+    // succeeded stage says nothing about what it ran beyond the `skipped.succeeded` count.
     List<ReleaseTaskDto>? Tasks);
 
 public sealed record PendingApprovalDto(int Id, string? Type, string? Approver, DateTimeOffset? Created);
 
 /// <summary>
-/// One task as it ran, listed rather than counted. <c>id</c> is what <c>task_log</c> takes — it is
-/// unique within a deployment attempt and repeats across stages, so that argument also accepts
-/// "stage / id" and lists the candidates rather than guessing. A substitution task's log is
-/// frequently the most direct statement of what value a deploy actually wrote, and it is only
-/// reachable this way: the failure path never sees it.
+/// One task as it ran. <c>id</c> is what <c>task_log</c> takes: unique within a deployment
+/// attempt but repeated across stages, so that argument also accepts "stage / id" and lists the
+/// candidates on ambiguity. A substitution task's log is often the most direct statement of what
+/// value a deploy wrote, and the failure path never reaches it.
 /// </summary>
 public sealed record ReleaseTaskDto(
     int Id,
@@ -571,10 +560,8 @@ public sealed record ReleaseTaskDto(
     bool? Truncated);
 
 /// <summary>
-/// The outcome of waiting for one stage of a release, shaped like the other waiters: the release
-/// is reported exactly as <c>get_release</c> reports it, <c>environment</c> names the stage that
-/// was waited on, and <c>timedOut</c> appears only when the wait gave up — a stage still queued
-/// behind an approval is a different answer from one that was rejected.
+/// Shaped like the other waiters: the release as <c>get_release</c> reports it, <c>environment</c>
+/// naming the stage waited on, and <c>timedOut</c> only when the wait gave up.
 /// </summary>
 public sealed record ReleaseWaitResult(
     ReleaseDetailDto Release,
@@ -583,8 +570,8 @@ public sealed record ReleaseWaitResult(
     bool? TimedOut);
 
 /// <summary>
-/// What <c>approve_release</c> did, with the release as it stands afterwards so the caller can
-/// see whether the deployment it unblocked has started.
+/// What <c>approve_release</c> did, with the release afterwards so the caller can see whether the
+/// deployment it unblocked has started.
 /// </summary>
 public sealed record ReleaseApprovalResult(ApprovalDto Approval, ReleaseDetailDto Release);
 
@@ -599,12 +586,12 @@ public sealed record ApprovalDto(
 
 // ------------------------------------------------- what a release definition is configured to do
 //
-// The read tools above say what a release did. These say what it was set up to do, which is the
-// only thing that answers "would editing this file change what deploys" — a substitution task
-// carries its target files in its own inputs, and a variable list alone cannot settle it.
+// The tools above say what a release did; these say what it was set up to do, which is what
+// answers "would editing this file change what deploys". A substitution task carries its target
+// files in its own inputs, so a variable list alone cannot settle it.
 //
-// A secret's value never appears here. `isSecret: true` with no `value` is the whole answer, and
-// the same rule holds for the passthrough tool (see Secrets.Mask).
+// A secret's value never appears here: `isSecret: true` with no `value` is the whole answer. Same
+// rule in the passthrough tool (see Secrets.Mask).
 
 public sealed record ReleaseVariableDto(string Name, string? Value, bool? IsSecret, bool? AllowOverride);
 
@@ -612,24 +599,24 @@ public sealed record ReleaseVariableDto(string Name, string? Value, bool? IsSecr
 public sealed record VariableGroupDto(int Id, string? Name);
 
 /// <summary>
-/// One configured task. <c>inputs</c> is the load-bearing field — a File Transform, Replace Tokens
-/// or JSON substitution task names its target files there. Inputs the definition left empty are
-/// dropped, since a task's schema contributes dozens of them and an empty one says nothing.
+/// One configured task. <c>inputs</c> is the field that matters: a File Transform, Replace Tokens
+/// or JSON substitution task names its target files there. Empty inputs are dropped, since a
+/// task's schema contributes dozens of them.
 /// </summary>
 public sealed record ReleaseTaskConfigDto(
     string? Name,
     string? Version,
-    // Only when the task is switched off: enabled is the normal case and repeating it is noise.
+    // Only when the task is switched off; enabled is the normal case.
     bool? Disabled,
     string? Condition,
     Dictionary<string, string>? Inputs);
 
 /// <summary>
 /// Where a phase is set to run. A deployment-group phase carries either <c>tags</c> or
-/// <c>allMachines</c>. The second spells out the empty tag list, because no tags means every
-/// machine in the group (including ones added later) and few readers know that.
-/// <c>healthOption</c>, <c>timeoutMinutes</c> and <c>condition</c> appear only when they differ
-/// from the designer's defaults: one target at a time, no timeout, <c>succeeded()</c>.
+/// <c>allMachines</c>, which spells out the empty tag list: no tags means every machine in the
+/// group, including ones added later. <c>healthOption</c>, <c>timeoutMinutes</c> and
+/// <c>condition</c> appear only when they differ from the designer's defaults: one target at a
+/// time, no timeout, <c>succeeded()</c>.
 /// </summary>
 public sealed record DeployTargetConfigDto(
     DeploymentGroupRefDto? DeploymentGroup,
@@ -642,7 +629,7 @@ public sealed record DeployTargetConfigDto(
     int? TimeoutMinutes,
     string? Condition);
 
-/// <summary>A deployment group by id and name. get_release_definition_targets resolves it to machines.</summary>
+/// <summary>A deployment group by id and name; get_release_definition_targets resolves the machines.</summary>
 public sealed record DeploymentGroupRefDto(int Id, string? Name);
 
 public sealed record ReleaseDeployPhaseDto(
@@ -652,10 +639,8 @@ public sealed record ReleaseDeployPhaseDto(
 //
 // Where a classic release stage lands. A deployment group is a set of machines; a stage's deploy
 // phase names one and picks machines in it by tag. Both are Azure DevOps' own data, not
-// organization-specific knowledge, so none of this touches the deployment map.
-//
-// Agent capabilities are never returned. They are environment variables the service does not mark
-// secret, and one on a real agent was a license key. The escape hatch covers the rare case.
+// organization-specific knowledge, so none of this touches the deployment map. Agent capabilities
+// are never returned (the wire models above say why); the escape hatch covers the rare case.
 
 /// <summary>
 /// One machine in a deployment group. <c>status</c> appears only when the agent is not online and
@@ -672,7 +657,7 @@ public sealed record DeploymentMachineDto(
 
 /// <summary>
 /// A deployment group. <c>machines</c> is absent when the caller did not ask for them or the group
-/// has none. <c>machineCount</c> is the service's own count and is always present, so a target list
+/// has none. <c>machineCount</c> is the service's own count and always present, so a target list
 /// can be compared with the whole group.
 /// </summary>
 public sealed record DeploymentGroupDto(
@@ -683,10 +668,10 @@ public sealed record DeploymentGroupDto(
     List<DeploymentMachineDto>? Machines);
 
 /// <summary>
-/// One deploy phase resolved to the machines it would run on now. <c>machines</c> is an empty list
-/// when the phase's tags match nothing in its group; that empty list is the finding, not padding.
-/// It is absent when the phase does not run on a deployment group (<c>type</c> says what it runs
-/// on) or the group could not be read (<c>error</c> says why).
+/// One deploy phase resolved to the machines it would run on now. <c>machines</c> is an empty
+/// list when the phase's tags match nothing in its group, which is itself the answer. It is absent
+/// when the phase does not run on a deployment group (<c>type</c> says what it runs on) or the
+/// group could not be read (<c>error</c> says why).
 /// </summary>
 public sealed record PhaseTargetsDto(
     string? Phase,
@@ -704,9 +689,8 @@ public sealed record ReleaseTargetsDto(
     int Id, string? Name, List<StageTargetsDto> Environments, string? WebUrl);
 
 /// <summary>
-/// One stage of a definition. <c>phases</c> is absent when the caller asked for no tasks, which is
-/// not the same as a stage that runs none — the omit-when-uninteresting rule cannot express that
-/// difference, so the tool's own description says which it is.
+/// One stage of a definition. <c>phases</c> is absent both when the caller asked for no tasks and
+/// when the stage runs none; the tool's own description says which.
 /// </summary>
 public sealed record ReleaseDefinitionEnvironmentConfigDto(
     int Id,
@@ -744,15 +728,15 @@ public sealed record ReleaseDefinitionMatchDto(
     string? WebUrl);
 
 /// <summary>
-/// <c>scanned</c> is how many definitions were actually read, which is what makes a nil result
-/// mean something: a capped scan sets <c>hasMore</c> rather than passing itself off as complete.
+/// <c>scanned</c> is how many definitions were read, so an empty result means something. A capped
+/// scan sets <c>hasMore</c> rather than passing itself off as complete.
 /// </summary>
 public sealed record ReleaseDefinitionSearchResult(
     List<ReleaseDefinitionMatchDto> Results, int Scanned, bool? HasMore);
 
 /// <summary>
 /// A raw REST response. <c>json</c> carries the parsed body when it is JSON and fits the cap;
-/// otherwise <c>text</c> carries it, <c>truncated</c> says so, and the way out is a narrower
+/// otherwise <c>text</c> carries it and <c>truncated</c> says so. The way out is a narrower
 /// `filter` or the endpoint's own paging, not a bigger cap.
 /// </summary>
 public sealed record ApiResponseDto(
@@ -764,8 +748,8 @@ public sealed record ApiResponseDto(
     bool? Truncated);
 
 /// <summary>
-/// Which credential this server is using and whether it still works. Reported rather than thrown:
-/// "the sign-in is dead" is the answer this tool exists to give, so it is data, not a failure.
+/// Which credential this server is using and whether it still works. A dead sign-in is reported
+/// as data rather than thrown: it is the answer this tool exists to give.
 /// </summary>
 public sealed record AuthStatusDto(
     bool SignedIn,
@@ -785,13 +769,13 @@ public sealed record AuthStatusDto(
 
 /// <summary>
 /// AZURE_DEVOPS_PAT, probed separately because sessions reach for it as a fallback when a tool
-/// fails and need to learn in one line that it is dead. Absent entirely when the variable is unset.
+/// fails and need one line telling them it is dead. Absent when the variable is unset.
 /// </summary>
 public sealed record PatStatusDto(bool Valid, string? Identity, string? Error);
 
 // Search envelopes always carry `total`, the service's overall match count, so an empty result
-// list still says whether nothing matched (0) or the caller's limit cut the list short (paired
-// with hasMore). Snippets are the matched text with the highlight markers stripped.
+// list still says whether nothing matched (0) or the caller's limit cut it short (with hasMore).
+// Snippets are the matched text with the highlight markers stripped.
 
 public sealed record CodeSearchResult(List<CodeSearchHitDto> Results, int Total, bool? HasMore);
 
@@ -829,8 +813,8 @@ public sealed record WikiSearchHitDto(
     string? WebUrl);
 
 /// <summary>
-/// What `add_pull_request_comment` created, echoed back so the caller can confirm the write and
-/// address a follow-up reply at the thread without a second call.
+/// What `add_pull_request_comment` created, echoed back so a follow-up reply can be addressed at
+/// the thread without a second call.
 /// </summary>
 public sealed record PullRequestCommentResult(int PullRequestId, int ThreadId, CommentDto Comment, string? WebUrl);
 
@@ -844,8 +828,7 @@ public sealed record DeploymentStatusResult(List<DeployableStatusDto> Deployable
 /// has landed since: changesets under the deployable's paths, or commits on its branch.
 /// <c>containsChangeset</c>/<c>affects</c> appear only when the caller asked about a specific
 /// changeset, and only for a TFVC-built deployable. A deployable that could not be evaluated
-/// reports <c>error</c> instead of failing the whole call. A fleet answer with one broken entry
-/// is still an answer.
+/// reports <c>error</c> instead of failing the whole call.
 /// </summary>
 public sealed record DeployableStatusDto(
     string Name,
@@ -875,8 +858,8 @@ public sealed record ChangesetDto(int Id, string? Author, DateTimeOffset? Create
 public sealed record CommitDto(string Id, string? Author, DateTimeOffset? Date, string? Comment);
 
 /// <summary>
-/// What was filtered out rather than silently dropped, so "nothing there" is distinguishable from
-/// "everything was filtered". Each count is null when it did not fire.
+/// What was filtered out, so "nothing there" is distinguishable from "everything was filtered".
+/// Each count is null when it did not fire.
 /// </summary>
 public sealed record SkippedDto(int? Deleted, int? System, int? Succeeded);
 
@@ -897,32 +880,30 @@ internal sealed class SkipCounter
 // -------------------------------------------------------------------------- mapping
 
 /// <summary>
-/// Wire shape to output shape. Pure and static so all of it is reachable from tests without an
-/// Azure DevOps organization behind it.
+/// Wire shape to output shape. Pure and static, so tests reach all of it without an Azure DevOps
+/// organization behind it.
 /// </summary>
 internal static class Mapping
 {
     /// <summary>
-    /// Whether a build's <c>status</c> means it has stopped moving. Azure DevOps reports a run's
-    /// verdict in <c>result</c> and its progress in <c>status</c>, and only <c>completed</c> is an
-    /// end state. <c>cancelling</c> is not: it becomes <c>completed</c> once the cancellation
-    /// lands, and a waiter that treated it as terminal would report a run still winding down.
-    /// An absent status is treated as terminal, since nothing is known about it to wait for.
+    /// Whether a build's <c>status</c> means it has stopped moving. Verdict is in <c>result</c>
+    /// and progress in <c>status</c>, and only <c>completed</c> is an end state. <c>cancelling</c>
+    /// is not: it becomes <c>completed</c> once the cancellation lands, so a waiter treating it as
+    /// terminal would report a run still winding down. An absent status counts as terminal.
     /// </summary>
     internal static bool IsTerminalRunStatus(string? status) =>
         status is null || status.Equals("completed", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Whether a pull request's <c>status</c> means it has stopped moving. <c>active</c> is the
-    /// only state a pull request leaves on its own — <c>completed</c> and <c>abandoned</c> are
-    /// both ends, just different ones, and the DTO's status says which. Anything unrecognized
-    /// (or absent) is treated as terminal, so a waiter surprised by the service returns what it
-    /// sees instead of polling a state it does not understand until the timeout.
+    /// only state a pull request leaves on its own; <c>completed</c> and <c>abandoned</c> are both
+    /// ends and the DTO's status says which. Anything unrecognized or absent counts as terminal,
+    /// so a waiter returns what it sees instead of polling an unknown state until the timeout.
     /// </summary>
     internal static bool IsTerminalPullRequestStatus(string? status) =>
         !string.Equals(status, "active", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Fields worth asking for in list results. Anything else is padding in a model's context.</summary>
+    /// <summary>Fields worth asking for in list results. Anything else is padding.</summary>
     internal static readonly string[] ListFields =
     [
         "System.TeamProject", "System.WorkItemType", "System.Title", "System.State",
@@ -934,7 +915,7 @@ internal static class Mapping
         p.Id,
         p.Name,
         TrimDescription(p.Description, p.Name),
-        // "wellFormed" is the state of every project anyone can use. Only the exceptions are worth saying.
+        // "wellFormed" is the state of every project anyone can use.
         string.Equals(p.State, "wellFormed", StringComparison.OrdinalIgnoreCase) ? null : p.State,
         string.Equals(p.Visibility, "private", StringComparison.OrdinalIgnoreCase) ? null : p.Visibility);
 
@@ -951,7 +932,7 @@ internal static class Mapping
         ShortBranch(pr.SourceRefName),
         ShortBranch(pr.TargetRefName),
         pr.IsDraft is true ? true : null,
-        // "succeeded" means "nothing to say". Every other merge status is a reason a PR is stuck.
+        // "succeeded" says nothing; every other merge status is a reason a PR is stuck.
         string.Equals(pr.MergeStatus, "succeeded", StringComparison.OrdinalIgnoreCase) ? null : pr.MergeStatus,
         Reviewers(pr.Reviewers),
         PullRequestUrl(orgUrl, pr));
@@ -965,7 +946,7 @@ internal static class Mapping
         return mapped.Count > 0 ? mapped : null;
     }
 
-    /// <summary>The vote scale is documented as -10..10. "No vote yet" is the default and says nothing.</summary>
+    /// <summary>The vote scale is documented as -10..10. No vote is the default and says nothing.</summary>
     internal static string? Vote(int? vote) => vote switch
     {
         10 => "approved",
@@ -977,8 +958,7 @@ internal static class Mapping
 
     /// <summary>
     /// A pull request thread, or null when nothing survives filtering. Deleted comments and the
-    /// system threads Azure DevOps posts for every push, vote and policy evaluation are counted
-    /// rather than dropped.
+    /// system threads posted for every push, vote and policy evaluation are counted, not dropped.
     /// </summary>
     internal static ThreadDto? Thread(WireThread t, bool includeSystem, int bodyLimit, SkipCounter counts)
     {
@@ -1121,7 +1101,7 @@ internal static class Mapping
     internal static PipelineRunDto Run(WireBuild b, string orgUrl, string? project) => new(
         b.Id,
         b.BuildNumber,
-        // A finished run says everything through `result`. Only unfinished runs need a status.
+        // A finished run says everything through `result`; only unfinished runs need a status.
         string.Equals(b.Status, "completed", StringComparison.OrdinalIgnoreCase) ? null : b.Status,
         b.Result,
         b.QueueTime,
@@ -1131,12 +1111,10 @@ internal static class Mapping
         RunUrl(orgUrl, b.Project?.Name ?? project, b.Id));
 
     /// <summary>
-    /// Walks the build timeline and reports only what failed, with the stage and job it belongs
-    /// to. Records that succeeded are counted into <paramref name="counts"/> rather than listed,
-    /// since a green pipeline has hundreds of them and none explain anything. Records that never
-    /// ran are neither listed nor counted: they were not filtered out, they did not happen. Each
-    /// step carries the log url of the record it came from, because a task name is not unique
-    /// across jobs and pairing by name could attach the wrong log.
+    /// Walks the build timeline and reports only what failed, with the stage and job it belongs to.
+    /// Records that succeeded are counted into <paramref name="counts"/>; ones that never ran are
+    /// neither listed nor counted. Each step carries the log url of its own record, since a task
+    /// name is not unique across jobs and pairing by name could attach the wrong log.
     /// </summary>
     internal static List<FailedStep> FailedSteps(WireTimeline timeline, int maxErrors, SkipCounter counts)
     {
@@ -1146,16 +1124,16 @@ internal static class Mapping
         var failed = new List<FailedStep>();
         foreach (var record in records.OrderBy(r => r.Order ?? int.MaxValue))
         {
-            if (!IsFailure(record.Result))
+            if (!IsRunTaskFailure(record.Result))
             {
-                if (IsSuccess(record.Result))
+                if (IsRunTaskSuccess(record.Result))
                 {
                     counts.Succeeded++;
                 }
                 continue;
             }
-            // Stage and job failures are the roll-up of the task that actually failed. Listing
-            // them too would report the same failure three times.
+            // Stage and job failures roll up the task that actually failed. Listing them too
+            // would report the same failure three times.
             if (!string.Equals(record.Type, "Task", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
@@ -1177,16 +1155,16 @@ internal static class Mapping
         return failed;
     }
 
-    internal static bool IsFailure(string? result) =>
+    internal static bool IsRunTaskFailure(string? result) =>
         string.Equals(result, "failed", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(result, "canceled", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(result, "abandoned", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Not the negation of <see cref="IsFailure"/>: a skipped stage and a task that has not started
-    /// are neither, and counting them as passing would overstate what the run actually did.
+    /// Not the negation of <see cref="IsRunTaskFailure"/>: a skipped stage and a task that has not
+    /// started are neither, and counting them as passing overstates what the run did.
     /// </summary>
-    internal static bool IsSuccess(string? result) =>
+    internal static bool IsRunTaskSuccess(string? result) =>
         string.Equals(result, "succeeded", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(result, "succeededWithIssues", StringComparison.OrdinalIgnoreCase);
 
@@ -1214,7 +1192,7 @@ internal static class Mapping
         return (stage, job);
     }
 
-    /// <summary>Keeps the end of a log: a build failure is explained by its last lines, not its first.</summary>
+    /// <summary>Keeps the end of a log: a build failure is explained by its last lines.</summary>
     internal static (string? Tail, bool? Truncated) LogTail(string log, int lines)
     {
         if (lines <= 0 || string.IsNullOrWhiteSpace(log))
@@ -1234,8 +1212,7 @@ internal static class Mapping
         d.Name,
         // Release definitions live in folders spelled "\", the same as a pipeline's root folder.
         string.Equals(d.Path, "\\", StringComparison.Ordinal) ? null : d.Path,
-        // In rank order, because that is the order they deploy in and the order a caller will
-        // reason about them. Names, not ids: the other release tools resolve either.
+        // Rank order: the order they deploy in. Names, not ids; the release tools take either.
         (d.Environments ?? []).OrderBy(e => e.Rank ?? 0).Select(e => e.Name).OfType<string>().ToList()
             is { Count: > 0 } environments ? environments : null,
         ReleaseDefinitionUrl(orgUrl, project, d.Id));
@@ -1268,18 +1245,17 @@ internal static class Mapping
     }
 
     /// <summary>
-    /// The deployment attempt to report: the highest-numbered one. A redeploy adds an attempt
-    /// rather than replacing the previous one, so the first entry can be a failure that has since
-    /// been retried successfully.
+    /// The attempt to report: the highest-numbered one. A redeploy adds an attempt instead of
+    /// replacing the previous one, so the first entry can be a failure that was later retried
+    /// successfully.
     /// </summary>
     internal static WireDeploymentAttempt? LatestAttempt(WireReleaseEnvironment env) =>
         (env.DeploySteps ?? []).OrderByDescending(d => d.Attempt).FirstOrDefault();
 
     /// <summary>
     /// Why a stage failed: the failed tasks of its latest attempt, with the phase and job they sit
-    /// under. Tasks that passed are counted rather than listed, exactly as
-    /// <see cref="FailedSteps"/> does for a build timeline, and tasks that never ran are neither.
-    /// The tasks only arrive when the release was read with <c>$expand=tasks</c>.
+    /// under. Tasks that passed are counted rather than listed, as <see cref="FailedSteps"/> does;
+    /// tasks that never ran are neither. Tasks need <c>$expand=tasks</c> on the read.
     /// </summary>
     internal static List<FailedStep> ReleaseFailedSteps(
         WireReleaseEnvironment env, int maxErrors, SkipCounter counts, bool countSucceeded = true)
@@ -1297,9 +1273,9 @@ internal static class Mapping
                 {
                     if (!IsReleaseTaskFailure(task.Status))
                     {
-                        // A task that passed is skipped only while nothing else reports it.
-                        // include_tasks lists them, and then `skipped.succeeded` would be claiming
-                        // they were filtered out of a result they are sitting in.
+                        // Counted only while nothing else reports them: include_tasks lists the
+                        // passing tasks, and then `skipped.succeeded` would claim they were
+                        // filtered out of a result they are sitting in.
                         if (countSucceeded && IsReleaseTaskSuccess(task.Status))
                         {
                             counts.Succeeded++;
@@ -1324,9 +1300,9 @@ internal static class Mapping
     }
 
     /// <summary>
-    /// Release Management reports a task's verdict under two spellings apiece — <c>failed</c> and
-    /// <c>failure</c>, <c>succeeded</c> and <c>success</c> — and both appear in its own enum, so
-    /// matching only the familiar one silently drops half the failures.
+    /// Release Management reports a task's verdict under two spellings apiece, <c>failed</c> and
+    /// <c>failure</c>, <c>succeeded</c> and <c>success</c>, both in its own enum. Matching only
+    /// the familiar one silently drops half the failures.
     /// </summary>
     internal static bool IsReleaseTaskFailure(string? status) =>
         status is not null &&
@@ -1336,7 +1312,7 @@ internal static class Mapping
 
     /// <summary>
     /// Not the negation of <see cref="IsReleaseTaskFailure"/>: skipped and pending tasks are
-    /// neither, and counting them as passing would overstate what the deployment did.
+    /// neither, and counting them as passing overstates what the deployment did.
     /// <c>partiallySucceeded</c> is the release side's <c>succeededWithIssues</c>.
     /// </summary>
     internal static bool IsReleaseTaskSuccess(string? status) =>
@@ -1346,8 +1322,8 @@ internal static class Mapping
          status.Equals("partiallySucceeded", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// The approvals a stage is actually waiting on: pending, and not the automated placeholders
-    /// Azure DevOps records for stages that need no approval at all.
+    /// The approvals a stage is actually waiting on: pending, minus the automated placeholders
+    /// Azure DevOps records for stages that need no approval.
     /// </summary>
     internal static List<WireReleaseApproval> PendingApprovals(WireReleaseEnvironment env) =>
         ((env.PreDeployApprovals ?? []).Concat(env.PostDeployApprovals ?? []))
@@ -1370,8 +1346,7 @@ internal static class Mapping
 
     /// <summary>
     /// One stage, given the failed steps already resolved for it (the tool fetches their logs, so
-    /// that part cannot be pure). Everything decided here is a judgement about what is worth
-    /// saying, which is why it does not live in the tool.
+    /// that part cannot be pure).
     /// </summary>
     internal static ReleaseEnvironmentDetailDto ReleaseEnvironment(
         WireReleaseEnvironment env, List<FailedStepDto> failedSteps, List<ReleaseTaskDto>? tasks = null)
@@ -1382,19 +1357,19 @@ internal static class Mapping
             env.Id,
             env.Name,
             env.Status,
-            // Load-bearing everywhere except on a stage that went green, where it only ever says
-            // "Approved". An environment has no `failed` status — a deployment that failed reports
-            // as `rejected` with operationStatus PhaseFailed, so dropping this would make a broken
-            // deployment indistinguishable from one a person turned down. It also separates "an
-            // agent is running it" from "it is held at a manual intervention", both inProgress.
+            // On a green stage this only ever says "Approved"; everywhere else it is the signal.
+            // An environment has no `failed` status: a failed deployment reports as `rejected`
+            // with operationStatus PhaseFailed, so dropping this would make a broken deployment
+            // indistinguishable from one a person turned down. It also separates "an agent is
+            // running it" from "held at a manual intervention", both inProgress.
             string.Equals(env.Status, "succeeded", StringComparison.OrdinalIgnoreCase)
                 ? null
                 : attempt?.OperationStatus,
-            // A first attempt is the usual case and says nothing. A later one says somebody retried.
+            // A first attempt says nothing; a later one says somebody retried.
             attempt is { Attempt: > 1 } ? attempt.Attempt : null,
             attempt?.QueuedOn,
-            // lastModifiedOn is a finish time only once the stage has finished; while it is running
-            // it is just "when something last happened", which is not what the field claims.
+            // lastModifiedOn is a finish time only once the stage has finished; while it runs it
+            // is just when something last happened.
             attempt is not null && IsTerminalEnvironmentStatus(env.Status) ? attempt.LastModifiedOn : null,
             attempt?.RequestedFor?.DisplayName,
             pending.Count > 0 ? pending : null,
@@ -1405,8 +1380,7 @@ internal static class Mapping
     /// <summary>
     /// Every task of the stage's latest attempt, in the order it ran, with the phase and job it
     /// sits under. Unlike <see cref="ReleaseFailedSteps"/> this lists what passed and what was
-    /// skipped as well: the caller asked what the stage runs, and "24 tasks succeeded" does not
-    /// answer that. Tasks only arrive when the release was read with <c>$expand=tasks</c>.
+    /// skipped, since the caller asked what the stage runs. Tasks need <c>$expand=tasks</c>.
     /// </summary>
     internal static List<ReleaseTaskEntry> ReleaseTasks(WireReleaseEnvironment env)
     {
@@ -1434,7 +1408,7 @@ internal static class Mapping
 
     /// <summary>
     /// The release around its stages. <paramref name="descriptionLimit"/> caps the one free-text
-    /// field; an absent description arrives as <c>""</c> rather than as a missing field, and the
+    /// field. An absent description arrives as <c>""</c>, not as a missing field, and the
     /// serializer only drops nulls.
     /// </summary>
     internal static ReleaseDetailDto ReleaseDetail(
@@ -1457,10 +1431,9 @@ internal static class Mapping
 
     /// <summary>
     /// Whether a stage's status means it has stopped moving. <c>notStarted</c> is not terminal:
-    /// it is what a stage that nobody has triggered yet reports, and a caller waiting for an
-    /// automatic promotion into it is waiting for exactly that transition. An unrecognized status
-    /// is treated as terminal, so a waiter surprised by the service returns what it sees rather
-    /// than polling a state it does not understand until the timeout.
+    /// it is what an untriggered stage reports, and a caller waiting for an automatic promotion is
+    /// waiting for exactly that transition. An unrecognized status counts as terminal, so a waiter
+    /// returns what it sees instead of polling an unknown state until the timeout.
     /// </summary>
     internal static bool IsTerminalEnvironmentStatus(string? status) => status switch
     {
@@ -1477,8 +1450,8 @@ internal static class Mapping
 
     /// <summary>
     /// Definition- or environment-scope variables, sorted by name so two reads of the same
-    /// definition compare. A secret is reported by name with <c>isSecret</c> and no value — Azure
-    /// DevOps already returns null for one, and this makes that a rule rather than a courtesy.
+    /// definition compare. A secret is reported by name with <c>isSecret</c> and no value. Azure
+    /// DevOps already returns null for one; this enforces it here as well.
     /// </summary>
     internal static List<ReleaseVariableDto>? ReleaseVariables(
         Dictionary<string, WireReleaseVariable>? variables) =>
@@ -1494,7 +1467,7 @@ internal static class Mapping
 
     /// <summary>
     /// The groups a scope pulls in, id and name. The names come from a separate lookup that may
-    /// not have answered, in which case the id still identifies the group.
+    /// not have answered; the id still identifies the group.
     /// </summary>
     internal static List<VariableGroupDto>? VariableGroups(
         List<int>? ids, IReadOnlyDictionary<int, string> names) =>
@@ -1504,8 +1477,7 @@ internal static class Mapping
 
     /// <summary>
     /// One configured task. Empty inputs are dropped: a task's schema contributes every input it
-    /// declares whether or not the definition set one, and an empty string says nothing that the
-    /// input's absence does not.
+    /// declares whether or not the definition set one.
     /// </summary>
     internal static ReleaseTaskConfigDto TaskConfig(WireWorkflowTask task) => new(
         task.Name,
@@ -1530,9 +1502,8 @@ internal static class Mapping
 
     /// <summary>
     /// Where a phase is set to run. Null when the phase has no <c>deploymentInput</c> worth
-    /// reporting, such as a server-side phase at its defaults. <c>queueId</c> is a deployment group
-    /// only on a machine-group phase; on an agent-based phase it is an agent queue and is reported
-    /// as one.
+    /// reporting, such as a server-side phase at its defaults. <c>queueId</c> is a deployment
+    /// group only on a machine-group phase; on an agent-based phase it is an agent queue.
     /// </summary>
     internal static DeployTargetConfigDto? DeployTarget(
         WireDeployPhase phase, IReadOnlyDictionary<int, string> deploymentGroupNames)
@@ -1543,7 +1514,7 @@ internal static class Mapping
         }
         var machineGroup = Targeting.IsMachineGroup(phase.PhaseType);
         var tags = Targeting.Tags(input.Tags);
-        // One target at a time is the default. Only the rolling options are worth reporting.
+        // One target at a time is the default; only the rolling options are worth reporting.
         var health = input.DeploymentHealthOption is { Length: > 0 } option &&
                      !option.Equals("OneTargetAtATime", StringComparison.OrdinalIgnoreCase)
             ? option
@@ -1637,10 +1608,10 @@ internal static class Mapping
         includeMachines ? DeploymentMachines(group.Machines) : null);
 
     /// <summary>
-    /// Every variable group id a definition references, at either scope, once each. This is what
-    /// the name lookup is asked for; the groups' contents are never read.
+    /// Every variable group id a definition references, at either scope, once each. The name
+    /// lookup gets these; the groups' contents are never read.
     /// </summary>
-    internal static IReadOnlyList<int> ReferencedGroups(WireReleaseDefinitionDetail d) =>
+    internal static IReadOnlyList<int> ReferencedVariableGroups(WireReleaseDefinitionDetail d) =>
         [.. (d.VariableGroups ?? [])
             .Concat((d.Environments ?? []).SelectMany(e => e.VariableGroups ?? []))
             .Distinct()
@@ -1648,8 +1619,7 @@ internal static class Mapping
 
     /// <summary>
     /// <paramref name="deploymentGroupNames"/> adds each phase's group name. Like the variable
-    /// group names it comes from a lookup that may have failed, and the id identifies the group
-    /// without it.
+    /// group names it comes from a lookup that may have failed; the id identifies the group anyway.
     /// </summary>
     internal static ReleaseDefinitionDetailDto ReleaseDefinitionDetail(
         WireReleaseDefinitionDetail d, IReadOnlyDictionary<int, string> groupNames, bool includeTasks,
@@ -1672,7 +1642,7 @@ internal static class Mapping
     /// <summary>Snippets a code result keeps. `matches` still reports how many places matched.</summary>
     private const int MaxCodeSnippets = 3;
 
-    internal static CodeSearchHitDto CodeHit(WireCodeResult r, int bodyLimit, string orgUrl, string project)
+    internal static CodeSearchHitDto CodeSearchHit(WireCodeResult r, int bodyLimit, string orgUrl, string project)
     {
         var hits = r.Matches?.Content ?? [];
         var snippets = hits
@@ -1719,7 +1689,7 @@ internal static class Mapping
             id is { } wid && r.Project?.Name is { } project ? WorkItemUrl(orgUrl, project, wid) : null);
     }
 
-    internal static WikiSearchHitDto WikiHit(WireWikiResult r, int bodyLimit, string orgUrl, string project)
+    internal static WikiSearchHitDto WikiSearchHit(WireWikiResult r, int bodyLimit, string orgUrl, string project)
     {
         // The path names the page. A highlight on the file name would only repeat it.
         var (snippet, truncated) = Snippet(r.Hits, bodyLimit, "fileNames");
@@ -1727,8 +1697,8 @@ internal static class Mapping
     }
 
     /// <summary>
-    /// The matched text of one result: every highlight not on an excluded field, deduplicated and
-    /// joined, truncated at the body limit like any other body.
+    /// The matched text of one result: every highlight not on an excluded field, deduplicated,
+    /// joined and truncated at the body limit.
     /// </summary>
     internal static (string? Snippet, bool? Truncated) Snippet(
         List<WireSearchHit>? hits, int bodyLimit, params string[] excludedFields)
@@ -1783,17 +1753,17 @@ internal static class Mapping
             : null;
 
     internal static int? Int(Dictionary<string, JsonElement>? fields, string name) =>
-        // The ValueKind check is not redundant: TryGetInt32 throws rather than returning false when
-        // the element is not a number at all, which a custom field with a text value routinely is.
+        // The ValueKind check is not redundant: TryGetInt32 throws rather than returning false
+        // when the element is not a number, which a custom field with a text value routinely is.
         fields is not null && fields.TryGetValue(name, out var value) &&
         value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var i)
             ? i
             : null;
 
     /// <summary>
-    /// The scheduling fields are doubles, not integers: half an hour of remaining work and half a
-    /// story point are ordinary values, and <see cref="Int"/> would round them away silently. Same
-    /// ValueKind guard, for the same reason.
+    /// The scheduling fields are doubles: half an hour of remaining work and half a story point
+    /// are ordinary values, and <see cref="Int"/> would round them away silently. Same ValueKind
+    /// guard, for the same reason.
     /// </summary>
     internal static double? Number(Dictionary<string, JsonElement>? fields, string name) =>
         fields is not null && fields.TryGetValue(name, out var value) &&
@@ -1838,7 +1808,7 @@ internal static class Mapping
         return split.Count > 0 ? split : null;
     }
 
-    /// <summary>refs/heads/main -> main. Long-form refs are noise once the prefix is always the same.</summary>
+    /// <summary>refs/heads/main -> main. The prefix is always the same, so it is noise.</summary>
     internal static string? ShortBranch(string? refName) => refName switch
     {
         null => null,
@@ -1885,8 +1855,8 @@ internal static class Mapping
 
     // ------------------------------------------------------------------- browser links
     //
-    // The REST `url` fields point back at the API, which is not something a person can open. These
-    // build the address an agent can hand to a human.
+    // The REST `url` fields point at the API, which a person cannot open. These build the address
+    // an agent can hand to a human.
 
     internal static string? PullRequestUrl(string orgUrl, WirePullRequest pr) =>
         pr.Repository?.Project?.Name is { } project && pr.Repository?.Name is { } repo
@@ -1900,9 +1870,9 @@ internal static class Mapping
         project is null ? null : $"{orgUrl}/{Escape(project)}/_build/results?buildId={id}";
 
     /// <summary>
-    /// The release progress view, which is the page that shows the stages and their approvals —
-    /// not _releaseDefinition, which is the editor. Release links stay on the dev.azure.com host:
-    /// only the API moved to vsrm.
+    /// The release progress view, the page showing stages and approvals. Not _releaseDefinition,
+    /// which is the editor. Release links stay on the dev.azure.com host; only the API moved to
+    /// vsrm.
     /// </summary>
     internal static string? ReleaseUrl(string orgUrl, string? project, int releaseId) =>
         project is null

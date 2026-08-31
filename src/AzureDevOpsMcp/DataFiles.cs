@@ -7,12 +7,12 @@ namespace AzureDevOpsMcp;
 /// <summary>
 /// One externally configured data file: JSON at a well-known default path beside the auth record,
 /// overridable by an environment variable, parsed once and re-read when the file's timestamp
-/// changes, so the data can be edited without restarting a server an MCP client is holding.
+/// changes, so the data can be edited without restarting a server an MCP client is holding. Every
+/// piece of organization-specific knowledge in this server arrives through one of these: the code
+/// knows formats and protocols, the files know facts.
 ///
-/// This is the mechanism behind every piece of organization-specific knowledge in this server.
-/// The code knows formats and protocols, the files know facts. Missing or invalid configuration
-/// is reported as an <see cref="McpException"/> carrying the expected format. The fix is operator
-/// action, not retry.
+/// Missing or invalid configuration is reported as an <see cref="McpException"/> carrying the
+/// expected format. The fix is operator action, not retry.
 /// </summary>
 internal sealed class DataFile<T>(string envVar, string fileName, string what, string formatHint, Func<string, T> parse)
     where T : class

@@ -3,15 +3,15 @@ using Microsoft.Graph.Models;
 namespace TeamsMcp.Tests;
 
 /// <summary>
-/// Paging stops early on purpose - walking all history to answer "anything since T?" is the
-/// unbounded scan the design forbids. What it may not do is stop early for the wrong reason.
+/// Paging stops early on purpose: walking all history to answer "anything since T?" is the
+/// unbounded scan this design forbids. The hazard is stopping early for the wrong reason.
 ///
 /// Graph orders a message collection by <c>lastModifiedDateTime</c>, not <c>createdDateTime</c>,
 /// and a reaction moves the former. Measured 2026-07-31 against the live service: a message
 /// created at 09:14:46 sorted above one created at 09:14:48 the moment it was reacted to, and
 /// stayed there after the reaction was removed. So an old message can appear at position 0 with
 /// nothing new having been said, and a scan that treats "older than the floor" as "end of the
-/// newer ones" ends before reaching messages it was asked for.
+/// newer ones" stops before reaching messages it was asked for.
 /// </summary>
 public class MessagePagingTests
 {
@@ -26,7 +26,7 @@ public class MessagePagingTests
         Body = new ItemBody { Content = "hello", ContentType = BodyType.Text },
     };
 
-    /// <summary>One page, no continuation - the shape a small conversation answers with.</summary>
+    /// <summary>One page, no continuation: what a small conversation answers with.</summary>
     private static (TeamsTools.FirstPage First, TeamsTools.NextPage Next) OnePage(params ChatMessage[] messages) =>
         (_ => Task.FromResult<ChatMessageCollectionResponse?>(
              new ChatMessageCollectionResponse { Value = [.. messages] }),
@@ -55,7 +55,7 @@ public class MessagePagingTests
     [Fact]
     public async Task Messages_older_than_the_floor_are_still_left_out()
     {
-        // The filtering itself must survive the fix - "don't stop early" is not "return everything".
+        // The filtering itself must survive the fix: "don't stop early" is not "return everything".
         var result = await Page(
             OnePage(
                 Msg("older", T0.AddMinutes(-5)),
@@ -93,8 +93,8 @@ public class MessagePagingTests
     [Fact]
     public async Task A_page_carrying_one_fresh_message_is_followed()
     {
-        // The mirror of the previous test: one qualifying message means the next page may hold
-        // more, so the scan continues rather than stopping at the first old neighbour.
+        // One qualifying message means the next page may hold more, so the scan continues instead
+        // of stopping at the first old neighbour.
         var pages = 0;
         var pager = (
             (TeamsTools.FirstPage)(_ =>

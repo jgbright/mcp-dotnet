@@ -116,7 +116,7 @@ public class HtmlToTextTests
         Assert.Equal("Deploy is done.\nSee build 42 (https://ado/build/42) for logs.", TeamsTools.HtmlToText(html));
     }
 
-    // ---------------------------------------------------------------- ToPlainText / StripHtml
+    // ---------------------------------------------------------------- ToPlainText / FromHtml
 
     [Fact]
     public void ToPlainText_returns_null_for_missing_or_empty_bodies()
@@ -134,10 +134,10 @@ public class HtmlToTextTests
     }
 
     [Fact]
-    public void StripHtml_returns_null_for_null_or_empty()
+    public void FromHtml_returns_null_for_null_or_empty()
     {
-        Assert.Null(TeamsTools.StripHtml(null));
-        Assert.Null(TeamsTools.StripHtml(""));
-        Assert.Equal("summary", TeamsTools.StripHtml("<c0>summary</c0>"));
+        Assert.Null(TeamsTools.FromHtml(null));
+        Assert.Null(TeamsTools.FromHtml(""));
+        Assert.Equal("summary", TeamsTools.FromHtml("<c0>summary</c0>"));
     }
 }

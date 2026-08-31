@@ -10,23 +10,22 @@ using ModelContextProtocol;
 namespace AzureDevOpsMcp;
 
 /// <summary>
-/// Lazily builds an authenticated <see cref="AdoClient"/>.
-/// Tenant/client ids come from ADO_MCP_TENANT_ID / ADO_MCP_CLIENT_ID and the organization from
-/// ADO_MCP_ORG_URL (never hardcoded). Tokens are cached on disk (MSAL persistent cache,
-/// DPAPI-protected on Windows) with the AuthenticationRecord stored beside it, so the MCP server
-/// never prompts over stdio: run `dotnet run --project src/AzureDevOpsMcp -- auth` once to sign in,
-/// everything after that is silent.
+/// Lazily builds an authenticated <see cref="AdoClient"/>. Tenant/client ids come from
+/// ADO_MCP_TENANT_ID / ADO_MCP_CLIENT_ID, the organization from ADO_MCP_ORG_URL; none are
+/// hardcoded. Tokens live in the MSAL persistent cache on disk (DPAPI-protected on Windows) with
+/// the AuthenticationRecord beside them, so the server never prompts over stdio: run
+/// `dotnet run --project src/AzureDevOpsMcp -- auth` once, everything after that is silent.
 ///
-/// Authentication is against Entra ID rather than a personal access token: a PAT is a long-lived
-/// bearer secret that would have to live in the MCP client's config, whereas the refresh token here
-/// stays in the OS-protected cache and follows the organization's conditional-access policy.
+/// Entra ID rather than a PAT: a PAT is a long-lived bearer secret that would sit in the MCP
+/// client's config, while the refresh token here stays in the OS-protected cache and follows the
+/// organization's conditional-access policy.
 /// </summary>
 public sealed class AdoContext(ILogger<AdoContext> log)
 {
     /// <summary>
-    /// The fixed first-party Entra application id of Azure DevOps: the resource being requested.
-    /// It is a public, documented identifier, not a secret, and not this server's own client id
-    /// (which comes from ADO_MCP_CLIENT_ID).
+    /// Azure DevOps' own fixed first-party Entra application id: the resource being requested. A
+    /// public, documented identifier, not a secret, and not this server's client id (which comes
+    /// from ADO_MCP_CLIENT_ID).
     /// </summary>
     public const string ResourceId = "499b84ac-1321-427f-aa17-267ca6975798";
 
@@ -41,23 +40,19 @@ public sealed class AdoContext(ILogger<AdoContext> log)
     public static string RecordPath => Path.Combine(CacheDir, "auth-record.json");
 
     /// <summary>
-    /// Writing is a visible mutation. It is opt-in via ADO_MCP_ALLOW_WRITE=true, and every
-    /// mutating tool goes through <c>AdoTools.RequireWriteEnabled</c> before doing anything else.
+    /// Writes are opt-in via ADO_MCP_ALLOW_WRITE=true. Every mutating tool calls
+    /// <c>AdoTools.RequireWriteEnabled</c> before doing anything else.
     /// </summary>
     public static bool WriteEnabled =>
         string.Equals(Environment.GetEnvironmentVariable("ADO_MCP_ALLOW_WRITE"), "true",
             StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Acting on a release approval is gated separately from writing, by
-    /// ADO_MCP_ALLOW_APPROVE=true, and <c>approve_release</c> requires both.
-    ///
-    /// The write gate answers "may this server change things other people will see". An approval
-    /// answers a different question: a release approval exists precisely to require a human, and
-    /// the audit trail records the signed-in person as having authorized that deployment whether
-    /// or not they read what was in it. Someone who turned writing on so an agent could file work
-    /// items has not thereby agreed to let it sign off on production, so one variable cannot
-    /// honestly cover both.
+    /// Approving is gated separately by ADO_MCP_ALLOW_APPROVE=true, and <c>approve_release</c>
+    /// requires this and the write gate. The write gate says the server may change what other
+    /// people see. An approval exists to require a human, and the audit trail records the
+    /// signed-in person as having authorized that deployment. Turning writes on so an agent can
+    /// file work items is not agreement to that, so one variable cannot carry both.
     /// </summary>
     public static bool ApprovalEnabled =>
         string.Equals(Environment.GetEnvironmentVariable("ADO_MCP_ALLOW_APPROVE"), "true",
@@ -69,8 +64,9 @@ public sealed class AdoContext(ILogger<AdoContext> log)
 
     /// <summary>
     /// AZURE_DEVOPS_PAT is not this server's credential and is never used to make a request. It is
-    /// read only so <c>ado_auth_status</c> can probe it: a session whose tool call failed reaches
-    /// for it as a fallback, and "that token expired" is worth one line rather than an afternoon.
+    /// read only so <c>ado_auth_status</c> can report it: whether it is set, and whether it still
+    /// works (<c>AuthStatus.ProbePatAsync</c>, against connectionData). A session whose tool call
+    /// failed reaches for it as a fallback, and an expired one fails there too.
     /// </summary>
     public static bool PatPresent =>
         Environment.GetEnvironmentVariable("AZURE_DEVOPS_PAT") is { Length: > 0 };
@@ -112,9 +108,8 @@ public sealed class AdoContext(ILogger<AdoContext> log)
     private static TokenCachePersistenceOptions CachePersistence => new() { Name = CacheName };
 
     /// <summary>
-    /// isCaeEnabled must be false and must match on both sides of the split: MSAL partitions the
-    /// persisted cache by CAE flag, so a CAE-enabled request would not find the refresh token the
-    /// `auth` flow cached.
+    /// isCaeEnabled must be false here and in the `auth` flow: MSAL partitions the persisted cache
+    /// by CAE flag, so a CAE-enabled request would not find the refresh token `auth` cached.
     /// </summary>
     internal static TokenRequestContext RequestContext =>
         new(Scopes, parentRequestId: null, claims: null, tenantId: null, isCaeEnabled: false);
@@ -197,9 +192,9 @@ public sealed class AdoContext(ILogger<AdoContext> log)
     private TokenCredential? _credential;
 
     /// <summary>
-    /// When the token this server is using stops working, asked of the same credential the client
-    /// holds. Azure.Identity answers from its own cache, so this costs nothing on the usual path
-    /// and is what <c>ado_auth_status</c> reports rather than guessing from the record's age.
+    /// When the token this server is using expires, asked of the credential the client holds.
+    /// Azure.Identity answers from its own cache, so it costs nothing on the usual path.
+    /// <c>ado_auth_status</c> reports this instead of guessing from the record's age.
     /// </summary>
     public async Task<DateTimeOffset> TokenExpiresOnAsync(CancellationToken ct = default)
     {
@@ -208,7 +203,7 @@ public sealed class AdoContext(ILogger<AdoContext> log)
         return (await credential.GetTokenAsync(RequestContext, ct)).ExpiresOn;
     }
 
-    /// <summary>Silent client for MCP tool calls. Never prompts. It fails with guidance instead.</summary>
+    /// <summary>Silent client for MCP tool calls. Never prompts; fails with guidance instead.</summary>
     public async Task<AdoClient> GetClientAsync(CancellationToken ct = default)
     {
         if (_client is not null)
@@ -256,9 +251,8 @@ public sealed class AdoContext(ILogger<AdoContext> log)
                 AdoMcpLog.Arg("authority", record.Authority) +
                 AdoMcpLog.Arg("written", File.GetLastWriteTimeUtc(RecordPath)));
 
-            // The env vars changed since sign-in, so the cached refresh token belongs to a
-            // different app or tenant and will never be found. Without this warning that fails
-            // silently.
+            // The env vars changed since sign-in: the cached refresh token belongs to a different
+            // app or tenant and will never be found. Without this warning it fails silently.
             if (!string.Equals(record.ClientId, clientId, StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(record.TenantId, tenantId, StringComparison.OrdinalIgnoreCase))
             {
@@ -280,8 +274,8 @@ public sealed class AdoContext(ILogger<AdoContext> log)
                 DisableAutomaticAuthentication = true,
             });
 
-            // Acquire up front so an auth problem is reported as an auth problem, at a known point,
-            // instead of surfacing later as a confusing failure inside an unrelated REST call.
+            // Acquire up front so an auth problem is reported here instead of surfacing later
+            // inside an unrelated REST call.
             var sw = Stopwatch.StartNew();
             try
             {
@@ -329,7 +323,7 @@ internal sealed class BearerTokenHandler(TokenCredential credential) : Delegatin
     private static readonly TimeSpan RefreshMargin = TimeSpan.FromMinutes(5);
 
     /// <summary>
-    /// Immutable, so the lock-free fast path reads one reference atomically. A bare
+    /// Immutable so the lock-free fast path reads one reference atomically. A bare
     /// <see cref="AccessToken"/> field is a multi-field struct and could tear under concurrency.
     /// </summary>
     private sealed record Cached(string Token, DateTimeOffset ExpiresOn);
@@ -448,12 +442,12 @@ internal sealed class AdoLoggingHandler(ILogger log) : DelegatingHandler
     private static string? Header(HttpResponseMessage response, string name) =>
         response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
 
-    /// <summary>Path + query without the host, which is the same on every line and just noise.</summary>
+    /// <summary>Path + query without the host, which is the same on every line.</summary>
     private static string Sanitize(Uri? uri) => uri is null ? "?" : uri.PathAndQuery;
 }
 
 /// <summary>
-/// A non-success response from the Azure DevOps REST API, carrying the status and the service's own
+/// A non-success response from the Azure DevOps REST API: the status and the service's own
 /// message. <c>AdoTools.Run</c> turns this into the model-facing error.
 /// </summary>
 public sealed class AdoApiException(int status, string message, string? typeKey, string path)
@@ -469,7 +463,7 @@ public sealed class AdoApiException(int status, string message, string? typeKey,
 }
 
 /// <summary>
-/// A thin typed wrapper over the Azure DevOps REST API. Deliberately not the
+/// A thin typed wrapper over the Azure DevOps REST API. Not the
 /// Microsoft.TeamFoundationServer.Client SDK: the tools need control over paging, over which
 /// fields are requested, and over the HTTP logging handler, all of which that SDK hides.
 /// </summary>
@@ -481,8 +475,8 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     };
 
     /// <summary>
-    /// How much of a plain-text error body is a message rather than a document. Past this it is
-    /// something that happens to have failed to be JSON, and the status says more than it does.
+    /// How much of a plain-text error body is a message rather than a document. Past this, the
+    /// status says more than the body does.
     /// </summary>
     private const int MaxPlainTextError = 500;
 
@@ -519,11 +513,11 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     }
 
     /// <summary>
-    /// Sends a JSON Patch document, which is how work item writes are expressed. The method varies (PATCH
-    /// updates an item, POST creates one) but the content type is application/json-patch+json
-    /// either way, and Azure DevOps rejects the document under a plain application/json.
+    /// Sends a JSON Patch document, which is how work item writes are expressed. PATCH updates an
+    /// item, POST creates one; the content type is application/json-patch+json either way, and
+    /// Azure DevOps rejects the document under a plain application/json.
     /// </summary>
-    public async Task<T> PatchAsync<T>(HttpMethod method, string path, object patch, CancellationToken ct)
+    public async Task<T> JsonPatchAsync<T>(HttpMethod method, string path, object patch, CancellationToken ct)
     {
         using var content = JsonContent.Create(
             patch, new MediaTypeHeaderValue("application/json-patch+json"), Json);
@@ -532,12 +526,11 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     }
 
     /// <summary>
-    /// PATCHes a plain JSON document. Work item writes are the exception rather than the rule:
-    /// they use <see cref="PatchAsync{T}"/> because JSON Patch is the only document the work item
-    /// endpoint accepts, while the release endpoints take an ordinary object under
-    /// <c>application/json</c> and reject a patch document.
+    /// PATCHes a plain JSON document under <c>application/json</c>, which is what the release
+    /// endpoints take: they reject a patch document. Work item writes are the other way round and
+    /// use <see cref="JsonPatchAsync{T}"/>, JSON Patch being the only document that endpoint accepts.
     /// </summary>
-    public async Task<T> PatchJsonAsync<T>(string path, object body, CancellationToken ct)
+    public async Task<T> PatchAsync<T>(string path, object body, CancellationToken ct)
     {
         using var content = JsonContent.Create(body, options: Json);
         using var response = await SendAsync(HttpMethod.Patch, path, content, ct);
@@ -545,10 +538,9 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     }
 
     /// <summary>
-    /// One request, body returned as it arrived. This is what <c>ado_api_request</c> sends: no
-    /// deserialization, because the whole point is an endpoint this server has no type for, and no
-    /// paging, because the caller drives the endpoint's own. Failures still throw
-    /// <see cref="AdoApiException"/> the way every other call does.
+    /// One request, body returned as it arrived, which is what <c>ado_api_request</c> sends. No
+    /// deserialization (the point is an endpoint this server has no type for) and no paging (the
+    /// caller drives the endpoint's own). Failures still throw <see cref="AdoApiException"/>.
     ///
     /// The caller picks the media type (<see cref="ApiRequest.ContentType"/>). The work item
     /// endpoints only accept <c>application/json-patch+json</c>, so a fixed <c>application/json</c>
@@ -563,8 +555,8 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
             : new StringContent(
                 jsonBody, System.Text.Encoding.UTF8, MediaTypeHeaderValue.Parse(contentType));
         using var response = await SendAsync(method, url, content, ct);
-        // A sign-in page arrives with a success status, so it would otherwise be handed back as
-        // the response body — a page of HTML where a caller expected a resource.
+        // A sign-in page arrives with a success status, so without this the caller gets a page of
+        // HTML where it expected a resource.
         ThrowIfSignInPage(response, url);
         return new RawResponse(
             (int)response.StatusCode,
@@ -616,8 +608,8 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     }
 
     /// <summary>
-    /// Azure DevOps answers an unauthenticated request with 200 and a sign-in page rather than a
-    /// 401, on JSON and plain-text endpoints alike.
+    /// Azure DevOps answers an unauthenticated request with 200 and a sign-in page, not a 401, on
+    /// JSON and plain-text endpoints alike.
     /// </summary>
     private static void ThrowIfSignInPage(HttpResponseMessage response, string path)
     {
@@ -647,17 +639,16 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
             }
             else if (Text.ErrorFromHtml(body) is { } extracted)
             {
-                // An expired credential is answered with a whole HTML error page, so without this
-                // the model-facing message is a stylesheet and the one sentence that says
-                // "the Personal Access Token used has expired" is buried in it.
+                // An expired credential is answered with a whole HTML error page. Without this the
+                // model-facing message is a stylesheet with "the Personal Access Token used has
+                // expired" buried in it.
                 message = extracted;
                 typeKey = "HtmlErrorPage";
             }
             else if (body.Length is > 0 and <= MaxPlainTextError)
             {
-                // Some routes answer in plain text — a path on the wrong host comes back as "the
-                // controller for path '...' was not found", which says considerably more than
-                // "Not Found (404)" does.
+                // Some routes answer in plain text: a path on the wrong host comes back as "the
+                // controller for path '...' was not found", which says more than "Not Found (404)".
                 message = body;
             }
         }
@@ -677,5 +668,5 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     private sealed record ApiError(string? Message, string? TypeKey);
 }
 
-/// <summary>One response as it arrived, for the passthrough tool. Not deserialized on purpose.</summary>
+/// <summary>One response as it arrived, for the passthrough tool. Not deserialized.</summary>
 public sealed record RawResponse(int Status, string? ContentType, string Body);

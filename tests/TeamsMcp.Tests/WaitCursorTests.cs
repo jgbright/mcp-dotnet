@@ -3,9 +3,9 @@ using ModelContextProtocol;
 namespace TeamsMcp.Tests;
 
 /// <summary>
-/// The cursor carries all of a caller's resume state, so a watch depends on three things: a round
-/// trip that changes nothing, a boundary that stops re-delivering, and a watermark that never steps
-/// past a message the caller was not handed.
+/// The cursor carries all of a caller's resume state, so these pin a round trip that changes
+/// nothing, a boundary that stops re-delivering, and a watermark that never steps past a message
+/// the caller was not handed.
 /// </summary>
 public class WaitCursorTests
 {

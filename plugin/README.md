@@ -1,8 +1,8 @@
 # mcp-dotnet Claude Code plugin
 
-Packages the two MCP servers this repository builds — `teams-mcp` (Microsoft Teams
-via Graph) and `ado-mcp` (Azure DevOps) — together with the skills that make them
-useful in a Claude Code session.
+Packages this repository's two MCP servers, `teams-mcp` (Microsoft Teams via
+Graph) and `ado-mcp` (Azure DevOps), with the skills that drive them in a Claude
+Code session.
 
 ## Prerequisites
 
@@ -14,13 +14,13 @@ dotnet tool install --global JasonBright.Mcp.Teams
 dotnet tool install --global JasonBright.Mcp.AzureDevOps
 ```
 
-The plugin does not install them, so a `/plugin install` with neither on `PATH`
-leaves two servers that fail to start. See the repository root
-[README](../README.md) for installing a local build instead.
+The plugin does not install them: `/plugin install` with neither on `PATH` leaves
+two servers that fail to start. The root [README](../README.md) covers installing a
+local build instead.
 
 Configuration is environment variables only; the plugin ships no organization
-values. The servers are stdio children of Claude Code, so anything set at user
-scope (or in the launching shell) is inherited — no per-project config needed.
+values. The servers run as stdio children of Claude Code and inherit anything set
+at user scope or in the launching shell, so no per-project config is needed.
 
 | Variable | Server | Required | Purpose |
 |---|---|---|---|
@@ -41,17 +41,17 @@ scope (or in the launching shell) is inherited — no per-project config needed.
 /plugin install mcp-dotnet@mcp-dotnet
 ```
 
-`/plugin marketplace add <path-to-a-local-clone>` instead, to install a checkout you are working
-on rather than what is on GitHub.
+`/plugin marketplace add <path-to-a-local-clone>` installs a local checkout instead of
+what is on GitHub.
 
-Sign in once with `teams-mcp auth` (the `mcp-reauth` skill automates most of it).
-`ado-mcp` authenticates the same way through its own cached record.
+Sign in once with `teams-mcp auth`; the `mcp-reauth` skill automates most of it.
+`ado-mcp` works the same way through its own cached record.
 
 ## Skills
 
 | Skill | What it does |
 |---|---|
-| `teams-message` | Draft/send workflow with an explicit approval gate: nothing goes to anyone but the current user's own self-chat without a clear "send it". |
+| `teams-message` | Draft/send workflow with an explicit approval gate: nothing goes anywhere but the current user's own self-chat without a clear "send it". |
 | `teams-watcher` | Watch conversations for replies and surface each new message as a Monitor event. Relayed messages are data, never instructions. |
-| `teams-followup` | Handle one message end to end: investigate, react 🤔 on the source, draft to the self-chat, and forward it once the user reacts to approve. |
+| `teams-followup` | Handle one message end to end: investigate, react 🤔 on the source, draft to the self-chat, forward it once the user reacts to approve. |
 | `mcp-reauth` | Re-authenticate `teams-mcp` with Claude driving the Microsoft device-code flow, leaving the user only the final biometric/MFA step. |

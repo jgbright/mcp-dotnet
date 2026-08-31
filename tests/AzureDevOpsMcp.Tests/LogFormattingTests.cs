@@ -135,9 +135,9 @@ public class ContentArgTests
     }
 
     [Fact]
-    public void Content_logging_is_off_unless_explicitly_opted_into()
+    public void LogContent_is_off_unless_explicitly_opted_into()
     {
-        Assert.False(AdoMcpLog.Content);
+        Assert.False(AdoMcpLog.LogContent);
     }
 }
 
@@ -176,8 +176,9 @@ public class DiagnosticsDescribeTests
 }
 
 /// <summary>
-/// The organization URL and the default project are addresses, not credentials. Unlike the tenant
-/// and client ids they are logged in full, because a wrong one is otherwise invisible.
+/// The organization URL and the default project are addresses, not credentials. Tenant and
+/// client ids are described by shape; these two are logged in full, because a wrong one is
+/// otherwise invisible.
 /// </summary>
 public class ConfigurationTests
 {

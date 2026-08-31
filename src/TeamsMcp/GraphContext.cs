@@ -10,11 +10,11 @@ using ModelContextProtocol;
 namespace TeamsMcp;
 
 /// <summary>
-/// Lazily builds an authenticated <see cref="GraphServiceClient"/>.
-/// Tenant/client ids come from TEAMS_MCP_TENANT_ID / TEAMS_MCP_CLIENT_ID (never hardcoded).
-/// Tokens are cached on disk (MSAL persistent cache, DPAPI-protected on Windows) with the
-/// AuthenticationRecord stored beside it, so the MCP server never prompts over stdio:
-/// run `dotnet run -- auth` once to sign in, everything after that is silent.
+/// Lazily builds an authenticated <see cref="GraphServiceClient"/>. Tenant/client ids come from
+/// TEAMS_MCP_TENANT_ID / TEAMS_MCP_CLIENT_ID; neither is hardcoded. Tokens live in the MSAL
+/// persistent cache on disk (DPAPI-protected on Windows) with the AuthenticationRecord beside
+/// them, so the server never prompts over stdio: run `dotnet run -- auth` once, everything after
+/// that is silent.
 /// </summary>
 public sealed class GraphContext(ILogger<GraphContext> log)
 {
@@ -29,8 +29,8 @@ public sealed class GraphContext(ILogger<GraphContext> log)
     ];
 
     /// <summary>
-    /// Requested only when the send gate is on, so a read-only deployment never consents to
-    /// posting as the signed-in user.
+    /// Requested only when the send gate is on, so a read-only deployment never asks anyone to
+    /// consent to posting as the signed-in user.
     /// </summary>
     public static readonly string[] SendScopes =
     [
@@ -43,7 +43,7 @@ public sealed class GraphContext(ILogger<GraphContext> log)
 
     /// <summary>
     /// What this process asks for, decided by the gate at the moment it runs. `-- auth` (where
-    /// consent happens) and the server compute it at different times, so the two can disagree.
+    /// consent happens) and the server compute it at different times, so the two can disagree;
     /// <see cref="ScopeConsent"/> catches that.
     /// </summary>
     public static string[] Scopes => ScopesFor(SendEnabled);
@@ -56,7 +56,7 @@ public sealed class GraphContext(ILogger<GraphContext> log)
     /// <summary>Public so startup diagnostics can report whether sign-in has happened.</summary>
     public static string RecordPath => Path.Combine(CacheDir, "auth-record.json");
 
-    /// <summary>Sending is a visible mutation. It is opt-in via TEAMS_MCP_ALLOW_SEND=true.</summary>
+    /// <summary>Sending is opt-in via TEAMS_MCP_ALLOW_SEND=true.</summary>
     public static bool SendEnabled =>
         string.Equals(Environment.GetEnvironmentVariable("TEAMS_MCP_ALLOW_SEND"), "true",
             StringComparison.OrdinalIgnoreCase);
@@ -86,7 +86,7 @@ public sealed class GraphContext(ILogger<GraphContext> log)
             Environment.GetEnvironmentVariable("TEAMS_MCP_AUTH"), "browser",
             StringComparison.OrdinalIgnoreCase);
 
-        // Consent happens here and only here, so this is the one place the gate can widen the ask.
+        // Consent happens only here, so this is the one place the gate can widen the ask.
         var scopes = Scopes;
 
         log.Line(LogLevel.Information, Ev.AuthInteractive,
@@ -144,11 +144,9 @@ public sealed class GraphContext(ILogger<GraphContext> log)
 
         // The AuthenticationRecord carries identity but not scopes, so the granted set is written
         // beside it. Without it, a gate turned on after a read-only sign-in looks the same to the
-        // server as an expired token.
-        //
-        // The recorded set is what the token carries rather than what was asked for: Entra may
-        // return scopes the user consented to earlier, and the token's set decides whether a
-        // later send works.
+        // server as an expired token. Record what the token carries, not what was asked for:
+        // Entra may return scopes the user consented to earlier, and the token's set is what
+        // decides whether a later send works.
         var granted = await GrantedScopesAsync(tenantId, clientId, record, scopes, log) ?? scopes;
         ScopeConsent.Write(granted, log);
 
@@ -173,9 +171,9 @@ public sealed class GraphContext(ILogger<GraphContext> log)
     }
 
     /// <summary>
-    /// Reads back what the just-primed cache yields, which records the granted scopes and proves
-    /// the silent path the server will use. Best effort: the interactive flow has already
-    /// succeeded, so a failure here is only a warning.
+    /// Reads the granted scopes back out of the just-primed cache, which also proves the silent
+    /// path the server will use. Best effort: the interactive flow has already succeeded, so a
+    /// failure here is only a warning.
     /// </summary>
     private static async Task<string[]?> GrantedScopesAsync(
         string tenantId, string clientId, AuthenticationRecord record, string[] scopes, ILogger log)
@@ -205,7 +203,7 @@ public sealed class GraphContext(ILogger<GraphContext> log)
     private readonly SemaphoreSlim _gate = new(1, 1);
     private GraphServiceClient? _client;
 
-    /// <summary>Silent client for MCP tool calls. Never prompts. It fails with guidance instead.</summary>
+    /// <summary>Silent client for MCP tool calls. Never prompts; fails with guidance instead.</summary>
     public async Task<GraphServiceClient> GetClientAsync(CancellationToken ct = default)
     {
         if (_client is not null)
@@ -254,9 +252,8 @@ public sealed class GraphContext(ILogger<GraphContext> log)
                 TeamsMcpLog.Arg("authority", record.Authority) +
                 TeamsMcpLog.Arg("written", File.GetLastWriteTimeUtc(RecordPath)));
 
-            // The env vars changed since sign-in, so the cached refresh token belongs to a
-            // different app or tenant and will never be found. Without this warning that fails
-            // silently.
+            // The env vars changed since sign-in: the cached refresh token belongs to a different
+            // app or tenant and will never be found. Without this warning it fails silently.
             if (!string.Equals(record.ClientId, clientId, StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(record.TenantId, tenantId, StringComparison.OrdinalIgnoreCase))
             {
@@ -268,10 +265,10 @@ public sealed class GraphContext(ILogger<GraphContext> log)
                     TeamsMcpLog.Arg("record.client", record.ClientId));
             }
 
-            // The same failure the other way around: the environment now asks for scopes the last
+            // The same failure the other way around: the environment asks for scopes the last
             // sign-in never consented to, usually because TEAMS_MCP_ALLOW_SEND was turned on
-            // afterwards. Warn before the attempt so the log explains the failure that follows,
-            // and attempt anyway because a user who consented earlier may already be covered.
+            // afterwards. Warn first so the log explains the failure that follows, then attempt
+            // anyway, since a user who consented earlier may already be covered.
             var consented = ScopeConsent.Read();
             var missing = ScopeConsent.Missing(consented, scopes);
             if (missing.Length > 0)
@@ -294,8 +291,8 @@ public sealed class GraphContext(ILogger<GraphContext> log)
                 DisableAutomaticAuthentication = true,
             });
 
-            // Acquire up front so an auth problem is reported as an auth problem, at a known point,
-            // instead of surfacing later as a confusing failure inside an unrelated Graph call.
+            // Acquire up front so an auth problem is reported here instead of surfacing later
+            // inside an unrelated Graph call.
             var sw = Stopwatch.StartNew();
             try
             {
@@ -341,8 +338,8 @@ public sealed class GraphContext(ILogger<GraphContext> log)
                 credential, allowedHosts: null, observabilityOptions: null, isCaeEnabled: false, scopes: scopes);
 
             var handlers = GraphClientFactory.CreateDefaultHandlers();
-            // Appended last => innermost => sees each retry attempt individually rather than only
-            // the outcome the retry handler settled on.
+            // Appended last, so innermost: it sees each retry attempt, not just the outcome the
+            // retry handler settled on.
             handlers.Add(new GraphLoggingHandler(log));
             _client = new GraphServiceClient(GraphClientFactory.Create(handlers), authProvider);
             return _client;
@@ -355,15 +352,14 @@ public sealed class GraphContext(ILogger<GraphContext> log)
 }
 
 /// <summary>
-/// The scope half of the sign-in state: which scopes the last sign-in granted.
+/// Which scopes the last sign-in granted, persisted beside the authentication record.
 ///
 /// The scope set follows TEAMS_MCP_ALLOW_SEND, and `auth` and the server compute it at different
 /// times, so they can disagree. An <see cref="AuthenticationRecord"/> says who signed in, never
-/// what they consented to, so the granted set is persisted beside it. That file is the difference
-/// between "re-run `-- auth`, sending was never consented to" and an unexplained silent-token
-/// failure.
+/// what they consented to. This file is the difference between "re-run `-- auth`, sending was
+/// never consented to" and an unexplained silent-token failure.
 ///
-/// Missing or unreadable means unknown, never empty. A sign-in from before this file existed
+/// Missing or unreadable means unknown, never empty: a sign-in from before this file existed
 /// consented to everything, and warning on every startup of a working server is worse than not
 /// warning at all.
 /// </summary>
@@ -385,7 +381,7 @@ internal static class ScopeConsent
         }
         catch (Exception)
         {
-            // Corrupt or half-written: unknown, which is the same answer as absent.
+            // Corrupt or half-written: unknown, the same answer as absent.
             return null;
         }
     }
@@ -398,8 +394,7 @@ internal static class ScopeConsent
         }
         catch (Exception e)
         {
-            // Losing this file only costs a clearer error message later, so a failed write is a
-            // warning.
+            // Losing this file only costs a clearer error message later, so warn and carry on.
             log.Line(LogLevel.Warning, Ev.AuthRecord,
                 "could not record the consented scopes" + TeamsMcpLog.Arg("path", Path), e);
         }
@@ -426,8 +421,8 @@ internal static class ScopeConsent
 
     /// <summary>
     /// The <c>scp</c> claim of an access token: what Entra granted, which is not necessarily what
-    /// was asked for. Returns null for anything that is not a readable JWT payload. The token
-    /// never leaves this method.
+    /// was asked for. Null for anything that is not a readable JWT payload. The token never leaves
+    /// this method.
     /// </summary>
     internal static string[]? FromToken(string token)
     {
@@ -534,6 +529,6 @@ internal sealed class GraphLoggingHandler(ILogger log) : DelegatingHandler
     private static string? Header(HttpResponseMessage response, string name) =>
         response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
 
-    /// <summary>Path + query without the host, which is the same on every line and just noise.</summary>
+    /// <summary>Path + query without the host, which is the same on every line.</summary>
     private static string Sanitize(Uri? uri) => uri is null ? "?" : uri.PathAndQuery;
 }

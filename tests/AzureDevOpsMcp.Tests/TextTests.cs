@@ -133,8 +133,8 @@ public class MarkdownToTextTests
     [Fact]
     public void Underscores_inside_identifiers_survive()
     {
-        // Why emphasis is matched at word boundaries: snake_case is everywhere in a pull request
-        // description, and mangling it changes what the text says.
+        // Emphasis is matched at word boundaries because snake_case is everywhere in a pull
+        // request description, and mangling it changes what the text says.
         Assert.Equal("set body_limit and include_system to defaults",
             Text.MarkdownToText("set body_limit and include_system to defaults"));
     }
@@ -216,8 +216,8 @@ public class TruncateTests
 }
 
 /// <summary>
-/// An auth failure arrives as a whole HTML page. Reducing it to the sentence inside is what makes
-/// "the token expired" readable wherever it surfaces, instead of a stylesheet in an error message.
+/// An auth failure arrives as a whole HTML page. Reducing it to the sentence inside keeps "the
+/// token expired" readable instead of a stylesheet in an error message.
 /// </summary>
 public class HtmlErrorTests
 {

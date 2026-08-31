@@ -6,27 +6,26 @@ using Microsoft.Kiota.Abstractions.Serialization;
 namespace TeamsMcp;
 
 /// <summary>
-/// The pure half of the Microsoft Search tools: building the KQL a tool asks with, and reading a
-/// hit back out of what the SDK hands over.
+/// Builds the KQL the Microsoft Search tools ask with, and reads a hit back out of what the SDK
+/// hands over.
 ///
-/// A search hit is not a <see cref="ChatMessage"/> and cannot be treated as one. Graph answers
-/// with <c>"@odata.type": "microsoft.graph.chatMessage"</c>, without the leading <c>#</c> the
-/// generated discriminator expects, so the SDK falls back to the base <see cref="Entity"/> and
-/// every chatMessage property lands in <see cref="Entity.AdditionalData"/> as untyped nodes.
-/// Everything here reads that bag instead of casting, and tolerates a value arriving as an
-/// untyped node, a boxed primitive, or a raw JSON element. A mapper written against the typed
-/// model compiles, runs, and returns nothing but nulls.
+/// A search hit is not a <see cref="ChatMessage"/>. Graph answers with
+/// <c>"@odata.type": "microsoft.graph.chatMessage"</c>, without the leading <c>#</c> the generated
+/// discriminator expects, so the SDK falls back to base <see cref="Entity"/> and every chatMessage
+/// property lands in <see cref="Entity.AdditionalData"/> as untyped nodes. Everything here reads
+/// that bag instead of casting, and tolerates a value arriving as an untyped node, a boxed
+/// primitive, or a raw JSON element. A mapper written against the typed model compiles, runs, and
+/// returns nothing but nulls.
 /// </summary>
-internal static class SearchQueries
+internal static class Search
 {
     /// <summary>
-    /// Composes the query string. The parts are ANDed by juxtaposition, which is how KQL reads a
-    /// bare sequence of terms.
+    /// Composes the query string. KQL ANDs a bare sequence of terms, so the parts are juxtaposed.
     ///
     /// <paramref name="since"/> becomes a <c>sent&gt;</c> scope so the service does the narrowing,
-    /// but that term is day-granular and excludes the named day: <c>sent&gt;2026-07-28</c> returns
-    /// nothing from the 28th. So it is backed off by a day, and <see cref="IsAtOrAfter"/> applies
-    /// the exact timestamp client-side. The KQL term is an optimization, not the filter.
+    /// but that term is day-granular and excludes the day it names: <c>sent&gt;2026-07-28</c>
+    /// returns nothing from the 28th. So it is backed off by a day, and
+    /// <see cref="IsAtOrAfter"/> applies the exact timestamp client-side.
     /// </summary>
     internal static string Build(string? query, DateTimeOffset? since, bool mentionsOnly)
     {
@@ -48,18 +47,18 @@ internal static class SearchQueries
 
     /// <summary>
     /// Whether a hit satisfies the caller's <c>since</c>. A hit with an unreadable timestamp is
-    /// kept when no filter was asked for and dropped when one was: a waiter that accepted it
-    /// would report an arrival it has no evidence for.
+    /// kept when no filter was asked for and dropped when one was, so a waiter never reports an
+    /// arrival it has no evidence for.
     /// </summary>
     internal static bool IsAtOrAfter(SearchHitDto hit, DateTimeOffset? since) =>
         since is not { } ts || (hit.Created is { } created && created >= ts);
 
     /// <summary>
-    /// Maps one hit to the output DTO. The summary is the only text a search hit carries (Graph
-    /// serves no body for chatMessage, with or without an explicit <c>fields</c> list), so it is
-    /// the content, and <c>body_limit</c> truncates it.
+    /// Maps one hit to the output DTO. The summary is the only text a hit carries, since Graph
+    /// serves no body for chatMessage with or without an explicit <c>fields</c> list, so it is the
+    /// content and <c>body_limit</c> truncates it.
     /// </summary>
-    internal static SearchHitDto Map(SearchHit hit, int bodyLimit)
+    internal static SearchHitDto MapHit(SearchHit hit, int bodyLimit)
     {
         var bag = hit.Resource?.AdditionalData;
         var channel = Object(bag, "channelIdentity");
@@ -67,11 +66,11 @@ internal static class SearchQueries
         var channelId = teamId is null ? null : String(Child(channel, "channelId"));
 
         // A channel hit repeats its channel id as chatId, and a 1:1 chat hit carries a
-        // channelIdentity naming the personal-chat substrate. Only the address a follow-up read
-        // would open is returned.
+        // channelIdentity naming the personal-chat substrate, so only the address a follow-up read
+        // would open is kept.
         var chatId = teamId is null ? String(Value(bag, "chatId")) : null;
 
-        var (summary, truncated) = TeamsTools.TruncateBody(TeamsTools.StripHtml(hit.Summary), bodyLimit);
+        var (summary, truncated) = TeamsTools.TruncateBody(TeamsTools.FromHtml(hit.Summary), bodyLimit);
 
         return new SearchHitDto(
             hit.Resource?.Id ?? hit.HitId,
@@ -87,8 +86,8 @@ internal static class SearchQueries
 
     /// <summary>
     /// The sender's display name. Search answers with the Exchange substrate's
-    /// <c>from.emailAddress.name</c> rather than the <c>identitySet</c> the message APIs return.
-    /// Both shapes are read, and whichever is present is the same person.
+    /// <c>from.emailAddress.name</c>, not the <c>identitySet</c> the message APIs return, so both
+    /// shapes are read; whichever is present is the same person.
     /// </summary>
     private static string? Sender(IDictionary<string, UntypedNode>? from) =>
         String(Child(Object(Child(from, "emailAddress")), "name"))

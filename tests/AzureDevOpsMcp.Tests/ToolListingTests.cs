@@ -8,9 +8,8 @@ namespace AzureDevOpsMcp.Tests;
 
 /// <summary>
 /// The tools/list surface: the SEP-2549 caching hints this server stamps on the listing, and the
-/// annotations each tool declares. Both are protocol-visible claims about tools no test can call,
-/// so what is asserted is the claim itself: that it is present, and that it matches what the tool
-/// does.
+/// annotations each tool declares. No test can call these tools, so what is asserted is the claim
+/// itself: that it is present, and that it matches what the tool does.
 /// </summary>
 public class ToolListingTests
 {
@@ -18,40 +17,40 @@ public class ToolListingTests
         new() { Tools = [.. names.Select(n => new Tool { Name = n })] };
 
     [Fact]
-    public void Stamp_sets_the_caching_hints_a_2026_07_28_client_expects()
+    public void Prepare_sets_the_caching_hints_a_2026_07_28_client_expects()
     {
-        var stamped = ToolListing.Stamp(Result("list_projects"), requestCursor: null);
+        var prepared = ToolListing.Prepare(Result("list_projects"), requestCursor: null);
 
-        Assert.Equal(ToolListing.Ttl, stamped.TimeToLive);
-        Assert.Equal(CacheScope.Public, stamped.CacheScope);
+        Assert.Equal(ToolListing.Ttl, prepared.TimeToLive);
+        Assert.Equal(CacheScope.Public, prepared.CacheScope);
     }
 
     [Fact]
-    public void Stamp_orders_the_listing_so_it_is_the_same_on_every_build()
+    public void Prepare_orders_the_listing_so_it_is_the_same_on_every_build()
     {
-        var stamped = ToolListing.Stamp(
+        var prepared = ToolListing.Prepare(
             Result("search_wiki", "get_work_item", "list_projects", "deployment_status"),
             requestCursor: null);
 
         Assert.Equal(
             ["deployment_status", "get_work_item", "list_projects", "search_wiki"],
-            stamped.Tools.Select(t => t.Name));
+            prepared.Tools.Select(t => t.Name));
     }
 
     [Fact]
-    public void Stamp_leaves_a_paginated_page_in_the_order_the_handler_produced_it()
+    public void Prepare_leaves_a_paginated_page_in_the_order_the_handler_produced_it()
     {
         // Sorting one page of several would not make the whole sequence deterministic, and the
-        // cursor was issued against the handler's own order. The TTL is still stamped.
+        // cursor was issued against the handler's own order. The TTL is still prepared.
         var page = Result("search_wiki", "get_work_item");
         page.NextCursor = "next";
 
-        var stamped = ToolListing.Stamp(page, requestCursor: null);
+        var prepared = ToolListing.Prepare(page, requestCursor: null);
 
-        Assert.Equal(["search_wiki", "get_work_item"], stamped.Tools.Select(t => t.Name));
-        Assert.Equal(ToolListing.Ttl, stamped.TimeToLive);
+        Assert.Equal(["search_wiki", "get_work_item"], prepared.Tools.Select(t => t.Name));
+        Assert.Equal(ToolListing.Ttl, prepared.TimeToLive);
 
-        var second = ToolListing.Stamp(Result("search_wiki", "get_work_item"), requestCursor: "next");
+        var second = ToolListing.Prepare(Result("search_wiki", "get_work_item"), requestCursor: "next");
         Assert.Equal(["search_wiki", "get_work_item"], second.Tools.Select(t => t.Name));
         Assert.Equal(ToolListing.Ttl, second.TimeToLive);
     }
@@ -92,12 +91,10 @@ public class ToolListingTests
         var description = tool.GetCustomAttribute<DescriptionAttribute>()?.Description ?? "";
 
         // The annotation is for the client, the description for the model. A tool gated on
-        // ADO_MCP_ALLOW_WRITE has to name the variable, or a refusal looks like a transient failure.
-        //
-        // ado_api_request names it without being a write tool, which is the one exception and a
-        // deliberate one: it reads under every configuration this server ships with, and refuses
-        // the methods that would not on the same variable. That refusal is configuration too, so
-        // the model has to be told which one.
+        // ADO_MCP_ALLOW_WRITE has to name the variable, or a refusal looks like a transient
+        // failure. ado_api_request names it without being a write tool: it reads under every
+        // configuration this server ships with and gates its writing methods on the same
+        // variable, so the model has to be told which one.
         Assert.Equal(
             Writes.Contains(attribute.Name!) || attribute.Name == "ado_api_request",
             description.Contains("ADO_MCP_ALLOW_WRITE"));
@@ -107,9 +104,9 @@ public class ToolListingTests
     [MemberData(nameof(Tools))]
     public void Only_the_approval_tool_names_the_approval_gate(MethodInfo tool)
     {
-        // approve_release refuses on a second variable that no other tool consults, so its
-        // description has to name that one too — a model told only about ADO_MCP_ALLOW_WRITE would
-        // read the refusal as a bug in a server that plainly has writing turned on.
+        // approve_release refuses on a second variable no other tool consults, so its description
+        // has to name that one too. A model told only about ADO_MCP_ALLOW_WRITE would read the
+        // refusal as a bug in a server that has writing turned on.
         var attribute = tool.GetCustomAttribute<McpServerToolAttribute>()!;
         var description = tool.GetCustomAttribute<DescriptionAttribute>()?.Description ?? "";
 
@@ -123,11 +120,11 @@ public class ToolListingTests
     ];
 
     /// <summary>
-    /// The mutations that replace something rather than adding to it, which is what an MCP client
+    /// The mutations that replace something rather than add to it, which is what an MCP client
     /// gates a confirmation prompt on. Queueing a run or filing a work item adds; overwriting a
     /// work item's fields replaces them, and deploying a release replaces what is running in that
-    /// environment. approve_release is here because approving a pre-deploy gate is what lets that
-    /// deployment happen — the confirmation belongs on the call that causes it.
+    /// environment. approve_release is here because approving a pre-deploy gate is what lets the
+    /// deployment happen.
     /// </summary>
     private static readonly HashSet<string> Destructive =
         ["update_work_item", "deploy_release", "approve_release"];

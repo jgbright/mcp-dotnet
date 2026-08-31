@@ -295,8 +295,8 @@ public class WorkItemMappingTests
     [Fact]
     public void The_scheduling_fields_are_read_back_as_the_numbers_they_are()
     {
-        // Every one of these is writable by the two work item tools; a field a model can see but
-        // not fix sends the work out to a shell. Fractions survive because they are doubles.
+        // Every one of these is writable by the two work item tools, so a model that reads one
+        // can also fix it. Fractions survive because they are doubles.
         var fields = Fields("""
             {
               "Microsoft.VSTS.Scheduling.OriginalEstimate": 4,
@@ -510,10 +510,10 @@ public class TimelineMappingTests
     public void A_skipped_stage_is_reported_as_neither_failed_nor_passed()
     {
         // Counting it as passing would say the pipeline did work it never did.
-        Assert.False(Mapping.IsFailure("skipped"));
-        Assert.False(Mapping.IsSuccess("skipped"));
-        Assert.False(Mapping.IsSuccess(null));
-        Assert.True(Mapping.IsSuccess("succeededWithIssues"));
+        Assert.False(Mapping.IsRunTaskFailure("skipped"));
+        Assert.False(Mapping.IsRunTaskSuccess("skipped"));
+        Assert.False(Mapping.IsRunTaskSuccess(null));
+        Assert.True(Mapping.IsRunTaskSuccess("succeededWithIssues"));
     }
 
     [Fact]
@@ -533,7 +533,7 @@ public class TimelineMappingTests
     [InlineData("abandoned")]
     public void Cancelled_and_abandoned_count_as_failure(string result)
     {
-        Assert.True(Mapping.IsFailure(result));
+        Assert.True(Mapping.IsRunTaskFailure(result));
     }
 
     [Theory]
@@ -543,7 +543,7 @@ public class TimelineMappingTests
     [InlineData(null)]
     public void Everything_else_does_not(string? result)
     {
-        Assert.False(Mapping.IsFailure(result));
+        Assert.False(Mapping.IsRunTaskFailure(result));
     }
 
     [Fact]
@@ -664,9 +664,8 @@ public class FieldHelperTests
     [InlineData("completed", true)]
     [InlineData("Completed", true)]
     [InlineData(null, true)]
-    // `cancelling` reads like an ending, but the run is still winding down and becomes `completed`
-    // once the cancellation lands. A waiter that stopped here would report a run that had not
-    // stopped.
+    // `cancelling` reads like an ending, but the run becomes `completed` once the cancellation
+    // lands. A waiter that stopped here would report a run that had not stopped.
     [InlineData("cancelling", false)]
     [InlineData("inProgress", false)]
     [InlineData("notStarted", false)]
@@ -681,8 +680,8 @@ public class FieldHelperTests
     [InlineData("Active", false)]
     [InlineData("completed", true)]
     [InlineData("abandoned", true)]
-    // Unknown and absent are terminal: a waiter surprised by the service should return what it
-    // sees rather than poll a state it does not understand until the timeout.
+    // Unknown and absent are terminal: better to return what the service said than to poll a
+    // state this server does not understand until the timeout.
     [InlineData("notSet", true)]
     [InlineData(null, true)]
     public void Only_active_keeps_a_pull_request_waiter_polling(string? status, bool expected)

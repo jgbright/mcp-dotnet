@@ -3,12 +3,10 @@ using Microsoft.Extensions.Logging;
 
 namespace AzureDevOpsMcp;
 
-// ------------------------------------------------------------- deployment map wire shape
-//
-// This is data, not code: which deployables exist, what ships each one, and what counts as
-// "production" are one organization's facts, so they live in a JSON file. The server only knows
-// the protocol chains and how to compare versions against paths. A deployable takes one of two
-// forms, by which field names its pipeline:
+// The deployment map's wire shape. Which deployables exist, what ships each one and what counts
+// as "production" are one organization's facts, so they live in a JSON file; the server knows
+// only the protocol chains and how to compare versions against paths. A deployable takes one of
+// two forms, by which field names its pipeline:
 //
 //   {
 //     "deployables": [
@@ -30,11 +28,11 @@ namespace AzureDevOpsMcp;
 // the commit or changeset it was built from.
 //
 // `paths` (TFVC server-path prefixes, not globs) scope the "undeployed changesets" question when
-// the deployed build came from TFVC. When omitted they are derived at call time from the build
+// the deployed build came from TFVC. Omitted, they are derived at call time from the build
 // definition's TFVC workspace mappings, so the file only has to say what the build definition
-// cannot. For a git-built deployable the undeployed question is answered by the branch instead.
-// `note` is opaque passthrough, and unknown fields are ignored, so the same file can carry data
-// for other consumers (e.g. a git-tagging script) without this server caring.
+// cannot. For a git-built deployable the branch answers that question instead. `note` is opaque
+// passthrough and unknown fields are ignored, so the same file can carry data for other consumers
+// (e.g. a git-tagging script).
 
 internal sealed record DeploymentFile(List<DeployableEntry>? Deployables);
 
@@ -47,8 +45,8 @@ internal sealed record Deployable(
     string? Project, List<string>? Paths, string? Note);
 
 /// <summary>
-/// The deployment map (see the format comment above); file mechanics live in
-/// <see cref="DataFile{T}"/>, pure helpers for the tool live here.
+/// The deployment map (format above). File mechanics live in <see cref="DataFile{T}"/>; the
+/// tool's pure helpers live here.
 /// </summary>
 internal static class Deployments
 {
@@ -110,8 +108,10 @@ internal static class Deployments
     }
 
     /// <summary>
-    /// The Release Management API lives on its own host: dev.azure.com/{org} answers builds and
-    /// version control, vsrm.dev.azure.com/{org} answers release definitions and deployments.
+    /// Azure DevOps splits services across hosts: dev.azure.com/{org} answers builds and version
+    /// control, vsrm.dev.azure.com/{org} answers release definitions and deployments.
+    /// <see cref="Search.BaseUrl"/> and <see cref="Writes.VsspsBaseUrl"/> do the same for their
+    /// services.
     /// </summary>
     internal static string VsrmBaseUrl(string orgUrl)
     {
@@ -128,8 +128,8 @@ internal static class Deployments
     }
 
     /// <summary>
-    /// The mapped (not cloaked) server paths of a classic build definition's TFVC workspace:
-    /// the definition's own answer to "which paths feed this build". The value arrives as a JSON
+    /// The mapped (not cloaked) server paths of a classic build definition's TFVC workspace: the
+    /// definition's own answer to "which paths feed this build". The value arrives as a JSON
     /// string inside repository.properties.
     /// </summary>
     internal static List<string> ParseTfvcMappings(string? tfvcMappingJson)
