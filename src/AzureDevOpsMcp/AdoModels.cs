@@ -410,9 +410,16 @@ public sealed record RelationDto(string? Type, string? Name, int? WorkItemId, st
 
 public sealed record PipelineDto(int Id, string? Name, string? Folder);
 
+/// <summary>
+/// <c>sourceVersion</c> is what the run was built from: a changeset number in a TFVC repository, a
+/// commit SHA in git. <c>changeset</c> repeats it as a number when it is one, which is the form
+/// that compares and sorts and the answer to "what is deployed" in a TFVC organization. Which of
+/// the two is interesting depends on the repository, so both are carried and the null falls away.
+/// </summary>
 public sealed record PipelineRunDto(
     int Id, string? Name, string? State, string? Result, DateTimeOffset? Created,
-    DateTimeOffset? Finished, string? Branch, string? RequestedFor);
+    DateTimeOffset? Finished, string? Branch, string? RequestedFor,
+    string? SourceVersion = null, int? Changeset = null);
 
 /// <summary>Envelope for run listings: hasMore is omitted when the whole list was returned.</summary>
 public sealed record PipelineRunsResult(List<PipelineRunDto> Runs, bool? HasMore);
@@ -447,7 +454,9 @@ public sealed record PipelineRunDetailDto(
     string? RequestedFor,
     List<FailedStepDto>? FailedSteps,
     SkippedDto? Skipped,
-    string? WebUrl);
+    string? WebUrl,
+    string? SourceVersion = null,
+    int? Changeset = null);
 
 /// <summary>
 /// One failed timeline record with the stage/job it sits under, the issues Azure DevOps recorded
@@ -519,9 +528,14 @@ public sealed record ReleaseDetailDto(
 /// <summary>
 /// What a release carries. For the usual Build artifact, <c>version</c> is the build number and
 /// <c>buildId</c> is the run id, which is what get_pipeline_run takes.
+///
+/// <c>sourceVersion</c> and <c>changeset</c> say what that build was built from, and appear only
+/// when the caller asked for them: they are one request per artifact, since a release records the
+/// build it took and not the source that build came from.
 /// </summary>
 public sealed record ReleaseArtifactDto(
-    string? Alias, string? Type, string? Definition, string? Version, int? BuildId, bool? Primary);
+    string? Alias, string? Type, string? Definition, string? Version, int? BuildId, bool? Primary,
+    string? SourceVersion = null, int? Changeset = null);
 
 /// <summary>
 /// One stage of a release. <c>pendingApprovals</c> is why a stage can sit at <c>queued</c>
@@ -1105,7 +1119,20 @@ internal static class Mapping
         b.QueueTime,
         b.FinishTime,
         ShortBranch(b.SourceBranch),
-        b.RequestedFor?.DisplayName);
+        b.RequestedFor?.DisplayName,
+        b.SourceVersion is { Length: > 0 } ? b.SourceVersion : null,
+        Changeset(b.SourceVersion));
+
+    /// <summary>
+    /// A source version as a changeset number, or null in a git repository. Whether the version
+    /// parses as a number is how this server already tells the two apart (see VersionStateAsync);
+    /// reading the repository type instead would be a second answer to a settled question.
+    /// </summary>
+    internal static int? Changeset(string? sourceVersion) =>
+        sourceVersion is { Length: > 0 } &&
+        int.TryParse(sourceVersion, CultureInfo.InvariantCulture, out var changeset)
+            ? changeset
+            : null;
 
     /// <summary>
     /// Walks the build timeline and reports only what failed, with the stage and job it belongs to.

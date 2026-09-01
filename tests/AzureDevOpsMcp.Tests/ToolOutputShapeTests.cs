@@ -144,7 +144,7 @@ public class ToolOutputShapeTests
     [Fact]
     public void A_run_that_is_still_going_omits_the_result_rather_than_sending_null()
     {
-        var json = Serialize(new PipelineRunDto(77, "20260701.3", "inProgress", null, null, null, null, null));
+        var json = Serialize(new PipelineRunDto(77, "20260701.3", "inProgress", null, null, null, null, null, null));
 
         Assert.False(Has(json, "result"));
         Assert.False(Has(json, "finished"));
