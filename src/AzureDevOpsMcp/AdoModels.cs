@@ -208,9 +208,8 @@ internal sealed record WireDeploymentInput(
 // under distributedtask/environments. The listing rejects $expand=machines (400, "no longer
 // supported"); only the by-id read returns machines.
 //
-// Agent capabilities are left out: they are the agent's own environment variables, the service
-// does not mark them secret, and on a real agent they held a license key. The by-id read does
-// not return them, and no tool calls the endpoint that does.
+// Agent capabilities are left out: they are the agent's own environment variables, unmarked as
+// secret and carrying a license key on a real agent. No tool calls the endpoint that returns them.
 
 internal sealed record WireDeploymentGroup(
     int Id, string? Name, string? Description, int? MachineCount, List<WireDeploymentMachine>? Machines);
@@ -1393,9 +1392,8 @@ internal static class Mapping
     }
 
     /// <summary>
-    /// The attempt to report: the highest-numbered one. A redeploy adds an attempt instead of
-    /// replacing the previous one, so the first entry can be a failure that was later retried
-    /// successfully.
+    /// The highest-numbered attempt. A redeploy adds an attempt instead of replacing the last,
+    /// so the first entry can be a failure that was later retried successfully.
     /// </summary>
     internal static WireDeploymentAttempt? LatestAttempt(WireReleaseEnvironment env) =>
         (env.DeploySteps ?? []).OrderByDescending(d => d.Attempt).FirstOrDefault();
@@ -1421,9 +1419,8 @@ internal static class Mapping
                 {
                     if (!IsReleaseTaskFailure(task.Status))
                     {
-                        // Counted only while nothing else reports them: include_tasks lists the
-                        // passing tasks, and then `skipped.succeeded` would claim they were
-                        // filtered out of a result they are sitting in.
+                        // Not counted when include_tasks lists the passing tasks anyway:
+                        // `skipped.succeeded` must not claim they were filtered out.
                         if (countSucceeded && IsReleaseTaskSuccess(task.Status))
                         {
                             counts.Succeeded++;

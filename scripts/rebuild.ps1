@@ -19,10 +19,9 @@ each one looks like success:
   before each uninstall, since a supervisor may relaunch one during the build. That drops the MCP
   connection of any client currently using these servers.
 - `--add-source` adds a source instead of restricting to one, so an unpinned install resolves the
-  highest version across every configured feed. That used to mean a stranger's package with the
-  same id; now the ids are owner-prefixed it means whatever this repo has published to nuget.org,
-  which is still not the local build. Installs therefore run against a config with every source
-  cleared but artifacts/, with the version pinned.
+  highest version across every configured feed — a published package rather than the local build.
+  Installs therefore run against a config with every source cleared but artifacts/, with the
+  version pinned.
 
 The install is verified: the assembly timestamp is compared before and after, and the tool command
 is checked. Either mismatch is a hard failure.
@@ -123,11 +122,8 @@ function Invoke-Dotnet([string[]]$DotnetArgs)
     if ($LASTEXITCODE -ne 0) { throw "dotnet $($DotnetArgs -join ' ') failed with exit code $LASTEXITCODE" }
 }
 
-# `--add-source` ADDS a source instead of restricting to one, so NuGet still resolves the highest
-# version across every feed. An unpinned install then reports success while registering a package
-# that is not the local build: historically a stranger's AzureDevOpsMcp, and once these servers
-# publish, their own released version. So every source is cleared but artifacts/, and the install
-# pins the version besides.
+# The config that closes the `--add-source` hole the help describes: every source cleared but
+# artifacts/, and the install pins the version besides.
 $NugetConfig = Join-Path ([System.IO.Path]::GetTempPath()) "mcp-rebuild-$PID.nuget.config"
 @"
 <?xml version="1.0" encoding="utf-8"?>

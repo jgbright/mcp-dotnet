@@ -4,10 +4,9 @@ using ModelContextProtocol;
 namespace AzureDevOpsMcp.Tests;
 
 /// <summary>
-/// Classic release pipelines. Release Management's wire shapes are not the build API's, and most
-/// of what is asserted here is a place where assuming otherwise produces a wrong answer instead
-/// of an error: a task verdict spelled two ways, a redeploy that leaves the failed attempt in the
-/// list, an approval that is only a placeholder.
+/// Classic release pipelines, whose wire shapes are not the build API's. Most of what is pinned
+/// here would otherwise fail as a wrong answer rather than an error: a task verdict spelled two
+/// ways, a redeploy that keeps the failed attempt, an approval that is only a placeholder.
 /// </summary>
 public class ReleaseMappingTests
 {
@@ -117,8 +116,8 @@ public class ReleaseMappingTests
     [Fact]
     public void Both_spellings_of_a_task_verdict_are_understood()
     {
-        // Release Management's own TaskStatus enum carries success/succeeded and failure/failed.
-        // Matching only the familiar spelling drops half the failures on the floor.
+        // Release Management's TaskStatus enum carries success/succeeded and failure/failed;
+        // matching one spelling drops half the failures.
         var env = Environment("Production", "failed",
             [Attempt(1, Task("A", "success"), Task("B", "failure"), Task("C", "Failed"))]);
         var counts = new SkipCounter();
@@ -146,8 +145,8 @@ public class ReleaseMappingTests
     [Fact]
     public void A_redeploy_is_reported_from_the_attempt_that_ran_last()
     {
-        // A retry adds an attempt and leaves the failed one in the list. Reporting the first would
-        // say a stage that has since gone green is broken.
+        // A retry adds an attempt and keeps the failed one. Reporting the first would call a
+        // stage broken after it went green.
         var env = Environment("Production", "succeeded",
         [
             Attempt(1, Task("Deploy", "failed", "the first try blew up")),
@@ -164,8 +163,8 @@ public class ReleaseMappingTests
     [Fact]
     public void Every_task_is_listed_when_the_caller_asks_for_them_including_the_ones_that_passed()
     {
-        // "24 tasks succeeded" does not answer "what does this stage run", which is what
-        // include_tasks is for. Skipped tasks are listed too, with their status.
+        // include_tasks answers "what does this stage run", so skipped tasks are listed too,
+        // with their status.
         var env = Environment("Production", "succeeded",
             [Attempt(1, Task("Copy files", "succeeded"), Task("Not this time", "skipped"),
                 Task("File Transform", "succeeded"))]);
@@ -181,8 +180,8 @@ public class ReleaseMappingTests
     [Fact]
     public void A_task_that_is_listed_is_not_also_counted_as_skipped()
     {
-        // `skipped.succeeded` means "not reported because it passed". With include_tasks the
-        // task is in the result, so counting it as skipped too would contradict that.
+        // `skipped.succeeded` means "not reported because it passed"; a task include_tasks
+        // put in the result cannot also count as skipped.
         var env = Environment("Production", "succeeded", [Attempt(1, Task("Copy files", "succeeded"))]);
 
         var counted = new SkipCounter();
@@ -203,8 +202,8 @@ public class ReleaseMappingTests
     [Fact]
     public void Only_a_real_pending_approval_counts_as_waiting_on_somebody()
     {
-        // Azure DevOps records an automated placeholder approval for a stage that needs none, and
-        // keeps the approvals that were already answered. Neither is a stage waiting for a person.
+        // A stage that needs no approval gets an automated placeholder, and answered approvals
+        // stay in the list. Neither is a stage waiting for a person.
         var approvals = new List<WireReleaseApproval>
         {
             new(1, "approved", "preDeploy", new WireIdentity("Mike", null, "m"), null, null, null, null, false, 1, 1, null, null),
@@ -222,9 +221,9 @@ public class ReleaseMappingTests
     [Fact]
     public void A_failed_deployment_keeps_the_operation_status_that_says_it_failed()
     {
-        // Measured against the real service: an environment has no `failed` status. A deployment
-        // that blew up reports as `rejected`, the same as an approval somebody turned down, and
-        // operationStatus (PhaseFailed vs Rejected) is the only thing separating the two.
+        // Measured: an environment has no `failed` status. A failed deployment reports as
+        // `rejected`, same as a turned-down approval, and operationStatus (PhaseFailed vs
+        // Rejected) is the only thing separating the two.
         var env = Environment("Deploy to QA", "rejected", [Attempt(2, Task("Start Services", "failed", "exit 1"))]);
 
         var dto = Mapping.ReleaseEnvironment(env, [new FailedStepDto(null, null, "Start Services", "failed", null, null, null)]);
@@ -249,8 +248,8 @@ public class ReleaseMappingTests
     [Fact]
     public void A_stage_still_running_has_no_finish_time()
     {
-        // lastModifiedOn is a finish time only once the stage has stopped. While it is deploying
-        // it means "when something last happened", which is not what `finished` claims.
+        // lastModifiedOn is a finish time only once the stage has stopped; mid-deploy it means
+        // "when something last happened".
         var running = Environment("Dev", "inProgress",
             [new WireDeploymentAttempt(1, 1, "inProgress", "phaseInProgress",
                 DateTimeOffset.Parse("2026-07-31T10:00:00Z"), DateTimeOffset.Parse("2026-07-31T10:05:00Z"),
@@ -295,9 +294,8 @@ public class ReleaseMappingTests
 }
 
 /// <summary>
-/// A release definition read as configuration. Mostly this asserts what is not returned (a
-/// secret's value, an input the definition left empty) and that a substitution task's target
-/// files survive into the result.
+/// A release definition read as configuration. Mostly what is NOT returned: a secret's value, an
+/// input left empty — plus a substitution task's target files surviving into the result.
 /// </summary>
 public class ReleaseDefinitionConfigTests
 {
@@ -366,8 +364,8 @@ public class ReleaseDefinitionConfigTests
     [Fact]
     public void A_task_keeps_the_inputs_that_say_which_files_it_rewrites()
     {
-        // This is what settles whether editing a checked-in appsettings.json changes anything.
-        // No variable list can answer it.
+        // The inputs settle whether editing a checked-in appsettings.json changes anything;
+        // no variable list can.
         var dto = Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, includeTasks: true, Org, "Core");
 
         var task = dto.Environments[1].Phases!.Single().Tasks!.Single();
@@ -385,8 +383,8 @@ public class ReleaseDefinitionConfigTests
         var dto = Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, includeTasks: false, Org, "Core");
 
         Assert.All(dto.Environments, e => Assert.Null(e.Phases));
-        // A stage that really runs nothing is also null, which is why the tool's description says
-        // which of the two an absent `phases` means.
+        // A stage that really runs nothing is also null; the tool's description says which of
+        // the two an absent `phases` means.
         Assert.Null(Mapping.ReleaseDefinitionDetail(Definition(), NoGroups, true, Org, "Core")
             .Environments[0].Phases);
     }
@@ -412,8 +410,8 @@ public class ReleaseDefinitionConfigTests
     [Fact]
     public void A_definition_with_nothing_configured_omits_the_fields_entirely()
     {
-        // Absent means absent: an empty variables object would read as "none configured" where it
-        // means "there was nothing to say".
+        // An empty variables object would read as "none configured" when it means "nothing to
+        // say".
         var bare = new WireReleaseDefinitionDetail(
             9, "Api", "\\", null, 1, null, null, [new(1, "Prod", 1, null, null, null)], null);
 
@@ -494,8 +492,8 @@ public class ReleaseDefinitionConfigTests
     [Fact]
     public void A_secret_matches_on_its_name_only()
     {
-        // Matching on a value the tool then refuses to return would leak it a bit at a time: a
-        // caller could ask whether it starts with "whsec_" and be told.
+        // Matching on a value the tool refuses to return would leak it a bit at a time: ask
+        // whether it starts with "whsec_" and be told.
         var byName = Assert.Single(ReleaseConfig.Matches(
             Definition(), true, false, ReleaseConfig.Matcher("WebhookSecret", false)));
         Assert.True(byName.IsSecret);
@@ -540,8 +538,7 @@ public class ReleaseDefinitionConfigTests
 }
 
 /// <summary>
-/// Choosing what to approve. This one signs something, so the rule is the same as every other
-/// name resolution in the server: exactly one candidate, or list them.
+/// Choosing what to approve: exactly one candidate, or list them. This one signs something.
 /// </summary>
 public class ReleaseApprovalChoiceTests
 {
@@ -591,8 +588,8 @@ public class ReleaseApprovalChoiceTests
 }
 
 /// <summary>
-/// Resolving a stage against the release that holds it, and the two gates the write tools sit
-/// behind. Both gate tests assert the refusal happens before anything reaches the network.
+/// Resolving a stage against its release, and the two write gates. The gate tests assert the
+/// refusal happens before anything reaches the network.
 /// </summary>
 public class ReleaseToolTests : IDisposable
 {
@@ -626,8 +623,8 @@ public class ReleaseToolTests : IDisposable
     {
         var resolved = _tools.ResolveReleaseEnvironment(Release(), "production");
 
-        // The release environment id, not the definition environment id (13): the deploy endpoint
-        // addresses the former, and the two are different numbers for the same stage.
+        // The release environment id, not the definition environment id (13) — the deploy
+        // endpoint addresses the former, and they are different numbers for the same stage.
         Assert.Equal("103", resolved.Id);
         Assert.Equal("Production", resolved.Name);
     }
@@ -635,8 +632,8 @@ public class ReleaseToolTests : IDisposable
     [Fact]
     public void A_stage_id_from_another_release_is_refused_rather_than_deployed()
     {
-        // Resolve passes a number through untouched, so without this check the PATCH would go to
-        // an environment id that belongs to some other release.
+        // Resolve passes a number through untouched; without this check the PATCH would hit an
+        // environment id belonging to some other release.
         var e = Assert.Throws<McpException>(() => _tools.ResolveReleaseEnvironment(Release(), "999"));
 
         Assert.Contains("has no environment with id 999", e.Message);
@@ -653,9 +650,8 @@ public class ReleaseToolTests : IDisposable
     }
 
     /// <summary>
-    /// Two stages that each run a task called "File Transform", with reused ids. Measured against
-    /// a real release where a production stage deploying to two machines ran the same task twice
-    /// and the ids restarted in the other stage.
+    /// Two stages that each run a task called "File Transform", with reused ids — the shape of a
+    /// real release where one stage ran the same task twice and ids restarted in the other.
     /// </summary>
     private static (List<WireReleaseEnvironment> Environments, List<List<ReleaseTaskEntry>> Tasks) Ran()
     {
@@ -701,8 +697,7 @@ public class ReleaseToolTests : IDisposable
     [Fact]
     public void A_name_that_two_tasks_share_is_listed_with_the_id_of_each()
     {
-        // One stage can run the same task twice, so the name does not identify a task and the
-        // result has to carry the id.
+        // One stage can run the same task twice, so a name alone does not identify a task.
         var (environments, tasks) = Ran();
 
         var e = Assert.Throws<McpException>(() =>
@@ -764,7 +759,7 @@ public class ReleaseToolTests : IDisposable
     [Fact]
     public async Task Approving_still_refuses_when_only_writing_is_enabled()
     {
-        // Turning writing on so an agent can file work items must not also let it sign off on a
+        // Enabling writes so an agent can file work items must not also let it sign off on a
         // production deployment.
         using var write = new EnvVar("ADO_MCP_ALLOW_WRITE", "true");
 

@@ -24,9 +24,9 @@ means changing it in both places, and a new server means copying the conventions
 rather than for their services, so it extracts into a shared project the next time a revision forces
 an edit to both copies, in that same change.
 
-The two are independent processes with independent failure modes and independent release-blocking
-risk. A shared library would couple their release cadences and need a seam for every place Graph and
-Azure DevOps differ, which is most places below the top layer.
+The two processes fail and release independently. A shared library would couple their release
+cadences and need a seam everywhere Graph and Azure DevOps differ, which is most places below the
+top layer.
 
 ## Layers within one server
 
@@ -89,12 +89,12 @@ shared `BuildMcpHost` local function, but over in-memory pipes instead of stdio,
 in-process MCP client. One tool call per run: bare `call` lists the tools; `call <tool>` takes
 KEY=VALUE pairs coerced against the tool's own `inputSchema`, one JSON object, or `-` for a JSON
 object on stdin. `Call.cs` holds that parsing and the result rendering, and the tool name completes
-via a System.CommandLine completion source. The name given on the command line resolves the way the
-servers' own name parameters do: exact first, then substring, candidates listed on ambiguity, with
-the correction noted on stderr. Since the transport is not stdout, the result JSON is the only thing
-written there, logs stay on stderr and in the file, and a tool error exits non-zero, so output pipes
-cleanly into `ConvertFrom-Json` or `jq`. A call that succeeds has exercised the same path an MCP
-client would: host, silent auth, `Run` wrapper, serializer and filters.
+via a System.CommandLine completion source. The name resolves the way the servers' own name
+parameters do: exact first, then substring, candidates listed on ambiguity, the correction noted on
+stderr. Since the transport is not stdout, the result JSON is the only thing written there, logs
+stay on stderr and in the file, and a tool error exits non-zero, so output pipes cleanly into
+`ConvertFrom-Json` or `jq`. A call that succeeds has exercised the same path an MCP client would:
+host, silent auth, `Run` wrapper, serializer and filters.
 
 | Mode | Teams | Azure DevOps | Writes stdout | Builds the host |
 | --- | --- | --- | --- | --- |

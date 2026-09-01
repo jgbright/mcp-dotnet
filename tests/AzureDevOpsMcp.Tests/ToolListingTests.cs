@@ -7,9 +7,8 @@ using ModelContextProtocol.Server;
 namespace AzureDevOpsMcp.Tests;
 
 /// <summary>
-/// The tools/list surface: the SEP-2549 caching hints this server stamps on the listing, and the
-/// annotations each tool declares. No test can call these tools, so what is asserted is the claim
-/// itself: that it is present, and that it matches what the tool does.
+/// The tools/list surface: the SEP-2549 caching hints and each tool's annotations. No test can
+/// call these tools, so what is asserted is the claim itself, and that it matches the tool.
 /// </summary>
 public class ToolListingTests
 {
@@ -90,11 +89,10 @@ public class ToolListingTests
         var attribute = tool.GetCustomAttribute<McpServerToolAttribute>()!;
         var description = tool.GetCustomAttribute<DescriptionAttribute>()?.Description ?? "";
 
-        // The annotation is for the client, the description for the model. A tool gated on
-        // ADO_MCP_ALLOW_WRITE has to name the variable, or a refusal looks like a transient
-        // failure. ado_api_request names it without being a write tool: it reads under every
-        // configuration this server ships with and gates its writing methods on the same
-        // variable, so the model has to be told which one.
+        // The annotation is for the client, the description for the model: a gated tool has to
+        // name ADO_MCP_ALLOW_WRITE or a refusal looks like a transient failure. ado_api_request
+        // names it without being a write tool, because it gates its non-GET methods on the same
+        // variable.
         Assert.Equal(
             Writes.Contains(attribute.Name!) || attribute.Name == "ado_api_request",
             description.Contains("ADO_MCP_ALLOW_WRITE"));
@@ -104,9 +102,8 @@ public class ToolListingTests
     [MemberData(nameof(Tools))]
     public void Only_the_approval_tool_names_the_approval_gate(MethodInfo tool)
     {
-        // approve_release refuses on a second variable no other tool consults, so its description
-        // has to name that one too. A model told only about ADO_MCP_ALLOW_WRITE would read the
-        // refusal as a bug in a server that has writing turned on.
+        // approve_release refuses on a second variable no other tool consults; a model told only
+        // about ADO_MCP_ALLOW_WRITE would read that refusal as a bug.
         var attribute = tool.GetCustomAttribute<McpServerToolAttribute>()!;
         var description = tool.GetCustomAttribute<DescriptionAttribute>()?.Description ?? "";
 
@@ -121,10 +118,9 @@ public class ToolListingTests
 
     /// <summary>
     /// The mutations that replace something rather than add to it, which is what an MCP client
-    /// gates a confirmation prompt on. Queueing a run or filing a work item adds; overwriting a
-    /// work item's fields replaces them, and deploying a release replaces what is running in that
-    /// environment. approve_release is here because approving a pre-deploy gate is what lets the
-    /// deployment happen.
+    /// gates a confirmation prompt on. Queueing a run or filing a work item adds; overwriting
+    /// fields or deploying a release replaces. approve_release is here because approving is what
+    /// lets the deployment happen.
     /// </summary>
     private static readonly HashSet<string> Destructive =
         ["update_work_item", "deploy_release", "approve_release"];

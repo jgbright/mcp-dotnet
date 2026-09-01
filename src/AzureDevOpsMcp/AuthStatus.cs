@@ -8,11 +8,9 @@ namespace AzureDevOpsMcp;
 
 /// <summary>
 /// What credential this server is using, and whether it still works. "The tool call failed" and
-/// "the credential is dead" look the same from the outside, and the usual next move, reaching for
-/// AZURE_DEVOPS_PAT and calling the REST API by hand, fails a second time for a reason nobody has
-/// checked either. So both are reported together. The PAT is probed rather than assumed: it is
-/// never this server's credential and never makes a tool's request, it is checked because a
-/// session is about to build on it.
+/// "the credential is dead" look the same from the outside, so both are reported together. The
+/// PAT is probed rather than assumed: it is never this server's credential and never makes a
+/// tool's request, but a session that falls back to it deserves one line saying it is dead.
 /// </summary>
 internal static class AuthStatus
 {

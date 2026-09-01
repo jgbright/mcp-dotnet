@@ -14,10 +14,9 @@ internal static class Writes
     /// <summary>
     /// One JSON Patch operation. Serialized with the Web defaults, so op/path/value reach the wire
     /// lowercase as the format requires. "add" covers almost every field write (on a work item
-    /// field it creates or replaces alike) and appends when the path is <c>/relations/-</c>.
-    /// <c>System.Tags</c> is the exception: Azure DevOps unions an "add" with the tags already on
-    /// the item, so writing it needs "replace" (see <see cref="UpdatePatch"/>). "remove" carries
-    /// no value at all, so the value is omitted when null rather than written as null.
+    /// field it creates or replaces alike) and appends when the path is <c>/relations/-</c>;
+    /// <c>System.Tags</c> is the exception (see <see cref="UpdatePatch"/>). "remove" carries no
+    /// value at all, so the value is omitted when null rather than written as null.
     /// </summary>
     internal sealed record PatchOp(
         string Op,

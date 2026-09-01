@@ -1,19 +1,17 @@
 # Cuts a release: build, test, pack, tag, publish a GitHub Release with the .nupkg files attached,
 # and push both packages to nuget.org.
 #
-# Dispatched by hand rather than triggered by a pushed tag. The version comes from version.json
-# plus git height, so this workflow is what knows it. Asking someone to type a matching tag only
-# creates a way for the tag and the packages to disagree.
+# Dispatched by hand rather than triggered by a pushed tag: the version comes from version.json
+# plus git height, so this workflow is what knows it, and a hand-typed tag could disagree.
 name: release
 
 on:
   workflow_dispatch:
 
-# Everything this needs and nothing else. contents: write authorizes the tag push and the release.
-# id-token: write lets the job mint the GitHub OIDC token that nuget.org's trusted publishing
-# exchanges for a temporary push key. Without it the login step fails with no token available,
-# the one failure here that does not look like a nuget.org problem. No packages: write, which
-# governs GitHub Packages and is not where these go.
+# contents: write authorizes the tag push and the release. id-token: write lets the job mint the
+# GitHub OIDC token that nuget.org's trusted publishing exchanges for a temporary push key;
+# without it the login step fails with "no token available". No packages: write — that governs
+# GitHub Packages, which is not where these go.
 permissions:
   contents: write
   id-token: write
@@ -44,8 +42,8 @@ jobs:
       - name: Restore local tools (nbgv)
         run: dotnet tool restore
 
-      # The gate runs before the build. Same check either way, and failing in ten seconds beats
-      # failing after a build, a test run and a pack.
+      # The gate runs before the build: failing in ten seconds beats failing after a build, a
+      # test run and a pack.
       - name: Check this ref can be released
         id: version
         shell: pwsh
@@ -139,29 +137,25 @@ jobs:
           if-no-files-found: warn
 
       # No long-lived API key: nuget.org trusted publishing exchanges this job's GitHub OIDC token
-      # for a temporary push key, against a policy registered on nuget.org naming this repository
-      # owner, this repository and this workflow file by name (`release.yml`, no path). Renaming
-      # this file breaks publishing until the policy is edited to match.
+      # for a temporary push key, against a policy that names this repository owner, repository
+      # and workflow file (`release.yml`, no path). Renaming this file breaks publishing until the
+      # policy is edited to match.
       #
-      # Immediately before the push on purpose: the key it returns lives one hour and each OIDC
-      # token buys exactly one key, so minting it early only shortens the window.
+      # Immediately before the push on purpose: the key lives one hour and each OIDC token buys
+      # exactly one key.
       #
-      # NUGET_USER is the nuget.org profile name, not an email and not a credential. It is a secret
-      # only because nuget.org recommends it. The OIDC token and the policy behind it authorize the
-      # push, so this value leaking would let nobody push anything.
+      # NUGET_USER is the nuget.org profile name, not a credential; it is a secret only because
+      # nuget.org recommends it. The OIDC token and policy are what authorize the push.
       - name: Get a short-lived NuGet key (trusted publishing)
         uses: NuGet/login@v1
         id: nuget-login
         with:
           user: ${{ secrets.NUGET_USER }}
 
-      # Last, and the only irreversible step in the job: a published version can never be re-pushed
-      # or deleted, only unlisted. Everything that can fail cheaply (the ref and tag gate, the
-      # build, the tests) has already run, and the tag and GitHub Release exist, so a failure here
+      # Last, and the only irreversible step: a published version can never be re-pushed or
+      # deleted, only unlisted. Everything that fails cheaply has already run, so a failure here
       # leaves a release with no feed entry rather than a feed entry with no release behind it.
-      #
-      # --skip-duplicate makes a re-dispatch after a half-finished push a no-op on the package that
-      # already landed instead of a 409.
+      # --skip-duplicate makes a re-dispatch after a half-finished push a no-op instead of a 409.
       - name: Push to NuGet
         shell: pwsh
         env:

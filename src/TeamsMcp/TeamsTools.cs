@@ -17,13 +17,9 @@ using ModelContextProtocol.Server;
 
 namespace TeamsMcp;
 
-// Output conventions, chosen to keep results small in a model's context window:
-// - Null fields are omitted from serialized results (configured in Program.cs).
-// - messageType is only emitted when the message is not a normal user message.
-// - System-event messages (member added, renamed, ...) and deleted messages are
-//   skipped by default and counted in the `skipped` envelope field.
-// - Bodies are plain text (links kept as "text (url)"), truncated at body_limit
-//   with `truncated: true`.
+// Output conventions, all serving a model's context window: null fields are omitted (configured
+// in Program.cs), messageType appears only on non-user messages, deleted and system messages are
+// skipped by default and counted in `skipped`, and bodies arrive as plain text cut at body_limit.
 [McpServerToolType]
 public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> log)
 {
@@ -226,9 +222,8 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     });
 
     /// <summary>
-    /// A pager is the first request plus the follow-the-link request for one Graph message
-    /// collection. Channel and chat messages both answer with <c>ChatMessageCollectionResponse</c>
-    /// and <c>OdataNextLink</c>, so only the first request differs.
+    /// The first request plus the follow-the-link request for one Graph message collection.
+    /// Channel and chat messages answer with the same response type, so only the first differs.
     /// </summary>
     internal delegate Task<ChatMessageCollectionResponse?> FirstPage(CancellationToken ct);
 
@@ -252,15 +247,13 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
          (url, ct) => client.Chats[chat].Messages.WithUrl(url).GetAsync(cancellationToken: ct));
 
     /// <summary>
-    /// Walks a message collection, mapping and skip-counting as it goes. Stops at
-    /// <paramref name="limit"/> results (which sets <c>hasMore</c>) or at the first page holding
-    /// nothing at or after <paramref name="floor"/>. Shared by the read tools and the waiters, so
-    /// both return the same shape.
+    /// Walks a message collection, mapping and skip-counting. Stops at <paramref name="limit"/>
+    /// results (setting <c>hasMore</c>) or at the first page holding nothing at or after
+    /// <paramref name="floor"/>. Shared by the read tools and the waiters.
     ///
-    /// <para>The stop is per page, not per message: Graph orders these collections by
-    /// <c>lastModifiedDateTime</c> rather than <c>createdDateTime</c>, and a reaction moves that,
-    /// so one old message can surface at the top with nothing new having been said. A whole page
-    /// of them ends the scan, keeping a recent floor from walking the whole conversation.</para>
+    /// <para>The stop is per page, not per message: Graph orders by <c>lastModifiedDateTime</c>,
+    /// and a reaction moves that, so one old message can surface at the top with nothing new said.
+    /// Only a whole page of them ends the scan.</para>
     /// </summary>
     internal static async Task<MessagesResult> PageMessagesAsync(
         (FirstPage First, NextPage Next) pager, Watermark? floor, int limit,
@@ -286,14 +279,12 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                 {
                     if (msg.CreatedDateTime < f.Ts)
                     {
-                        // Out of range, but not proof the range is exhausted: the listing is
-                        // ordered by lastModifiedDateTime, so a reaction lifts an old message
-                        // above genuinely newer ones. Skip it and read on.
+                        // Old, but not proof the range is exhausted (see the summary). Read on.
                         continue;
                     }
                     reachedFloorOnThisPage = true;
-                    // The boundary is inclusive, so a cursor also lists ids already delivered at
-                    // that instant. Skipping them stops the newest message repeating every poll.
+                    // The boundary is inclusive; skipping ids the cursor lists as delivered at
+                    // that instant stops the newest message repeating every poll.
                     if (msg.CreatedDateTime == f.Ts && msg.Id is { } seen &&
                         f.Delivered?.Contains(seen) == true)
                     {
@@ -305,8 +296,6 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                     results.Add(dto);
                 }
             }
-            // A page with nothing at or after the floor ends the newer messages. One stray
-            // out-of-order message does not.
             if (done || !reachedFloorOnThisPage || page.OdataNextLink is null)
             {
                 break;
@@ -342,15 +331,12 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             includeReplies: false, include_system, body_limit, ct);
     });
 
-    // A Teams message carries images two ways, and this tool handles both:
-    //   - Inline (pasted) images are hosted content: the body HTML references
-    //     `.../hostedContents/{id}/$value` and the bytes are read with the same Chat.Read /
-    //     ChannelMessage.Read.All the read tools use. The hostedContents listing answers
-    //     contentType/contentBytes as null, so the bytes are sniffed.
-    //   - Attached files are OneDrive/SharePoint references (contentType "reference"): the bytes
-    //     live in the sender's drive, reached through `/shares/{encoded contentUrl}/driveItem`,
-    //     which needs a Files scope this server does not request. A failed attachment is reported
-    //     per file with the reason; the hosted-content images beside it still download.
+    // A Teams message carries images two ways:
+    //   - Inline (pasted) images are hosted content, read with the same scopes as the read tools.
+    //     The hostedContents listing answers contentType/contentBytes as null, so bytes are sniffed.
+    //   - Attached files are OneDrive/SharePoint references reached through
+    //     `/shares/{encoded contentUrl}/driveItem`, which needs a Files scope this server does not
+    //     request. A failed attachment is reported per file; hosted content beside it still downloads.
     [McpServerTool(Name = "download_message_images", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only against Teams; saves local files. Download the images a message carries — inline " +
                  "(pasted) images and attached image files — into `directory`, which is created if missing; " +
@@ -375,7 +361,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         var client = await graph.GetClientAsync(ct);
 
         // Chat message, channel root and channel reply are three request-builder types with no
-        // shared interface, so they collapse into delegates and the download logic below runs once.
+        // shared interface; collapsing them into delegates lets the download logic run once.
         Func<CancellationToken, Task<ChatMessage?>> fetchMessage;
         Func<CancellationToken, Task<ChatMessageHostedContentCollectionResponse?>> firstHosted;
         Func<string, CancellationToken, Task<ChatMessageHostedContentCollectionResponse?>> nextHosted;
@@ -473,8 +459,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             }
             catch (ODataError e)
             {
-                // The drive lives behind a Files scope this server does not request, so a 401/403
-                // here is configuration, not a transient failure. Say so per file and keep going.
+                // A 401/403 here is the missing Files scope: configuration, not transience.
                 var hint = e.ResponseStatusCode is 401 or 403
                     ? " Downloading an attached OneDrive/SharePoint file needs a Files scope " +
                       "(e.g. Files.Read.All) this sign-in has not consented to."
@@ -499,8 +484,8 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     }
 
     /// <summary>
-    /// Writes one downloaded image, named from the attachment name (or message id + index) plus
-    /// the extension sniffed from the bytes. Never overwrites a file already in the directory.
+    /// Writes one image, named from the attachment (or message id + index) plus the sniffed
+    /// extension. Never overwrites an existing file.
     /// </summary>
     private async Task<DownloadedImageDto> SaveImageAsync(
         string? name, string source, byte[] bytes, string directory, string messageId, int index,
@@ -518,14 +503,10 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
 
     // ---------------------------------------------------------------- waiting
     //
-    // Both waiters poll for anything newer than a watermark, return as soon as something arrives,
-    // and give up when the clock runs out. Running out of time returns normally with
-    // `timedOut: true`.
-    //
-    // Every wait returns a `nextCursor`, timeouts included. Passing it back unchanged resumes the
-    // watch exactly, with no seen-id bookkeeping on the caller's side; resuming from a timestamp
-    // instead re-delivers the boundary message forever, since Graph's boundary is inclusive. The
-    // chat waiter polls several chats concurrently, so one blocking call can watch many.
+    // The waiters poll for anything newer than a watermark and return as soon as something
+    // arrives; running out of time returns normally with `timedOut: true`. Every wait returns a
+    // `nextCursor`, timeouts included — passing it back resumes exactly, whereas resuming from a
+    // timestamp re-delivers the boundary message forever, since Graph's boundary is inclusive.
 
     private const int MinPollSeconds = 5;
 
@@ -623,10 +604,6 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             labelSource: ids.Count > 1, ct);
     });
 
-    /// <summary>
-    /// The union of <c>chat</c> and <c>chats</c>, deduplicated, in the order given. Both are
-    /// optional, but passing neither is an error.
-    /// </summary>
     internal static List<string> ChatTargets(string? chat, string[]? chats)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -653,8 +630,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     }
 
     /// <summary>
-    /// Watches one or more message collections for anything newer than their watermarks: what a
-    /// poll asks for, how several sources merge into one answer, how the cursor advances.
+    /// Watches one or more message collections for anything newer than their watermarks.
     /// <see cref="PollAsync{T}"/> does the waiting itself.
     /// </summary>
     private async Task<MessagesWaitResult> WaitForNewAsync(
@@ -663,8 +639,8 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         int limit, bool includeReplies, bool includeSystem, int bodyLimit, bool labelSource,
         CancellationToken ct)
     {
-        // No cursor and no `since` means watch from now. Starting at the beginning of the
-        // conversation would return the backlog instantly instead of waiting.
+        // No cursor and no `since` means watch from now; starting earlier would return the
+        // backlog instantly instead of waiting.
         var anchor = ParseSince(since) ?? DateTimeOffset.UtcNow;
         var resumed = Cursors.Decode(cursor);
         var floors = sources.ToDictionary(
@@ -683,9 +659,8 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             count: r => r.Messages.Count,
             timeoutSeconds, pollSeconds, minPollSeconds, ct);
 
-        // The cursor advances only over messages actually returned, so trimming the merge to
-        // `limit` cannot skip past a source's messages. A timeout advances nothing and still
-        // returns a cursor.
+        // The cursor advances only over messages actually returned, so trimming the merge cannot
+        // skip past a source's messages. A timeout advances nothing and still returns a cursor.
         var next = new Dictionary<string, Watermark>(floors, StringComparer.OrdinalIgnoreCase);
         if (!timedOut)
         {
@@ -702,11 +677,10 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     }
 
     /// <summary>
-    /// Merges one poll of several sources into a single newest-first list. <c>limit</c> applies to
-    /// the merged list, so a busy conversation cannot starve a quiet one: a source whose messages
-    /// were all trimmed delivered nothing, its watermark stays put, and it drains on the next
-    /// call. The lossy case is a source that delivered part of a burst, since its watermark moves
-    /// to the newest delivered message and the rest of the burst is skipped.
+    /// Merges one poll of several sources into a single newest-first list. <c>limit</c> applies
+    /// to the merge, so a busy conversation cannot starve a quiet one: a source trimmed away
+    /// entirely keeps its watermark and drains on the next call. The lossy case is a source that
+    /// delivered part of a burst — its watermark moves and the rest of the burst is skipped.
     /// </summary>
     internal static MergedMessages MergePages(
         IEnumerable<(string Id, MessagesResult Page)> pages, int limit, bool labelSource)
@@ -771,10 +745,9 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     }
 
     /// <summary>
-    /// The shared wait loop: probe, return as soon as the probe finds anything, give up when the
-    /// clock runs out. Timeout and interval are clamped, so a caller cannot wait forever or poll
-    /// hard enough to matter to Graph. A timed-out wait returns the last probe's result, keeping
-    /// its skip count and total.
+    /// The shared wait loop: probe, return as soon as anything is found, give up when the clock
+    /// runs out. Timeout and interval are clamped, so a caller cannot wait forever or poll hard
+    /// enough to matter to Graph. A timed-out wait returns the last probe's result.
     /// </summary>
     private async Task<(T Found, int WaitedSeconds, bool TimedOut)> PollAsync<T>(
         Func<CancellationToken, Task<T>> probe, Func<T, int> count,
@@ -811,12 +784,10 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
 
     // ------------------------------------------------------------------- search
     //
-    // The tools below are one mechanism asked different questions: the Microsoft Search API over
-    // chatMessage. It is the only delegated surface spanning chats and team channels in a single
-    // request; there is no "all my messages" endpoint, and walking every conversation would be an
-    // unbounded scan. The cost is freshness and detail: hits come from an index that lags the
-    // conversation and carry a summary instead of a body, so these tools locate a message for the
-    // read tools to fetch.
+    // The tools below are all the Microsoft Search API over chatMessage — the only delegated
+    // surface spanning chats and team channels in one request. The cost is freshness and detail:
+    // the index lags the conversation and a hit carries a summary instead of a body, so these
+    // tools locate a message for the read tools to fetch.
 
     /// <summary>KQL scope terms, written once and repeated into each search tool's description.</summary>
     private const string KqlHelp =
@@ -898,9 +869,9 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             query, since, mentionsOnly: false, timeout_seconds, poll_seconds, limit, body_limit, ct));
 
     /// <summary>
-    /// Pages the search index for one question. Stops at <paramref name="limit"/> hits, at the end
-    /// of the results, or at <see cref="MaxSearchPages"/> pages; hitting the page cap sets hasMore
-    /// and logs a warning rather than passing the answer off as complete.
+    /// Pages the search index. Stops at <paramref name="limit"/> hits, the end of the results, or
+    /// <see cref="MaxSearchPages"/> pages; the page cap sets hasMore and logs a warning rather
+    /// than passing the answer off as complete.
     /// </summary>
     private async Task<SearchResult> SearchAsync(
         string? query, DateTimeOffset? since, bool mentionsOnly, int limit, int bodyLimit, CancellationToken ct)
@@ -982,7 +953,6 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         string? query, string? since, bool mentionsOnly, int timeoutSeconds, int pollSeconds,
         int limit, int bodyLimit, CancellationToken ct)
     {
-        // As with the message waiters, no `since` means watch from now.
         var anchor = ParseSince(since) ?? DateTimeOffset.UtcNow;
         var (found, waited, timedOut) = await PollAsync(
             probe: token => SearchAsync(query, anchor, mentionsOnly, limit, bodyLimit, token),
@@ -990,32 +960,24 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             timeoutSeconds, pollSeconds, MinSearchPollSeconds, ct);
 
         // The total is dropped on a timeout: it counts what the day-granular `sent>` scope
-        // matched, which is more than the caller waited for, so it would contradict the zero hits.
+        // matched, which would contradict the zero hits.
         return timedOut
             ? new SearchWaitResult([], null, null, waited, TimedOut: true)
             : new SearchWaitResult(found.Hits, found.HasMore, found.Total, waited, null);
     }
 
-    /// <summary>
-    /// A search poll costs the service a real query and the index moves slowly, so these waiters
-    /// poll less often than the ones reading a known conversation.
-    /// </summary>
+    /// <summary>Each poll costs a real query and the index moves slowly, so wait longer.</summary>
     private const int MinSearchPollSeconds = 20;
 
     // ------------------------------------------------------------- mutating tools
 
-    // A send posts a new message and edits nothing, so it is not destructive. It is not idempotent:
-    // the same call twice puts the same text in the conversation twice.
+    // A send posts a new message and edits nothing, so it is not destructive. It is not
+    // idempotent: the same call twice puts the same text in the conversation twice. The content
+    // parameter is `body` because that is the word the reads already use.
     //
-    // The content parameter is `body`, the word the reads already use (they return `body` and take
-    // `body_limit`), so a caller fresh from a read passes the right key. `format: "text"` is a
-    // different thing again.
-    //
-    // `reply_to` threads rather than quotes: the replies collection is what puts the message inside
-    // the thread the client draws under its root. It takes the thread ROOT's id, the same id
-    // `react_to_channel_message` wants and the one a reply's own `replyToId` names; a channel
-    // thread is one level deep, so replying to a reply still lands in the one thread. Chats have no
-    // equivalent and quote instead; see send_chat_message.
+    // `reply_to` threads rather than quotes: it takes the thread ROOT's id, the one a reply's own
+    // `replyToId` names. A channel thread is one level deep, so replying to a reply still lands in
+    // the one thread. Chats have no threads and quote instead; see send_chat_message.
     [McpServerTool(Name = "send_channel_message", UseStructuredContent = true, Destructive = false, Idempotent = false)]
     [Description("MUTATION: posts a message visible to everyone in the channel. Disabled unless the environment " +
                  "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `team`/`channel` accept ids or display " +
@@ -1046,16 +1008,13 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });
 
-    // A chat has no thread to reply into: Teams' chat "Reply" is a quote, carried by a
-    // `messageReference` attachment that an `<attachment>` element in the body anchors. Only
-    // `replyWithQuote` creates that attachment, so `reply_to` branches to that endpoint instead of
-    // decorating the ChatMessage. Measured dead ends, both of which post a message that looks sent
-    // and renders as an empty box above the text:
-    //   - Composing the attachment here and posting it normally. Graph strips a `messageReference`
-    //     off a posted message (tried with the quoted message's id and with a fresh GUID) while
-    //     keeping the body's `<attachment>` element, which is what draws the empty box.
-    //   - The Skype markup the client used to use (`<blockquote itemtype=".../Reply">`) is refused
-    //     outright: "Message body content cannot contain unsupported item types".
+    // A chat has no thread to reply into: Teams' chat "Reply" is a quote, a `messageReference`
+    // attachment anchored by an `<attachment>` element in the body. Only `replyWithQuote` creates
+    // that attachment, so `reply_to` branches to that endpoint. Measured dead ends, both posting a
+    // message that renders an empty box above the text:
+    //   - Composing the attachment here and posting normally: Graph strips the `messageReference`
+    //     while keeping the body's `<attachment>` element, which is what draws the box.
+    //   - The client's old Skype markup (`<blockquote itemtype=".../Reply">`) is refused outright.
     // Graph builds the card from the id, so the caller never restates the quoted text.
     [McpServerTool(Name = "send_chat_message", UseStructuredContent = true, Destructive = false, Idempotent = false)]
     [Description("MUTATION: sends a message visible to everyone in the chat. Disabled unless the environment " +
@@ -1093,12 +1052,11 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });
 
-    // A reaction is self-scoped, so it is idempotent: setting one that is already set changes
-    // nothing, and remove only ever takes off the signed-in user's own. Graph's setReaction takes
-    // the emoji itself (`reactionType` as unicode) and answers 204, so the confirmation DTO is
-    // built here rather than read back. Measured: Graph keeps one reaction per user per message,
-    // so setting a different emoji MOVES the caller's reaction (the Teams client's multi-reaction
-    // pile-on is not exposed through the public API) and the 204 looks identical either way.
+    // A reaction is self-scoped, so it is idempotent: setting one already set changes nothing,
+    // and remove only takes off the signed-in user's own. setReaction takes the emoji itself and
+    // answers 204, so the confirmation DTO is built here rather than read back. Measured: Graph
+    // keeps one reaction per user per message, so setting a different emoji MOVES the caller's
+    // reaction, and the 204 looks identical either way.
     [McpServerTool(Name = "react_to_chat_message", UseStructuredContent = true, Destructive = false, Idempotent = true)]
     [Description("MUTATION: puts an emoji reaction on a chat message as the signed-in user; remove=true takes " +
                  "it off again. `reaction` is the emoji itself, e.g. 🤔 or ✅. The user holds one reaction per " +
@@ -1207,15 +1165,11 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     }
 
     /// <summary>
-    /// The self chat cannot carry a quoted reply through Graph, which does not model it as a chat
-    /// at all: `GET /chats/48:notes` answers 400 "Call made for a thread which is not a
-    /// ChatThread", and `replyWithQuote` routes as `/chats({chatThreadId})/messages/replyWithQuote`
-    /// on an id `48:notes` is not. Posting a plain message to it works, which hides the hole:
-    /// `replyWithQuote` answers 201 having written the body's `attachment` element and created no
-    /// attachment, so the client draws an empty box above the text. Measured on v1.0 and beta
-    /// alike; the same call against a `19:…@thread.v2` chat builds the `messageReference`
-    /// attachment correctly. The Teams client quotes here through its own internal API, so the gap
-    /// is in Graph. It fails silently at every layer a caller can see, so it is refused up front.
+    /// The self chat cannot carry a quoted reply: Graph does not model it as a ChatThread, and
+    /// `replyWithQuote` against it answers 201 having created no attachment, so the client draws
+    /// an empty box above the text. Measured on v1.0 and beta alike; the same call against a
+    /// `19:…@thread.v2` chat quotes correctly. It fails silently at every layer a caller can see,
+    /// so it is refused up front.
     /// </summary>
     internal static void RequireQuotableChat(string chat, string? replyTo)
     {
@@ -1239,11 +1193,9 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     }
 
     /// <summary>
-    /// Builds the Graph message body from the <c>format</c> argument. Absent means plain text;
-    /// markup is opt-in because Teams escapes it in a text body, so an HTML entity sent as text
-    /// arrives as its literal characters. Markdown is converted here: Teams renders markdown typed
-    /// into its own composer, but the Graph API accepts only text and html body types and shows raw
-    /// markdown literally.
+    /// Builds the Graph message body. Absent format means plain text, in which Teams escapes all
+    /// markup. Markdown is converted here because Graph accepts only text and html body types and
+    /// shows raw markdown literally.
     /// </summary>
     internal static ItemBody BuildBody(string body, string? format)
     {
@@ -1275,9 +1227,9 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         Interlocked.Increment(ref _sequence).ToString(CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// Wraps every tool call: assigns the <c>req=N</c> correlation id stamped on the Graph HTTP
-    /// handler's and MCP SDK's events, times the call, and records arguments and outcome. Failures
-    /// log the full exception; the model sees a short message plus the req id to find it by.
+    /// Wraps every tool call: assigns the <c>req=N</c> correlation id, times the call, records
+    /// arguments and outcome. Failures log the full exception; the model sees a short message
+    /// plus the req id to find it by.
     /// </summary>
     internal async Task<T> Run<T>(string tool, string argsLog, Func<Task<T>> action)
     {
@@ -1577,9 +1529,9 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             .Select(a => new AttachmentDto(a.Name, a.ContentType))
             .ToList();
 
-        // Keyed by the emoji (or classic type name), valued by who reacted, so a caller can tell
-        // "somebody acknowledged this" from "I already reacted to this". Custom org-uploaded
-        // reactions arrive as reactionType "custom" with the name beside it.
+        // Keyed by the emoji, valued by who reacted, so a caller can tell "somebody acknowledged
+        // this" from "I already reacted". Custom org reactions arrive as reactionType "custom"
+        // with the name beside it.
         var reactions = new Dictionary<string, List<string>>();
         foreach (var r in msg.Reactions ?? [])
         {
@@ -1629,9 +1581,8 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     }
 
     /// <summary>
-    /// Cuts at the limit, stepping back one when that would split a surrogate pair: emoji are
-    /// routine in Teams messages and half of one is an invalid character. Callers guarantee
-    /// <c>s.Length &gt; limit &gt;= 1</c>.
+    /// Cuts at the limit, stepping back one when that would split a surrogate pair — emoji are
+    /// routine here and half of one is invalid. Callers guarantee <c>s.Length &gt; limit &gt;= 1</c>.
     /// </summary>
     private static string Cut(string s, int limit) =>
         s[..(char.IsHighSurrogate(s[limit - 1]) ? limit - 1 : limit)];
@@ -1724,9 +1675,8 @@ public sealed record CurrentUserDto(string? Id, string? Name, string? Email, str
 public sealed record MessagesResult(List<MessageDto> Messages, bool? HasMore, SkippedDto? Skipped);
 
 /// <summary>
-/// What a waiter returns: the <see cref="MessagesResult"/> fields plus how long the wait took,
-/// whether it timed out, and where to resume. <c>TimedOut</c> appears only when the wait gave up.
-/// <c>NextCursor</c> appears either way, since a timed-out wait has not lost its place.
+/// The <see cref="MessagesResult"/> fields plus how long the wait took, whether it timed out, and
+/// where to resume. <c>NextCursor</c> appears even on a timeout: the wait has not lost its place.
 /// </summary>
 public sealed record MessagesWaitResult(
     List<MessageDto> Messages,
@@ -1757,8 +1707,7 @@ internal readonly record struct Watermark(DateTimeOffset Ts, HashSet<string>? De
 
 /// <summary>
 /// The opaque resume token: base64url of a small JSON envelope, one watermark per conversation.
-/// A caller passes <c>nextCursor</c> back verbatim and gets exactly what it has not seen. The
-/// encoding is not part of the contract and can grow a field without callers noticing.
+/// The encoding is not part of the contract and can grow a field without callers noticing.
 /// </summary>
 internal static class Cursors
 {

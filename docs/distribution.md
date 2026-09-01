@@ -76,9 +76,9 @@ should survive any change to it:
   syntax and its marker files (`Install.Clients`). Supporting another one means adding a row;
   anything that cannot be expressed as a row is a reason to reconsider rather than to branch.
 
-ADR 0001 records the intent to retire `install` when the plugin lands. The plugin has landed;
-`install`, `Install.cs` and its test suites have not been removed. That is the outstanding half of
-that decision, not an oversight to be rediscovered.
+ADR 0001 records the intent to retire `install` once the plugin landed. It has; `install`,
+`Install.cs` and its test suites remain. That removal is the outstanding half of the decision, not
+an oversight to rediscover.
 
 ### The dev inner loop
 
