@@ -206,12 +206,17 @@ the error names the missing ones. `-- auth` and `-- selftest` both print request
 
 ### Tools
 
-Read: `list_teams`, `list_channels`, `list_chats`, `read_channel_messages`, `read_chat_messages`,
-`download_message_images`, plus the waiters `wait_for_channel_messages` and
+Read: `list_teams`, `list_channels`, `list_chats`, `get_current_user`, `read_channel_messages`,
+`read_chat_messages`, `download_message_images`, plus the waiters `wait_for_channel_messages` and
 `wait_for_chat_messages`.
 
-`team` and `channel` accept ids or display names. `list_chats` filters by member or topic to find a
-chat id. Message reads return `{messages, hasMore?, skipped?}`; deleted and system messages are
+`team` and `channel` accept ids or display names, and so does `chat` everywhere it appears: a
+group chat's topic, another member's display name, or `self` for the notes-to-self chat. A name
+matching more than one chat is refused
+with the candidates listed rather than resolved to the most recently active one, and the id a name
+resolved to is logged at Info. `get_current_user` returns the signed-in identity and that self-chat
+id, which Graph does not include in the chat listing; `list_chats` carries it as a row marked
+`kind: "self"`. Message reads return `{messages, hasMore?, skipped?}`; deleted and system messages are
 skipped and counted. Bodies come back as plain text, links kept as `text (url)`, truncated at
 `body_limit` and flagged with `truncated: true`. Null fields are omitted everywhere.
 
