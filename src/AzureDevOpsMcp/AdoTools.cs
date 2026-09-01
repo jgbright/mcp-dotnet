@@ -301,7 +301,11 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     [McpServerTool(Name = "list_work_items", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Query work items. Either pass a full `wiql` query, or leave it out and use the " +
                  "filter arguments — the WIQL the server builds from them is echoed back in the result so it " +
-                 "can be refined and passed to `wiql` on the next call. Rows carry no webUrl: an item's page is this organization and project plus " +
+                 "can be refined and passed to `wiql` on the next call. A WIQL SELECT list does not " +
+                 "decide the columns; `fields` does, naming reference names to return instead of the " +
+                 "summary row, and it is how a query carries descriptions or any custom field " +
+                 "directly. To read a known set of ids rather than query for them, use " +
+                 "get_work_items. Rows carry no webUrl: an item's page is this organization and project plus " +
                  "its id, which get_work_item returns in full. Returns {workItems, hasMore?, wiql?}.")]
     public Task<WorkItemsResult> ListWorkItems(
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
@@ -312,11 +316,13 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Assignee display name or email; \"me\" for the signed-in user")] string? assigned_to = null,
         [Description("Only work items changed at/after this ISO-8601 timestamp")] string? changed_since = null,
         [Description("Only work items whose title contains this")] string? title_contains = null,
+        [Description("Field reference names to return instead of the summary row, comma-separated, " +
+                     "e.g. \"System.Title,System.Description\"")] string? fields = null,
         [Description("Maximum work items to return (default 50, max 200)")] int limit = 50,
         CancellationToken ct = default) => Run("list_work_items",
         A("project", project) + A("wiql", wiql) + A("team", team) + A("type", type) + A("state", state) +
         A("assigned_to", assigned_to) + A("changed_since", changed_since) +
-        A("title_contains", title_contains) + A("limit", limit), async () =>
+        A("title_contains", title_contains) + A("fields", fields) + A("limit", limit), async () =>
     {
         limit = Math.Clamp(limit, 1, 200);
         var client = await ado.GetClientAsync(ct);
@@ -356,12 +362,16 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             return new WorkItemsResult([], null, generated);
         }
 
-        var items = await GetWorkItemsAsync(client, ids, ct);
+        var projection = Split(fields);
+        var items = await GetWorkItemsAsync(
+            client, ids, ct, projection.Count > 0 ? projection : null);
         // The batch read answers in id order. The query's own ordering is the one asked for.
         var position = ids.Select((id, index) => (id, index)).ToDictionary(p => p.id, p => p.index);
         var mapped = items
             .OrderBy(w => position.TryGetValue(w.Id, out var index) ? index : int.MaxValue)
-            .Select(Mapping.WorkItem)
+            .Select(w => projection.Count > 0
+                ? Mapping.WorkItemRowFields(w, projection)
+                : Mapping.WorkItem(w))
             .ToList();
         return new WorkItemsResult(mapped, hasMore ? true : null, generated);
     });
@@ -371,7 +381,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "criteria. The discussion and the links to other work items and artifacts are not " +
                  "included unless asked for: set include_comments=true for the discussion, which " +
                  "costs an extra request, and include_relations=true for the links. Deleted comments " +
-                 "are filtered out and counted in `skipped`.")]
+                 "are filtered out and counted in `skipped`. To read several items, use " +
+                 "get_work_items rather than calling this once per id.")]
     public Task<WorkItemDetailDto> GetWorkItem(
         [Description("Work item id")] int id,
         [Description("Include the discussion (default false; costs one extra request)")] bool include_comments = false,
@@ -404,6 +415,95 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
         return Mapping.WorkItemDetail(item, body_limit, client.OrgUrl, comments, counts.ToDto());
     });
+
+    [McpServerTool(Name = "get_work_items", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Read several work items in one call — this is the way to read a set, " +
+                 "not get_work_item in a loop. `ids` is comma-separated, e.g. \"7877,7834,7740\", " +
+                 "up to 200 per request. Each item comes back with its description, repro steps and " +
+                 "acceptance criteria, the same bodies get_work_item returns. `fields` replaces that " +
+                 "shape with exactly the fields named, by reference name, e.g. " +
+                 "\"System.State,Microsoft.VSTS.CodeReview.ClosedStatus\" — they arrive in a `fields` " +
+                 "map and the typed properties other than `id` are left out. An id that does not " +
+                 "exist, or that this credential cannot read, is reported in `notFound` rather than " +
+                 "failing the call. Discussion and links are not included: read one item with " +
+                 "get_work_item for those, since each costs its own request.")]
+    public Task<WorkItemBatchResult> GetWorkItems(
+        [Description("Work item ids, comma-separated, e.g. \"7877,7834,7740\" (max 200)")] string ids,
+        [Description("Field reference names to return instead of the typed shape, comma-separated")] string? fields = null,
+        [Description("Max characters per body; longer bodies get truncated:true (0 = unlimited, default 4000)")] int body_limit = 4000,
+        CancellationToken ct = default) => Run("get_work_items",
+        A("ids", ids) + A("fields", fields) + A("body_limit", body_limit), async () =>
+    {
+        var requested = ParseIds(ids);
+        var projection = Split(fields);
+        var client = await ado.GetClientAsync(ct);
+        var items = await GetWorkItemsAsync(
+            client, requested, ct, projection.Count > 0 ? projection : Mapping.DetailFields);
+
+        var found = items.Select(w => w.Id).ToHashSet();
+        var missing = requested.Where(id => !found.Contains(id)).ToList();
+        // The batch answers in id order; the caller asked in its own.
+        var position = requested.Select((id, index) => (id, index)).ToDictionary(p => p.id, p => p.index);
+        var mapped = items
+            .OrderBy(w => position.TryGetValue(w.Id, out var index) ? index : int.MaxValue)
+            .Select(w => projection.Count > 0
+                ? Mapping.WorkItemFields(w, projection)
+                : Mapping.WorkItemDetail(w, body_limit, client.OrgUrl, null, null))
+            .ToList();
+        return new WorkItemBatchResult(mapped, missing.Count > 0 ? missing : null);
+    });
+
+    /// <summary>
+    /// Ids as the caller writes them, which is the comma-separated list the batch endpoint itself
+    /// takes. A non-numeric entry is named rather than dropped: a silently shorter answer is the
+    /// failure this tool exists to remove.
+    /// </summary>
+    internal static List<int> ParseIds(string ids)
+    {
+        var parsed = new List<int>();
+        var bad = new List<string>();
+        foreach (var part in (ids ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = part.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+            if (int.TryParse(trimmed, out var id))
+            {
+                if (!parsed.Contains(id))
+                {
+                    parsed.Add(id);
+                }
+            }
+            else
+            {
+                bad.Add(trimmed);
+            }
+        }
+        if (bad.Count > 0)
+        {
+            throw new McpException(
+                $"`ids` takes work item numbers, comma-separated. Not a number: " +
+                $"{string.Join(", ", bad.Select(b => $"'{b}'"))}.");
+        }
+        if (parsed.Count == 0)
+        {
+            throw new McpException("`ids` is required, e.g. \"7877,7834,7740\".");
+        }
+        if (parsed.Count > 200)
+        {
+            throw new McpException(
+                $"`ids` takes at most 200 work items per call; {parsed.Count} were supplied. " +
+                "Split the read.");
+        }
+        return parsed;
+    }
+
+    /// <summary>A comma-separated argument as a trimmed list, empty when it was not supplied.</summary>
+    internal static List<string> Split(string? value) =>
+        (value ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
 
     [McpServerTool(Name = "list_pipelines", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. List the pipelines of a project. The returned id is what list_pipeline_runs takes.")]
@@ -2980,17 +3080,21 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// truncated list, when given more, so the batching is required for correctness.
     /// </summary>
     private async Task<List<WireWorkItem>> GetWorkItemsAsync(
-        AdoClient client, List<int> ids, CancellationToken ct)
+        AdoClient client, List<int> ids, CancellationToken ct,
+        IReadOnlyList<string>? fields = null)
     {
         const int batchSize = 200;
-        var fields = string.Join(",", Mapping.ListFields);
+        var requested = string.Join(",", fields ?? Mapping.ListFields);
         var results = new List<WireWorkItem>(ids.Count);
         for (var start = 0; start < ids.Count; start += batchSize)
         {
             var batch = ids.Skip(start).Take(batchSize);
+            // errorPolicy=omit: without it one id the caller cannot read fails the whole batch with
+            // a 404, and a batch read is exactly where a single bad id is most likely.
             var path = $"_apis/wit/workitems?{Api}" +
                        $"&ids={string.Join(",", batch)}" +
-                       $"&fields={Uri.EscapeDataString(fields)}";
+                       $"&errorPolicy=omit" +
+                       $"&fields={Uri.EscapeDataString(requested)}";
             var page = await client.GetAsync<ListResponse<WireWorkItem>>(path, ct);
             results.AddRange(page.Value ?? []);
             if (start + batchSize < ids.Count)

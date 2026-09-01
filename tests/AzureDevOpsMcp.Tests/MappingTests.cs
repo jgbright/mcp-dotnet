@@ -1,4 +1,5 @@
 using System.Text.Json;
+using ModelContextProtocol;
 
 namespace AzureDevOpsMcp.Tests;
 
@@ -367,6 +368,139 @@ public class WorkItemMappingTests
         Assert.Equal("looks fine", kept!.Body);
         Assert.Null(dropped);
         Assert.Equal(1, counts.ToDto()!.Deleted);
+    }
+
+    [Fact]
+    public void A_named_projection_returns_those_fields_and_nothing_else()
+    {
+        // A caller naming its own fields is answering a question the typed shape does not cover,
+        // so the typed properties stay null and serialize away rather than padding the result.
+        var dto = Mapping.WorkItemFields(
+            new WireWorkItem(17, Fields(Typical), null, null),
+            ["System.State", "System.AssignedTo"]);
+
+        Assert.Equal(17, dto.Id);
+        Assert.Null(dto.Title);
+        Assert.Null(dto.WebUrl);
+        Assert.Equal("Active", dto.Fields!["System.State"]);
+        // An identity flattens to its display name here too: the caller wants the value, not the
+        // service's envelope around it.
+        Assert.Equal("Mike", dto.Fields["System.AssignedTo"]);
+        Assert.Equal(2, dto.Fields.Count);
+    }
+
+    [Fact]
+    public void A_field_is_found_whatever_casing_the_caller_used()
+    {
+        // The service accepts any casing in the request but answers with canonical reference
+        // names, so an exact-case lookup would drop a field the service returned — and the miss
+        // would read exactly like "the item does not carry this field".
+        var dto = Mapping.WorkItemFields(
+            new WireWorkItem(17, Fields(Typical), null, null), ["system.state"]);
+
+        var field = Assert.Single(dto.Fields!);
+        Assert.Equal("system.state", field.Key); // keyed as the caller named it
+        Assert.Equal("Active", field.Value);
+    }
+
+    [Fact]
+    public void A_field_the_item_does_not_carry_is_left_out_rather_than_returned_empty()
+    {
+        var dto = Mapping.WorkItemFields(
+            new WireWorkItem(17, Fields(Typical), null, null),
+            ["System.State", "Microsoft.VSTS.CodeReview.ClosedStatus"]);
+
+        Assert.False(dto.Fields!.ContainsKey("Microsoft.VSTS.CodeReview.ClosedStatus"));
+        Assert.Single(dto.Fields);
+    }
+
+    [Fact]
+    public void A_projection_that_matches_no_field_at_all_is_null_not_an_empty_map()
+    {
+        var dto = Mapping.WorkItemFields(
+            new WireWorkItem(17, Fields(Typical), null, null), ["Custom.Nope"]);
+
+        Assert.Null(dto.Fields);
+    }
+
+    [Fact]
+    public void A_numeric_field_keeps_its_own_text()
+    {
+        var dto = Mapping.WorkItemFields(
+            new WireWorkItem(17, Fields(Typical), null, null), ["Microsoft.VSTS.Common.Priority"]);
+
+        Assert.Equal("2", dto.Fields!["Microsoft.VSTS.Common.Priority"]);
+    }
+
+    [Fact]
+    public void A_projected_query_row_carries_the_id_and_the_named_fields_only()
+    {
+        var dto = Mapping.WorkItemRowFields(
+            new WireWorkItem(17, Fields(Typical), null, null), ["System.State"]);
+
+        Assert.Equal(17, dto.Id);
+        Assert.Equal("Active", dto.Fields!["System.State"]);
+        Assert.Single(dto.Fields);
+        // The summary columns are not a second answer to a question that named its own fields.
+        Assert.Null(dto.Title);
+        Assert.Null(dto.Type);
+        Assert.Null(dto.AreaPath);
+        Assert.Null(dto.Tags);
+        Assert.Null(dto.Priority);
+    }
+
+    [Fact]
+    public void The_detail_field_list_covers_what_the_detail_shape_reads()
+    {
+        // A batched read has to name its fields up front where a single read gets them through
+        // $expand, so a body missing from this list comes back empty for no visible reason.
+        Assert.Contains("System.Description", Mapping.DetailFields);
+        Assert.Contains("Microsoft.VSTS.TCM.ReproSteps", Mapping.DetailFields);
+        Assert.Contains("Microsoft.VSTS.Common.AcceptanceCriteria", Mapping.DetailFields);
+        Assert.Contains("System.Title", Mapping.DetailFields);
+        Assert.Equal(Mapping.DetailFields.Length, Mapping.DetailFields.Distinct().Count());
+    }
+}
+
+public class WorkItemIdParsingTests
+{
+    [Fact]
+    public void Ids_parse_as_the_comma_separated_list_the_batch_endpoint_takes()
+    {
+        Assert.Equal([7877, 7834, 7740], AdoTools.ParseIds("7877,7834,7740"));
+        Assert.Equal([7877, 7834], AdoTools.ParseIds(" 7877 , 7834 "));
+        // The same id twice would ask the service for it twice and answer it once.
+        Assert.Equal([7877], AdoTools.ParseIds("7877,7877"));
+    }
+
+    [Fact]
+    public void A_non_numeric_id_is_named_rather_than_dropped()
+    {
+        // Dropping it would answer with fewer items than were asked for, which is the exact
+        // failure this tool exists to remove.
+        var error = Assert.Throws<McpException>(() => AdoTools.ParseIds("7877,AB#7834,oops"));
+
+        Assert.Contains("'AB#7834'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'oops'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_empty_or_oversized_list_is_refused_with_the_limit_named()
+    {
+        Assert.Throws<McpException>(() => AdoTools.ParseIds(""));
+        Assert.Throws<McpException>(() => AdoTools.ParseIds(" , "));
+
+        var tooMany = string.Join(",", Enumerable.Range(1, 201));
+        var error = Assert.Throws<McpException>(() => AdoTools.ParseIds(tooMany));
+        Assert.Contains("200", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_comma_separated_argument_splits_and_trims()
+    {
+        Assert.Equal(["System.State", "System.Title"], AdoTools.Split("System.State, System.Title"));
+        Assert.Empty(AdoTools.Split(null));
+        Assert.Empty(AdoTools.Split(""));
     }
 }
 

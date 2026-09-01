@@ -310,6 +310,7 @@ Read:
 | `wait_for_pull_request` | Polls until the pull request completes or is abandoned, then reports like `get_pull_request`. A timeout returns it as it stands with `timedOut: true` |
 | `list_work_items` | WIQL or filter arguments, see below |
 | `get_work_item` | Description, repro steps and acceptance criteria; relations and discussion on request |
+| `get_work_items` | Several ids in one request, with their bodies, or exactly the fields named in `fields` |
 | `list_pipelines` | |
 | `list_pipeline_runs` | |
 | `get_pipeline_run` | Reports each failed task with its stage, job, errors and log tail, and what the run was built from |
