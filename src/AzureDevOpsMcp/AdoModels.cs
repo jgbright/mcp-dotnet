@@ -762,6 +762,13 @@ public sealed record ReleaseDefinitionSearchResult(
 /// A raw REST response. <c>json</c> carries the parsed body when it is JSON and fits the cap;
 /// otherwise <c>text</c> carries it and <c>truncated</c> says so. The way out is a narrower
 /// `filter` or the endpoint's own paging, not a bigger cap.
+///
+/// <c>filterMatched</c> and <c>responseShape</c> appear together, and only when a `filter` ran and
+/// matched nothing. A projection that misses returns the same empty <c>json</c> as a genuinely
+/// empty resource, so without these two "your expression is wrong" and "there is nothing there"
+/// are the same answer.
+///
+/// <c>note</c> names a typed tool that already answers this path, on the paths where one does.
 /// </summary>
 public sealed record ApiResponseDto(
     int Status,
@@ -769,7 +776,10 @@ public sealed record ApiResponseDto(
     string? ContentType,
     JsonElement? Json,
     string? Text,
-    bool? Truncated);
+    bool? Truncated,
+    bool? FilterMatched = null,
+    string? ResponseShape = null,
+    string? Note = null);
 
 /// <summary>
 /// Which credential this server is using and whether it still works. A dead sign-in is reported

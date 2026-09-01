@@ -60,7 +60,8 @@ internal static class ApiRequest
     /// accepted only when it addresses this organization, since the request would otherwise hand
     /// this server's Azure DevOps token to whatever host the caller named.
     /// </summary>
-    internal static string Url(string orgUrl, string path, string? query, string? host)
+    internal static string Url(string orgUrl, string path, string? query, string? host,
+        string? apiVersion = null)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -95,13 +96,76 @@ internal static class ApiRequest
         {
             url += (url.Contains('?', StringComparison.Ordinal) ? "&" : "?") + query.TrimStart('?', '&');
         }
-        // Azure DevOps refuses a request with no api-version, and a caller who did not think
-        // about it wants the same version every other tool uses.
+        // Azure DevOps refuses a request with no api-version. A version already in the path or
+        // the query wins over the parameter, being the more specific statement of intent.
         if (!url.Contains("api-version=", StringComparison.OrdinalIgnoreCase))
         {
-            url += (url.Contains('?', StringComparison.Ordinal) ? "&" : "?") + "api-version=7.1";
+            var version = apiVersion is { Length: > 0 } ? apiVersion.Trim() : DefaultApiVersion;
+            url += (url.Contains('?', StringComparison.Ordinal) ? "&" : "?") + "api-version=" + version;
         }
         return url;
+    }
+
+    /// <summary>The version every typed tool sends, and the default for the escape hatch.</summary>
+    internal const string DefaultApiVersion = "7.1";
+
+    /// <summary>
+    /// Whether Azure DevOps refused this call only because the resource is in preview. It says so
+    /// in a machine-recognisable way and names the fix, so the retry needs no caller turn.
+    /// </summary>
+    internal static bool NeedsPreview(int status, string message) =>
+        status == 400 &&
+        message.Contains("under preview", StringComparison.OrdinalIgnoreCase) &&
+        message.Contains("-preview", StringComparison.Ordinal);
+
+    /// <summary>
+    /// The same url with <c>-preview</c> on its api-version, or null when it already has one, which
+    /// is what stops the retry from repeating.
+    /// </summary>
+    internal static string? WithPreview(string url)
+    {
+        var marker = url.IndexOf("api-version=", StringComparison.OrdinalIgnoreCase);
+        if (marker < 0)
+        {
+            return null;
+        }
+        var start = marker + "api-version=".Length;
+        var end = url.IndexOf('&', start);
+        var value = end < 0 ? url[start..] : url[start..end];
+        if (value.Contains("-preview", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        return url[..start] + value + "-preview" + (end < 0 ? "" : url[end..]);
+    }
+
+    /// <summary>
+    /// Azure DevOps answers an org-scoped route reached under a project with a 404 saying no
+    /// controller was found for the path. That reads as "no such resource" and sends the caller
+    /// after the resource rather than the prefix; the scope is not visible in the path either way.
+    /// </summary>
+    internal static string? ScopeHint(int status, string message, string path)
+    {
+        if (status != 404 ||
+            !message.Contains("controller for path", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        var trimmed = path.TrimStart('/');
+        var slash = trimmed.IndexOf('/');
+        // A path that starts with _apis is already org-scoped, so the prefix is not the fault.
+        if (slash <= 0 || trimmed.StartsWith("_apis", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        var prefix = trimmed[..slash];
+        // An absolute url's "prefix" is its scheme, and dropping that is not the advice.
+        if (prefix.Contains(':', StringComparison.Ordinal))
+        {
+            return null;
+        }
+        return $"This route may be organization-scoped rather than project-scoped: try it without " +
+               $"the '{prefix}/' prefix.";
     }
 
     /// <summary>
@@ -226,6 +290,7 @@ internal static class ApiRequest
     /// </summary>
     internal static JsonNode? Filter(JsonNode? node, string filter)
     {
+        Validate(filter);
         var current = node;
         foreach (var segment in Segments(filter))
         {
@@ -237,6 +302,101 @@ internal static class ApiRequest
         }
         return current;
     }
+
+    /// <summary>
+    /// The characters that mean this expression was written for a language this projection does not
+    /// speak. A JMESPath multi-select (<c>value[].{id: id, name: name}</c>) is the one that arrives:
+    /// <see cref="Segments"/> splits it on its dots into fragments matching no property, so every
+    /// <see cref="Step"/> misses and the result is empty exactly as an empty response is. Refusing
+    /// the expression is the only way to tell those apart.
+    /// </summary>
+    private static readonly (char Char, string Means)[] Unsupported =
+    [
+        ('{', "a multi-select hash"),
+        ('}', "a multi-select hash"),
+        ('|', "a pipe"),
+        ('?', "a filter expression"),
+        ('*', "a wildcard"),
+        ('@', "a current-node reference"),
+        ('(', "a function call"),
+        (')', "a function call"),
+        (',', "a multi-select list"),
+        (':', "a slice or a key alias"),
+        ('\'', "a quoted literal"),
+        ('"', "a quoted literal"),
+        ('`', "a literal"),
+    ];
+
+    /// <summary>
+    /// Refuses an expression this projection cannot evaluate, naming the construct and the subset
+    /// that works. The tool calls this before it sends anything — the projection itself runs against
+    /// the response, so a check left there refuses only after the request is paid for.
+    /// <see cref="Filter"/> calls it too, so the rule holds for any other caller.
+    /// </summary>
+    internal static void Validate(string filter)
+    {
+        foreach (var (character, means) in Unsupported)
+        {
+            if (!filter.Contains(character, StringComparison.Ordinal))
+            {
+                continue;
+            }
+            throw new McpException(
+                $"`filter` contains '{character}', which reads as {means}. This is a projection, not " +
+                "jq or JMESPath: dot-separated property names, [] to map over an array, [n] to index " +
+                "one. So value[].name, environments[].deployPhases[], count. To pick several fields " +
+                "at once, omit `filter` and narrow with the endpoint's own $select or $top, or make " +
+                $"one call per field. Rejected: {filter}");
+        }
+    }
+
+    /// <summary>
+    /// A one-line pointer at the typed tool that already answers this path, or null when none does.
+    /// The tools that resolve where a release stage deploys are not reached from their own
+    /// descriptions, because nothing sends a caller to read them; the escape hatch is the path a
+    /// caller is already on, so the pointer rides along with it and with its 400.
+    /// </summary>
+    internal static string? Pointer(string path, string? filter)
+    {
+        var normalized = "/" + path.TrimStart('/');
+        if (normalized.Contains("/_apis/distributedtask/deploymentgroups", StringComparison.OrdinalIgnoreCase))
+        {
+            return "list_deployment_groups returns these groups and their machines typed, and " +
+                   "get_release_definition_targets answers which machines a given release stage " +
+                   "would deploy to right now, tags resolved. Note a deployment group id is not a " +
+                   "queue id and not an agent pool id; the three are different resources that all " +
+                   "carry small integers.";
+        }
+        // The definition itself is a legitimate raw read. It is the deployment-targeting corner of
+        // it, where a caller is chasing phases and tags by hand, that has a tool.
+        if (normalized.Contains("/_apis/release/definitions/", StringComparison.OrdinalIgnoreCase) &&
+            filter is { Length: > 0 } &&
+            (filter.Contains("deploymentInput", StringComparison.OrdinalIgnoreCase) ||
+             filter.Contains("deployPhases", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "get_release_definition_targets resolves this definition's stages to the " +
+                   "machines their tags select, in deploy order, without walking deployPhases by " +
+                   "hand. get_release_definition returns the definition itself typed.";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// What the response looked like before the projection ran, reported when it matched nothing.
+    /// Without it an empty answer cannot be told from an empty resource.
+    /// </summary>
+    internal static string Describe(JsonNode? node) => node switch
+    {
+        JsonObject obj => obj.Count == 0
+            ? "an empty object"
+            : $"an object with keys: {string.Join(", ", obj.Select(p => p.Key).Take(20))}" +
+              (obj.Count > 20 ? $" (+{obj.Count - 20} more)" : ""),
+        JsonArray array => array.Count == 0
+            ? "an empty array"
+            : $"an array of {array.Count}",
+        null => "null",
+        _ => "a scalar",
+    };
 
     private static IEnumerable<string> Segments(string filter)
     {
@@ -308,7 +468,10 @@ internal static class ApiRequest
                     picked.Add(value);
                 }
             }
-            return picked;
+            // Nothing matched is null, the same answer a missed property gives on an object. An
+            // empty array here would say "the field is there and holds nothing", which is a
+            // different fact and the one the documented contract does not promise.
+            return picked.Count > 0 ? picked : null;
         }
         return node is JsonObject obj && obj.TryGetPropertyValue(segment, out var property)
             ? property?.DeepClone()
