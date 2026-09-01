@@ -1116,6 +1116,26 @@ internal static class Mapping
         return picked.Count > 0 ? picked : null;
     }
 
+    /// <summary>
+    /// What a write echoes back: enough to recognize the item, plus the fields the write actually
+    /// set, read back from the service's own response so the values are what landed and not what
+    /// was sent. Returning the whole item after a one-field update spends the size of a read on
+    /// confirming a write. Relations ride along when the wire carries them — the response has them
+    /// only when the patch asked (<c>$expand=relations</c>, the reparent case), and a parent change
+    /// cannot be confirmed without them.
+    /// </summary>
+    internal static WorkItemDetailDto WorkItemWritten(
+        WireWorkItem w, IReadOnlyList<string> written, string orgUrl) =>
+        BareDetail(w.Id) with
+        {
+            Type = Str(w.Fields, "System.WorkItemType"),
+            Title = Str(w.Fields, "System.Title"),
+            State = Str(w.Fields, "System.State"),
+            WebUrl = WorkItemUrl(orgUrl, Str(w.Fields, "System.TeamProject"), w.Id),
+            Fields = Projected(w.Fields, written),
+            Relations = Relations(w.Relations),
+        };
+
     /// <inheritdoc cref="WorkItemFields"/>
     internal static WorkItemDto WorkItemRowFields(WireWorkItem w, IReadOnlyList<string> requested) =>
         BareRow(w.Id) with { Fields = Projected(w.Fields, requested) };
