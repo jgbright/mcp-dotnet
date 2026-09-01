@@ -7,9 +7,8 @@ using ModelContextProtocol.Server;
 namespace TeamsMcp.Tests;
 
 /// <summary>
-/// The tools/list surface: the SEP-2549 caching hints prepared on the listing, and the annotations
-/// each tool declares. No tool can be called from a test, so these assert the declarations
-/// themselves, that they are present and that they match what the tool does.
+/// The tools/list surface: the SEP-2549 caching hints and each tool's annotations. No test can
+/// call these tools, so what is asserted is the claim itself, and that it matches the tool.
 /// </summary>
 public class ToolListingTests
 {
@@ -121,10 +120,9 @@ public class ToolListingTests
     [MemberData(nameof(Tools))]
     public void Message_content_is_called_the_same_thing_in_both_directions(MethodInfo tool)
     {
-        // Reads return `body` and take `body_limit`; a send takes `body`. The parameter was `text`
-        // once, and a caller that had just read a conversation supplied `body`: one rejection and a
-        // re-send of the whole message. Nothing in either server may call message content `text`
-        // again, because `text` is a value of `format`.
+        // Reads return `body` and take `body_limit`, so a send takes `body` too: a caller that
+        // has just read a conversation will supply that name. Message content is never called
+        // `text`, which is a value of `format`.
         var parameters = tool.GetParameters().Select(p => p.Name).ToList();
 
         Assert.DoesNotContain("text", parameters);

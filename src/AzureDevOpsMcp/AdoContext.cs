@@ -11,21 +11,17 @@ namespace AzureDevOpsMcp;
 
 /// <summary>
 /// Lazily builds an authenticated <see cref="AdoClient"/>. Tenant/client ids come from
-/// ADO_MCP_TENANT_ID / ADO_MCP_CLIENT_ID, the organization from ADO_MCP_ORG_URL; none are
-/// hardcoded. Tokens live in the MSAL persistent cache on disk (DPAPI-protected on Windows) with
-/// the AuthenticationRecord beside them, so the server never prompts over stdio: run
-/// `dotnet run --project src/AzureDevOpsMcp -- auth` once, everything after that is silent.
-///
-/// Entra ID rather than a PAT: a PAT is a long-lived bearer secret that would sit in the MCP
-/// client's config, while the refresh token here stays in the OS-protected cache and follows the
-/// organization's conditional-access policy.
+/// ADO_MCP_TENANT_ID / ADO_MCP_CLIENT_ID, the organization from ADO_MCP_ORG_URL. Tokens live in
+/// the MSAL persistent cache on disk (DPAPI-protected on Windows) with the AuthenticationRecord
+/// beside them, so the server never prompts over stdio: run `-- auth` once, everything after that
+/// is silent. Entra ID rather than a PAT keeps the long-lived secret out of the MCP client's
+/// config; the refresh token stays in the OS-protected cache.
 /// </summary>
 public sealed class AdoContext(ILogger<AdoContext> log)
 {
     /// <summary>
-    /// Azure DevOps' own fixed first-party Entra application id: the resource being requested. A
-    /// public, documented identifier, not a secret, and not this server's client id (which comes
-    /// from ADO_MCP_CLIENT_ID).
+    /// Azure DevOps' own first-party Entra application id: the resource being requested. Public
+    /// and documented, not a secret, and not this server's client id.
     /// </summary>
     public const string ResourceId = "499b84ac-1321-427f-aa17-267ca6975798";
 
@@ -48,11 +44,9 @@ public sealed class AdoContext(ILogger<AdoContext> log)
             StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Approving is gated separately by ADO_MCP_ALLOW_APPROVE=true, and <c>approve_release</c>
-    /// requires this and the write gate. The write gate says the server may change what other
-    /// people see. An approval exists to require a human, and the audit trail records the
-    /// signed-in person as having authorized that deployment. Turning writes on so an agent can
-    /// file work items is not agreement to that, so one variable cannot carry both.
+    /// <c>approve_release</c> requires this (ADO_MCP_ALLOW_APPROVE=true) as well as the write
+    /// gate. Writing says the server may change what other people see; an approval records the
+    /// signed-in person as having authorized a deployment. One variable cannot carry both.
     /// </summary>
     public static bool ApprovalEnabled =>
         string.Equals(Environment.GetEnvironmentVariable("ADO_MCP_ALLOW_APPROVE"), "true",
@@ -63,10 +57,9 @@ public sealed class AdoContext(ILogger<AdoContext> log)
         Environment.GetEnvironmentVariable("ADO_MCP_ORG_URL") is { Length: > 0 } url ? url : null;
 
     /// <summary>
-    /// AZURE_DEVOPS_PAT is not this server's credential and is never used to make a request. It is
-    /// read only so <c>ado_auth_status</c> can report it: whether it is set, and whether it still
-    /// works (<c>AuthStatus.ProbePatAsync</c>, against connectionData). A session whose tool call
-    /// failed reaches for it as a fallback, and an expired one fails there too.
+    /// AZURE_DEVOPS_PAT is not this server's credential and is never used to make a request. It
+    /// is read only so <c>ado_auth_status</c> can report whether it is set and whether it still
+    /// works (<c>AuthStatus.ProbePatAsync</c>).
     /// </summary>
     public static bool PatPresent =>
         Environment.GetEnvironmentVariable("AZURE_DEVOPS_PAT") is { Length: > 0 };
@@ -538,13 +531,11 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     }
 
     /// <summary>
-    /// One request, body returned as it arrived, which is what <c>ado_api_request</c> sends. No
-    /// deserialization (the point is an endpoint this server has no type for) and no paging (the
-    /// caller drives the endpoint's own). Failures still throw <see cref="AdoApiException"/>.
-    ///
-    /// The caller picks the media type (<see cref="ApiRequest.ContentType"/>). The work item
-    /// endpoints only accept <c>application/json-patch+json</c>, so a fixed <c>application/json</c>
-    /// would lock them all out.
+    /// One request for <c>ado_api_request</c>, body returned as it arrived: no deserialization
+    /// (the point is an endpoint this server has no type for) and no paging. Failures still throw
+    /// <see cref="AdoApiException"/>. The caller picks the media type
+    /// (<see cref="ApiRequest.ContentType"/>) because the work item endpoints only accept
+    /// <c>application/json-patch+json</c>; a fixed <c>application/json</c> would lock them out.
     /// </summary>
     public async Task<RawResponse> SendRawAsync(
         HttpMethod method, string url, string? jsonBody, string contentType, CancellationToken ct)
@@ -555,8 +546,6 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
             : new StringContent(
                 jsonBody, System.Text.Encoding.UTF8, MediaTypeHeaderValue.Parse(contentType));
         using var response = await SendAsync(method, url, content, ct);
-        // A sign-in page arrives with a success status, so without this the caller gets a page of
-        // HTML where it expected a resource.
         ThrowIfSignInPage(response, url);
         return new RawResponse(
             (int)response.StatusCode,
@@ -575,7 +564,6 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
         {
             throw await ErrorAsync(response, url, ct);
         }
-        // Without this, a rejected token hands back the sign-in page's HTML as if it were the log.
         ThrowIfSignInPage(response, url);
         return await response.Content.ReadAsStringAsync(ct);
     }

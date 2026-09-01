@@ -8,12 +8,10 @@ namespace AzureDevOpsMcp;
 /// <summary>
 /// The escape hatch: one REST call the typed tools do not cover, made with the credential this
 /// server already holds. Without it a session that needs a field no tool returns reaches for
-/// AZURE_DEVOPS_PAT and `Invoke-RestMethod`, and an expired token there fails as an HTML page
-/// inside a shell error while a valid credential sits unused in this process.
-///
-/// Everything here is pure: which host a path belongs to, which media type a body is sent under,
-/// whether a url is still inside this organization, masking what Azure DevOps marked secret, and
-/// projecting a response down to the part that was asked for.
+/// AZURE_DEVOPS_PAT and `Invoke-RestMethod`, a second and usually stale credential. Everything
+/// here is pure: which host a path belongs to, which media type a body is sent under, whether a
+/// url is still inside this organization, masking what Azure DevOps marked secret, and projecting
+/// a response down to the part that was asked for.
 /// </summary>
 internal static class ApiRequest
 {

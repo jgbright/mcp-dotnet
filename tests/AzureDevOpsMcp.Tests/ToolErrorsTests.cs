@@ -9,9 +9,8 @@ namespace AzureDevOpsMcp.Tests;
 /// Guard() covers the window either side of Run(): a call that fails before the tool body is
 /// entered still has to name the tool, carry a req=N, and say what actually went wrong.
 ///
-/// Argument marshalling is the case that motivated it. get_release takes `release_id` and
-/// list_releases takes `definition`; calling them with `releaseId` and `definitionId` threw inside
-/// the SDK's binder, and every one of those failures reached the caller as "An error occurred
+/// Argument marshalling motivated it: calling get_release with `releaseId` instead of
+/// `release_id` threw inside the SDK's binder and reached the caller as "An error occurred
 /// invoking 'get_release'." with no req and no detail.
 ///
 /// In the order they fire: Guard validates the supplied names against the tool's own inputSchema,

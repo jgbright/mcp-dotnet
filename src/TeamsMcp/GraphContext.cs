@@ -11,10 +11,9 @@ namespace TeamsMcp;
 
 /// <summary>
 /// Lazily builds an authenticated <see cref="GraphServiceClient"/>. Tenant/client ids come from
-/// TEAMS_MCP_TENANT_ID / TEAMS_MCP_CLIENT_ID; neither is hardcoded. Tokens live in the MSAL
-/// persistent cache on disk (DPAPI-protected on Windows) with the AuthenticationRecord beside
-/// them, so the server never prompts over stdio: run `dotnet run -- auth` once, everything after
-/// that is silent.
+/// TEAMS_MCP_TENANT_ID / TEAMS_MCP_CLIENT_ID. Tokens live in the MSAL persistent cache
+/// (DPAPI-protected on Windows) with the AuthenticationRecord beside them, so the server never
+/// prompts over stdio: run `-- auth` once, everything after is silent.
 /// </summary>
 public sealed class GraphContext(ILogger<GraphContext> log)
 {
@@ -143,10 +142,8 @@ public sealed class GraphContext(ILogger<GraphContext> log)
         }
 
         // The AuthenticationRecord carries identity but not scopes, so the granted set is written
-        // beside it. Without it, a gate turned on after a read-only sign-in looks the same to the
-        // server as an expired token. Record what the token carries, not what was asked for:
-        // Entra may return scopes the user consented to earlier, and the token's set is what
-        // decides whether a later send works.
+        // beside it — what the token carries, not what was asked for: Entra may return scopes
+        // consented to earlier, and the token's set decides whether a later send works.
         var granted = await GrantedScopesAsync(tenantId, clientId, record, scopes, log) ?? scopes;
         ScopeConsent.Write(granted, log);
 
@@ -293,10 +290,10 @@ public sealed class GraphContext(ILogger<GraphContext> log)
                     TeamsMcpLog.Arg("record.client", record.ClientId));
             }
 
-            // The same failure the other way around: the environment asks for scopes the last
-            // sign-in never consented to, usually because TEAMS_MCP_ALLOW_SEND was turned on
-            // afterwards. Warn first so the log explains the failure that follows, then attempt
-            // anyway, since a user who consented earlier may already be covered.
+            // The reverse mismatch: the environment asks for scopes the last sign-in never
+            // consented to, usually TEAMS_MCP_ALLOW_SEND turned on afterwards. Warn first so the
+            // log explains the failure that follows, then attempt anyway — earlier consent may
+            // already cover it.
             var consented = ScopeConsent.Read();
             var missing = ScopeConsent.Missing(consented, scopes);
             if (missing.Length > 0)
@@ -380,16 +377,13 @@ public sealed class GraphContext(ILogger<GraphContext> log)
 }
 
 /// <summary>
-/// Which scopes the last sign-in granted, persisted beside the authentication record.
-///
-/// The scope set follows TEAMS_MCP_ALLOW_SEND, and `auth` and the server compute it at different
-/// times, so they can disagree. An <see cref="AuthenticationRecord"/> says who signed in, never
-/// what they consented to. This file is the difference between "re-run `-- auth`, sending was
-/// never consented to" and an unexplained silent-token failure.
+/// Which scopes the last sign-in granted, persisted beside the authentication record (which says
+/// who signed in, never what they consented to). The scope set follows TEAMS_MCP_ALLOW_SEND, and
+/// `auth` and the server compute it at different times, so they can disagree; this file is the
+/// difference between "re-run `-- auth`" and an unexplained silent-token failure.
 ///
 /// Missing or unreadable means unknown, never empty: a sign-in from before this file existed
-/// consented to everything, and warning on every startup of a working server is worse than not
-/// warning at all.
+/// consented to everything, and warning on every startup of a working server is worse than none.
 /// </summary>
 internal static class ScopeConsent
 {

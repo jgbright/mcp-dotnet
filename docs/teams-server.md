@@ -160,8 +160,7 @@ requested at all (see
 message says so, since "the gate is on but it still refuses" is otherwise a confusing state.
 
 The content parameter is `body`, matching the read tools (`body` in a message DTO, `body_limit` on
-every read). It was `text` until a caller that had just read a conversation supplied `body`, was
-rejected, and re-sent the whole message. The schema was the only place the word `text` appeared, and
+every read): a caller that has just read a conversation reaches for the word it saw there, and
 `format: "text"` is a different thing again.
 
 `format` defaults to text, and markup is opt-in because Teams escapes it in a text body, so an HTML

@@ -10,14 +10,10 @@ using ModelContextProtocol.Server;
 
 namespace AzureDevOpsMcp;
 
-// Output conventions, to keep results small in a model's context window:
-// - Null fields are omitted from serialized results (configured in Program.cs).
-// - Fields that repeat the common case are set to null: a "wellFormed" project state, a
-//   "succeeded" merge status, a "completed" run status, an area path equal to the project.
-// - Deleted and system-generated pull request comments are skipped by default and counted in
-//   the `skipped` envelope field, so "no discussion" differs from "filtered".
-// - Bodies are plain text (links kept as "text (url)"), truncated at body_limit with
-//   `truncated: true`.
+// Output conventions, to keep results small in a model's context window: nulls are omitted
+// (configured in Program.cs) and fields that repeat the common case are set to null; filtered
+// records are counted in `skipped`, so "no discussion" differs from "filtered"; bodies are plain
+// text, truncated at body_limit with `truncated: true`.
 [McpServerToolType]
 public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 {
@@ -252,8 +248,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         A("include_threads", include_threads) + A("include_system", include_system) +
         A("max_threads", max_threads) + A("body_limit", body_limit), async () =>
     {
-        // Bounded: a caller cannot ask it to wait forever, or poll hard enough to matter to the
-        // service.
+        // Bounded: a caller cannot wait forever or poll hard enough to matter to the service.
         var timeout = TimeSpan.FromSeconds(Math.Clamp(timeout_seconds, 1, 21600));
         var interval = TimeSpan.FromSeconds(Math.Clamp(poll_seconds, 5, 600));
         var client = await ado.GetClientAsync(ct);
@@ -658,8 +653,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors),
         async () =>
     {
-        // Bounded: a caller cannot ask it to wait forever, or poll hard enough to matter to the
-        // service.
+        // Bounded: a caller cannot wait forever or poll hard enough to matter to the service.
         var timeout = TimeSpan.FromSeconds(Math.Clamp(timeout_seconds, 1, 21600));
         var interval = TimeSpan.FromSeconds(Math.Clamp(poll_seconds, 5, 600));
         var client = await ado.GetClientAsync(ct);
@@ -1114,15 +1108,13 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     }
 
     /// <summary>
-    /// Which listed task <c>task_log</c> named, as an index into the per-stage lists.
-    ///
-    /// Neither half of a release task's identity is unique, so this is not one call to
-    /// <see cref="Resolve"/>: an id is unique within a deployment attempt but repeats across
-    /// stages, and a stage deploying to several machines runs the same task name more than once
-    /// within itself (measured: two "File Transform" tasks in one production stage). An optional
-    /// "stage / …" prefix scopes the search, an id is matched inside that scope, and a name goes
-    /// through the shared lenient rule against candidates carrying their own id, so an ambiguous
-    /// name comes back as a list saying how to pick.
+    /// Which listed task <c>task_log</c> named, as an index into the per-stage lists. Not one
+    /// call to <see cref="Resolve"/>, because neither half of a release task's identity is
+    /// unique: an id repeats across stages, and a stage deploying to several machines runs the
+    /// same task name more than once within itself (measured: two "File Transform" tasks in one
+    /// production stage). An optional "stage / …" prefix scopes the search; an id is matched
+    /// inside that scope; a name goes through the shared lenient rule against candidates carrying
+    /// their own id, so an ambiguous name comes back as a list saying how to pick.
     /// </summary>
     internal (int Environment, int Task) ResolveReleaseTask(
         IReadOnlyList<WireReleaseEnvironment> environments,
@@ -1202,14 +1194,11 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             $"{vsrm}/{Escape(project.Id)}/_apis/release/definitions/{Escape(definitionId)}?{Api}", ct);
 
     /// <summary>
-    /// Names for the variable groups a definition references, which arrive as bare ids. The groups
-    /// themselves are never read into a result: they hold secrets, and all a definition raises is
-    /// which ones it pulls in.
-    ///
-    /// A failure here is logged and swallowed, as in <see cref="DeploymentGroupNamesAsync"/> and
-    /// nowhere else in this server. The names are a convenience, the ids identify the groups
-    /// without them, and a missing permission on the task agent service must not turn a definition
-    /// read into an error.
+    /// Names for the variable groups a definition references, which arrive as bare ids. The
+    /// groups themselves are never read into a result: they hold secrets. A failure here is
+    /// logged and swallowed — here and in <see cref="DeploymentGroupNamesAsync"/> only — because
+    /// the ids identify the groups without the names, and a missing permission on the task agent
+    /// service must not turn a definition read into an error.
     /// </summary>
     private async Task<IReadOnlyDictionary<int, string>> VariableGroupNamesAsync(
         AdoClient client, Named project, IReadOnlyList<int> ids, CancellationToken ct)
@@ -1334,8 +1323,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         A("include_logs", include_logs) + A("log_tail_lines", log_tail_lines) +
         A("max_failed", max_failed) + A("max_errors", max_errors), async () =>
     {
-        // Bounded: a caller cannot ask it to wait forever, or poll hard enough to matter to the
-        // service.
+        // Bounded: a caller cannot wait forever or poll hard enough to matter to the service.
         var timeout = TimeSpan.FromSeconds(Math.Clamp(timeout_seconds, 1, 21600));
         var interval = TimeSpan.FromSeconds(Math.Clamp(poll_seconds, 5, 600));
         var client = await ado.GetClientAsync(ct);
@@ -1982,8 +1970,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     // ------------------------------------------------------- escape hatch and diagnostics
     //
     // Without these, the next move when a typed tool falls short is a shell and a personal access
-    // token: a second credential, usually stale, failing for a reason nobody has checked. Instead
-    // the escape hatch runs on the credential this server holds, which can also be probed.
+    // token — a second, usually stale credential. The escape hatch runs on the credential this
+    // server holds, which can also be probed.
 
     [McpServerTool(Name = "ado_api_request", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only by default. Call one Azure DevOps REST endpoint directly, using this " +

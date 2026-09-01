@@ -147,9 +147,9 @@ wants `.cursor/mcp.json`, shaped like Claude Code's.
 
 This file usually gets committed, so mind what goes in it literally. `"${TEAMS_MCP_TENANT_ID}"` is
 legal anywhere a literal is, and referencing identity lets one file serve a team spread across
-tenants; addresses are the part worth writing literally, the organization URL and the default
-project. A literal gate hands everyone who clones the repository the ability to post as themselves.
-That can be what you want on a personal machine, and rarely is on a shared one.
+tenants. Addresses are worth writing literally: the organization URL and the default project. A
+literal gate hands everyone who clones the repository the ability to post as themselves — fine on a
+personal machine, rarely on a shared one.
 
 ### App registrations
 
@@ -555,7 +555,7 @@ Both servers are on nuget.org, installed in [step 1 of the quick start](#quick-s
 
 All the verbs work as they do from source. `dotnet tool update --global <id>` moves an installation
 to the latest release, and both packages ship one shared version, so they move together. To run from
-a checkout instead, use `dotnet run --project src/TeamsMcp -- <verb>`, as the later sections show.
+a checkout instead, use `dotnet run --project src/TeamsMcp -- <verb>`.
 
 The ids are owner-prefixed because `AzureDevOpsMcp`, `AdoMcp` and `AdoMcpServer` are all taken on
 nuget.org by unrelated packages. nuget.org also rejects a new id differing from an existing one
@@ -605,12 +605,12 @@ One repository secret exists, `NUGET_USER`, the nuget.org profile name (not an e
 `NuGet/login@v1` takes. It is an identifier, not a credential; publishing is authorized by the OIDC
 token and the policy behind it.
 
-A new policy can start out provisional for seven days, which nuget.org documents as the usual case
-for a private repository. Until a publish arrives carrying GitHub's immutable repository and owner
-ids, nuget.org has only the strings typed into the policy, and binding to those ids stops someone
-deleting a repository, recreating it under the same name, and inheriting the right to publish. The
-policy works normally in that window, goes inactive if nothing is published within it (restart it
-from the Trusted Publishing page), and becomes permanent on the first successful push.
+A new policy can start out provisional for seven days, the usual case for a private repository.
+Until a publish arrives carrying GitHub's immutable repository and owner ids, nuget.org has only
+the strings typed into the policy; binding to the ids stops someone recreating a deleted repository
+under the same name and inheriting its right to publish. The policy works normally in that window,
+goes inactive if nothing is published within it (restart it from the Trusted Publishing page), and
+becomes permanent on the first successful push.
 
 The metadata behind the packages, in case a new one is added:
 

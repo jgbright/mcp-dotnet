@@ -326,11 +326,10 @@ IHost BuildMcpHost(Stream? input, Stream? output)
     mcp
         .WithToolsFromAssembly(serializerOptions: serializerOptions)
         // Tasks (SEP-2663) is here for the waiters, which can sit on a conversation for an hour,
-        // too long to hold a request open when the client can poll instead. Every other tool stays
-        // Synchronous, since turning a sub-second call into a task handle the caller has to chase
-        // makes it worse. Optional rather than Required means a client that never negotiated the
-        // extension still gets an answer by blocking, so each waiter bounds its own wait instead of
-        // relying on the client to give up.
+        // too long to hold a request open. Every other tool stays Synchronous: a task handle is a
+        // worse answer than a sub-second result. Optional rather than Required means a client that
+        // never negotiated the extension still gets an answer by blocking, so each waiter bounds
+        // its own wait instead of relying on the client to give up.
         .WithTasks(
             new InMemoryMcpTaskStore(),
             options => options.ExecutionModeSelector = request =>
