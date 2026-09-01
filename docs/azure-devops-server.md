@@ -544,7 +544,8 @@ considerably more than `Not Found (404)`.
 ## Tool inventory
 
 Read: `list_projects`, `list_repos`, `list_pull_requests`, `get_pull_request`,
-`wait_for_pull_request`, `list_work_items`, `get_work_item`, `list_pipelines`, `list_pipeline_runs`,
+`wait_for_pull_request`, `list_work_items`, `get_work_item`, `get_work_items`, `list_pipelines`,
+`list_pipeline_runs`,
 `get_pipeline_run`, `wait_for_pipeline_run`, `list_release_definitions`, `get_release_definition`,
 `get_release_definition_targets`, `list_deployment_groups`, `search_release_definitions`, `list_releases`,
 `get_release`, `wait_for_release`, `search_code`, `search_work_items`, `search_wiki`,

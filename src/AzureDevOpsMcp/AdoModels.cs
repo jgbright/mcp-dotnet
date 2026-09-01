@@ -369,7 +369,8 @@ public sealed record WorkItemDto(
     string? AreaPath,
     string? IterationPath,
     List<string>? Tags,
-    int? Priority);
+    int? Priority,
+    Dictionary<string, string>? Fields = null);
 
 /// <summary>
 /// Envelope for work item queries. <c>wiql</c> is the query the server built from the filter
@@ -404,7 +405,15 @@ public sealed record WorkItemDetailDto(
     List<RelationDto>? Relations,
     List<CommentDto>? Comments,
     SkippedDto? Skipped,
-    string? WebUrl);
+    string? WebUrl,
+    Dictionary<string, string>? Fields = null);
+
+/// <summary>
+/// Envelope for a batched work item read. <c>notFound</c> lists the ids the service had nothing
+/// for, which the batch endpoint would otherwise answer by silently returning fewer items than
+/// were asked for. It is omitted when every id resolved.
+/// </summary>
+public sealed record WorkItemBatchResult(List<WorkItemDetailDto> WorkItems, List<int>? NotFound);
 
 public sealed record RelationDto(string? Type, string? Name, int? WorkItemId, string? Url);
 
@@ -1045,6 +1054,93 @@ internal static class Mapping
             Tags(Str(w.Fields, "System.Tags")),
             Int(w.Fields, "Microsoft.VSTS.Common.Priority"));
     }
+
+    /// <summary>
+    /// The fields a detail read needs on top of <see cref="ListFields"/>: the three bodies, plus the
+    /// identity and sizing fields the typed shape carries. A batched read has to name its fields
+    /// up front, where a single read gets them all through <c>$expand</c>.
+    /// </summary>
+    internal static readonly string[] DetailFields =
+    [
+        .. ListFields,
+        "System.Reason", "System.CreatedBy", "System.CreatedDate", "System.Description",
+        "Microsoft.VSTS.TCM.ReproSteps", "Microsoft.VSTS.Common.AcceptanceCriteria",
+        "Microsoft.VSTS.Scheduling.OriginalEstimate", "Microsoft.VSTS.Scheduling.RemainingWork",
+        "Microsoft.VSTS.Scheduling.CompletedWork", "Microsoft.VSTS.Scheduling.StoryPoints",
+        "Microsoft.VSTS.Scheduling.Effort",
+    ];
+
+    /// <summary>
+    /// The requested fields as the caller named them, flattened to strings: an identity becomes its
+    /// display name, everything else its own text, since a named field is asked for by value and
+    /// not for the service's envelope around it. A field the item does not carry is left out rather
+    /// than emitted empty. Names match case-insensitively: the service accepts any casing in the
+    /// request but answers with canonical names, so an exact-case lookup would drop a field the
+    /// service returned.
+    /// </summary>
+    internal static Dictionary<string, string>? Projected(
+        Dictionary<string, JsonElement>? fields, IReadOnlyList<string> requested)
+    {
+        if (fields is null || requested.Count == 0)
+        {
+            return null;
+        }
+        var picked = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in requested)
+        {
+            if (!fields.TryGetValue(name, out var value))
+            {
+                var hit = fields.FirstOrDefault(
+                    kv => string.Equals(kv.Key, name, StringComparison.OrdinalIgnoreCase));
+                if (hit.Key is null)
+                {
+                    continue;
+                }
+                value = hit.Value;
+            }
+            var text = value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Object =>
+                    value.TryGetProperty("displayName", out var dn) && dn.ValueKind == JsonValueKind.String
+                        ? dn.GetString()
+                        : value.ToString(),
+                JsonValueKind.Null or JsonValueKind.Undefined => null,
+                _ => value.ToString(),
+            };
+            if (text is { Length: > 0 })
+            {
+                picked[name] = text;
+            }
+        }
+        return picked.Count > 0 ? picked : null;
+    }
+
+    /// <inheritdoc cref="WorkItemFields"/>
+    internal static WorkItemDto WorkItemRowFields(WireWorkItem w, IReadOnlyList<string> requested) =>
+        BareRow(w.Id) with { Fields = Projected(w.Fields, requested) };
+
+    /// <summary>
+    /// An item as nothing but the fields that were asked for. The typed properties stay null and
+    /// so serialize away, which is the point: a caller naming its own fields wants those and not a
+    /// shape built around different ones.
+    /// </summary>
+    internal static WorkItemDetailDto WorkItemFields(WireWorkItem w, IReadOnlyList<string> requested) =>
+        BareDetail(w.Id) with { Fields = Projected(w.Fields, requested) };
+
+    // The two shapes below let the partial mappers name what they set. Every property but the id
+    // is null, so argument order carries no meaning and a field added or moved in the record
+    // cannot land in the wrong one — which a run of positional nulls invites, all of these being
+    // nullable and so no compiler error.
+
+    /// <summary>A detail shape carrying nothing but the id, to be filled in by name.</summary>
+    private static WorkItemDetailDto BareDetail(int id) =>
+        new(id, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null, null);
+
+    /// <summary>A query row carrying nothing but the id, to be filled in by name.</summary>
+    private static WorkItemDto BareRow(int id) =>
+        new(id, null, null, null, null, null, null, null, null, null);
 
     internal static WorkItemDetailDto WorkItemDetail(
         WireWorkItem w, int bodyLimit, string orgUrl, List<CommentDto>? comments, SkippedDto? skipped)
