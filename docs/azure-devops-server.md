@@ -63,6 +63,13 @@ reason.
 Release Management is **not** an exception, though it was preview-only for years: its definitions,
 releases, environment-update and approval-update endpoints all answer a bare `7.1`.
 
+`ado_api_request` reaches endpoints with no constant here, so it fills in `7.1` when neither the
+path nor the query names a version, and takes an `api_version` argument for the rest. A version
+written into the path or the query wins over the argument. When the service refuses a call only
+because the resource is in preview it says so in its own 400 and names the fix, so the tool retries
+once with `-preview` appended rather than spending a caller turn; `ApiRequest.WithPreview` returns
+null once the version already carries one, so the retry cannot loop.
+
 ## Paging strategies
 
 | Strategy | Endpoints |

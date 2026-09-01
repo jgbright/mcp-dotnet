@@ -824,7 +824,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "release stages deploy to — and, with include_machines (default true), each group's " +
                  "machines: name, tags, agent status when not online, `disabled` when the agent is " +
                  "switched off, agent version and OS. These are not the Environments YAML pipelines " +
-                 "deploy to; Azure DevOps keeps the two apart and so does this server. A machine's " +
+                 "deploy to; Azure DevOps keeps the two apart and so does this server. A deployment " +
+                 "group id is also not a queue id and not an agent pool id — three different " +
+                 "resources, all identified by small integers, and a stage names a queue while its " +
+                 "deploy phase names a group. A machine's " +
                  "tags are what a stage selects on (see get_release_definition_targets). Agent " +
                  "capabilities are not returned. Costs one request, plus one per group when machines " +
                  "are included.")]
@@ -1993,9 +1996,18 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "picks which host answers — core, vsrm, search or vssps — and is inferred from the " +
                  "path when omitted; getting it wrong is the classic 404, because releases and " +
                  "release definitions live on vsrm and nothing redirects. api-version=7.1 is added " +
-                 "when the path does not name one. `filter` narrows the response: dot-separated " +
+                 "when neither the path nor the query names one, and `api_version` changes which " +
+                 "version that is; a preview-only resource is retried once automatically with " +
+                 "-preview rather than costing a turn. A 404 naming a controller for the path is " +
+                 "answered with the organization-versus-project scoping to try instead. " +
+                 "`filter` narrows the response: dot-separated " +
                  "property names with [] to map over an array and [n] to index one, e.g. " +
-                 "value[].name — it is a projection, not jq, and matching nothing yields json: null. " +
+                 "value[].name — it is a projection, not jq or JMESPath, and an expression using " +
+                 "{}, |, ?, *, quotes or a comma is refused rather than evaluated to nothing. " +
+                 "There is no way to select several fields at once: omit `filter` and narrow with " +
+                 "the endpoint's own $select or $top instead. Matching nothing yields json: null " +
+                 "with filterMatched: false and responseShape naming what was actually there, so " +
+                 "an empty projection is never mistaken for an empty resource. " +
                  "Arrays arrive in the service's own order, which is not always a meaningful one: a " +
                  "release definition's environments come in no particular order and only their " +
                  "`rank` says which deploys first — the typed tools sort by it, this does not. " +
@@ -2016,21 +2028,61 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                      "goes as application/json-patch+json, anything else as application/json")] string? content_type = null,
         [Description("Projection over the response, e.g. value[].name")] string? filter = null,
         [Description("Which host answers: core, vsrm, search, vssps; inferred from the path when omitted")] string? host = null,
+        [Description("REST api-version (default 7.1); ignored when the path or query already names one")] string? api_version = null,
         [Description("Maximum characters of response to return (default 20000)")] int max_chars = 20000,
         CancellationToken ct = default) => Run("ado_api_request",
         A("path", path) + A("method", method) + A("query", query) + A("filter", filter) +
-        A("host", host) + A("content_type", content_type) + A("max_chars", max_chars) +
+        A("host", host) + A("api_version", api_version) + A("content_type", content_type) +
+        A("max_chars", max_chars) +
         AdoMcpLog.ContentArg("body", body), async () =>
     {
         max_chars = Math.Clamp(max_chars, 500, 200_000);
         // The gate is consulted first, as in the write tools: a refusal must not depend on
         // whether the other arguments happened to be valid.
         var verb = ApiRequest.Method(method);
+        // Checked here rather than where the projection runs, so an expression this server cannot
+        // evaluate is refused before the request is paid for.
+        if (filter is { Length: > 0 })
+        {
+            ApiRequest.Validate(filter);
+        }
         var client = await ado.GetClientAsync(ct);
-        var url = ApiRequest.Url(client.OrgUrl, path, query, host);
+        var url = ApiRequest.Url(client.OrgUrl, path, query, host, api_version);
         var media = ApiRequest.ContentType(body, content_type);
 
-        var raw = await client.SendRawAsync(verb, url, body, media, ct);
+        // A path with a typed tool behind it says so either way. On a failure the pointer is the
+        // more useful half of the answer, since the raw call is the one that did not work.
+        var pointer = ApiRequest.Pointer(path, filter);
+        RawResponse raw;
+        try
+        {
+            try
+            {
+                raw = await client.SendRawAsync(verb, url, body, media, ct);
+            }
+            catch (AdoApiException e) when (
+                ApiRequest.NeedsPreview(e.Status, e.Message) && ApiRequest.WithPreview(url) is { } retry)
+            {
+                // WithPreview returns null once the version already carries -preview, so the
+                // retry cannot loop.
+                log.Line(LogLevel.Information, Ev.ToolStart,
+                    "resource is in preview; retrying once with -preview" + A("url", retry));
+                url = retry;
+                raw = await client.SendRawAsync(verb, url, body, media, ct);
+            }
+        }
+        catch (AdoApiException e)
+        {
+            var hint = ApiRequest.ScopeHint(e.Status, e.Message, path);
+            if (pointer is null && hint is null)
+            {
+                throw;
+            }
+            throw new AdoApiException(
+                e.Status,
+                string.Join(" ", new[] { e.Message, hint, pointer }.Where(s => s is { Length: > 0 })),
+                e.TypeKey, e.Path);
+        }
         var trimmed = raw.Body.TrimStart();
         var isJson = trimmed.Length > 0 && trimmed[0] is '{' or '[';
         if (!isJson)
@@ -2038,20 +2090,28 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             var (text, truncated) = Text.Truncate(raw.Body, max_chars);
             return new ApiResponseDto(
                 raw.Status, url, raw.ContentType, null,
-                text is { Length: > 0 } ? text : null, truncated);
+                text is { Length: > 0 } ? text : null, truncated, null, null, pointer);
         }
 
         var node = System.Text.Json.Nodes.JsonNode.Parse(raw.Body);
         // Masking runs before the filter, so a projection cannot reach past it.
         var masked = ApiRequest.Mask(node);
-        var projected = filter is { Length: > 0 } ? ApiRequest.Filter(masked, filter) : masked;
+        var filtered = filter is { Length: > 0 };
+        var projected = filtered ? ApiRequest.Filter(masked, filter!) : masked;
+        // A filter that matched nothing says so, and says what it was looking at. The projection is
+        // syntactically fine here — the unevaluable ones are refused by ApiRequest.Filter before
+        // this point — so the answer the caller needs is which of the two empties this is.
+        var missed = filtered && projected is null;
+        var shape = missed ? ApiRequest.Describe(masked) : null;
         var json = projected?.ToJsonString() ?? "null";
         return json.Length > max_chars
             ? new ApiResponseDto(
-                raw.Status, url, raw.ContentType, null, Text.Cut(json, max_chars), true)
+                raw.Status, url, raw.ContentType, null, Text.Cut(json, max_chars), true,
+                null, null, pointer)
             : new ApiResponseDto(
                 raw.Status, url, raw.ContentType,
-                JsonSerializer.SerializeToElement(projected), null, null);
+                JsonSerializer.SerializeToElement(projected), null, null,
+                missed ? false : null, shape, pointer);
     });
 
     [McpServerTool(Name = "ado_auth_status", UseStructuredContent = true, ReadOnly = true)]
