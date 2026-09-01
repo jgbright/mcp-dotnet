@@ -261,7 +261,7 @@ public class WorkItemSearchMappingTests
                     ["system.tags"] = "retry; hotfix",
                 },
                 new WireSearchHit("system.description", ["the <highlighthit>retry</highlighthit> loop"])),
-            bodyLimit: 0, "https://dev.azure.com/contoso");
+            bodyLimit: 0);
 
         Assert.Equal(4711, dto.Id);
         Assert.Equal("Bug", dto.Type);
@@ -271,7 +271,6 @@ public class WorkItemSearchMappingTests
         Assert.Equal(new DateTimeOffset(2026, 7, 1, 12, 0, 0, TimeSpan.Zero), dto.Changed);
         Assert.Equal(["retry", "hotfix"], dto.Tags);
         Assert.Equal("the retry loop", dto.Snippet);
-        Assert.Equal("https://dev.azure.com/contoso/Core/_workitems/edit/4711", dto.WebUrl);
     }
 
     [Fact]
@@ -281,7 +280,7 @@ public class WorkItemSearchMappingTests
             Result(
                 new Dictionary<string, string?> { ["system.id"] = "1", ["system.title"] = "Retry" },
                 new WireSearchHit("system.title", ["<highlighthit>Retry</highlighthit>"])),
-            bodyLimit: 0, "https://dev.azure.com/contoso");
+            bodyLimit: 0);
 
         Assert.Null(dto.Snippet);
     }

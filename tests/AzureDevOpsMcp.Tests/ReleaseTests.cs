@@ -37,17 +37,16 @@ public class ReleaseMappingTests
             [new(3, "Production", 3), new(1, "Dev", 1), new(2, "Staging", 2)],
             "\\Websites");
 
-        var dto = Mapping.ReleaseDefinition(definition, Org, "Contoso");
+        var dto = Mapping.ReleaseDefinition(definition);
 
         Assert.Equal(["Dev", "Staging", "Production"], dto.Environments);
         Assert.Equal("\\Websites", dto.Folder);
-        Assert.Equal($"{Org}/Contoso/_release?definitionId=23", dto.WebUrl);
     }
 
     [Fact]
     public void The_root_folder_and_an_empty_environment_list_are_left_out()
     {
-        var dto = Mapping.ReleaseDefinition(new WireReleaseDefinition(1, "Api", [], "\\"), Org, "Contoso");
+        var dto = Mapping.ReleaseDefinition(new WireReleaseDefinition(1, "Api", [], "\\"));
 
         Assert.Null(dto.Folder);
         Assert.Null(dto.Environments);
@@ -57,15 +56,11 @@ public class ReleaseMappingTests
     public void An_active_release_says_nothing_about_its_status()
     {
         // Every release that was not abandoned or left as a draft is active, so saying so is noise.
-        var active = Mapping.Release(
-            new WireRelease(45, "Release-2", null, Status: "active"), Org, "Contoso");
-        var abandoned = Mapping.Release(
-            new WireRelease(46, "Release-3", null, Status: "abandoned"), Org, "Contoso");
+        var active = Mapping.Release(new WireRelease(45, "Release-2", null, Status: "active"));
+        var abandoned = Mapping.Release(new WireRelease(46, "Release-3", null, Status: "abandoned"));
 
         Assert.Null(active.Status);
         Assert.Equal("abandoned", abandoned.Status);
-        Assert.Equal(
-            $"{Org}/Contoso/_releaseProgress?_a=release-pipeline-progress&releaseId=45", active.WebUrl);
     }
 
     [Fact]
@@ -74,7 +69,7 @@ public class ReleaseMappingTests
         var release = new WireRelease(45, "Release-2", null,
             Environments: [Environment("Production", "notStarted", rank: 3), Environment("Dev", "succeeded", rank: 1)]);
 
-        var dto = Mapping.Release(release, Org, "Contoso");
+        var dto = Mapping.Release(release);
 
         Assert.Equal(["Dev", "Production"], dto.Environments!.Select(e => e.Name));
         Assert.Equal(["succeeded", "notStarted"], dto.Environments!.Select(e => e.Status));
@@ -462,7 +457,7 @@ public class ReleaseDefinitionConfigTests
     {
         var matches = ReleaseConfig.Matches(
             Definition(), variables: true, taskInputs: true,
-            ReleaseConfig.Matcher("appsettings.json", regex: false), "url").ToList();
+            ReleaseConfig.Matcher("appsettings.json", regex: false)).ToList();
 
         var hit = Assert.Single(matches);
         Assert.Equal(ReleaseConfig.TaskInputKind, hit.Kind);
@@ -477,7 +472,7 @@ public class ReleaseDefinitionConfigTests
     {
         var matches = ReleaseConfig.Matches(
             Definition(), variables: true, taskInputs: false,
-            ReleaseConfig.Matcher("otel_service", regex: false), "url").ToList();
+            ReleaseConfig.Matcher("otel_service", regex: false)).ToList();
 
         var hit = Assert.Single(matches);
         Assert.Equal("name", hit.MatchedIn);
@@ -490,7 +485,7 @@ public class ReleaseDefinitionConfigTests
     {
         var hit = Assert.Single(ReleaseConfig.Matches(
             Definition(), variables: true, taskInputs: false,
-            ReleaseConfig.Matcher("Shared.Timeout", regex: false), "url"));
+            ReleaseConfig.Matcher("Shared.Timeout", regex: false)));
 
         Assert.Null(hit.Environment);
         Assert.Equal(ReleaseConfig.VariableKind, hit.Kind);
@@ -502,12 +497,12 @@ public class ReleaseDefinitionConfigTests
         // Matching on a value the tool then refuses to return would leak it a bit at a time: a
         // caller could ask whether it starts with "whsec_" and be told.
         var byName = Assert.Single(ReleaseConfig.Matches(
-            Definition(), true, false, ReleaseConfig.Matcher("WebhookSecret", false), "url"));
+            Definition(), true, false, ReleaseConfig.Matcher("WebhookSecret", false)));
         Assert.True(byName.IsSecret);
         Assert.Null(byName.Value);
 
         Assert.Empty(ReleaseConfig.Matches(
-            Definition(), true, false, ReleaseConfig.Matcher("whsec_", false), "url"));
+            Definition(), true, false, ReleaseConfig.Matcher("whsec_", false)));
     }
 
     [Fact]
@@ -515,7 +510,7 @@ public class ReleaseDefinitionConfigTests
     {
         Assert.Empty(ReleaseConfig.Matches(
             Definition(), variables: true, taskInputs: false,
-            ReleaseConfig.Matcher("appsettings.json", false), "url"));
+            ReleaseConfig.Matcher("appsettings.json", false)));
     }
 
     [Fact]

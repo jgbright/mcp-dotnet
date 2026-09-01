@@ -139,7 +139,7 @@ internal static class ReleaseConfig
     /// </summary>
     internal static IEnumerable<ReleaseDefinitionMatchDto> Matches(
         WireReleaseDefinitionDetail definition, bool variables, bool taskInputs,
-        Func<string, bool> matches, string? webUrl)
+        Func<string, bool> matches)
     {
         foreach (var setting in Settings(definition, variables, taskInputs))
         {
@@ -159,8 +159,7 @@ internal static class ReleaseConfig
                 setting.Key,
                 setting.Value,
                 setting.IsSecret ? true : null,
-                matchedIn,
-                webUrl);
+                matchedIn);
         }
     }
 }

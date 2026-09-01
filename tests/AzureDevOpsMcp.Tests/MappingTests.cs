@@ -71,11 +71,10 @@ public class PullRequestMappingTests
     [Fact]
     public void Branches_are_shortened_and_the_browser_url_is_constructed()
     {
-        var dto = Mapping.PullRequest(Pr(), "https://dev.azure.com/contoso", includeRepo: true);
+        var dto = Mapping.PullRequest(Pr(), true);
 
         Assert.Equal("fix/retry", dto.SourceBranch);
         Assert.Equal("main", dto.TargetBranch);
-        Assert.Equal("https://dev.azure.com/contoso/Core/_git/core/pullrequest/42", dto.WebUrl);
     }
 
     [Fact]
@@ -86,22 +85,23 @@ public class PullRequestMappingTests
             Repository = new WireRepo("r1", "web site", null, null, null, new WireProjectRef("p1", "My Project")),
         };
 
+        // The detail shape still carries the address, and escaping is the part worth pinning.
         Assert.Equal("https://dev.azure.com/contoso/My%20Project/_git/web%20site/pullrequest/42",
-            Mapping.PullRequest(pr, "https://dev.azure.com/contoso", includeRepo: true).WebUrl);
+            Mapping.PullRequestUrl("https://dev.azure.com/contoso", pr));
     }
 
     [Fact]
     public void The_repository_name_is_omitted_when_the_caller_already_named_one()
     {
-        Assert.Null(Mapping.PullRequest(Pr(), "https://x", includeRepo: false).Repo);
-        Assert.Equal("core", Mapping.PullRequest(Pr(), "https://x", includeRepo: true).Repo);
+        Assert.Null(Mapping.PullRequest(Pr(), false).Repo);
+        Assert.Equal("core", Mapping.PullRequest(Pr(), true).Repo);
     }
 
     [Fact]
     public void A_healthy_merge_status_is_omitted_and_a_blocked_one_is_not()
     {
-        Assert.Null(Mapping.PullRequest(Pr(), "https://x", true).MergeStatus);
-        Assert.Equal("conflicts", Mapping.PullRequest(Pr("conflicts"), "https://x", true).MergeStatus);
+        Assert.Null(Mapping.PullRequest(Pr(), true).MergeStatus);
+        Assert.Equal("conflicts", Mapping.PullRequest(Pr("conflicts"), true).MergeStatus);
     }
 
     [Theory]
@@ -228,7 +228,7 @@ public class WorkItemMappingTests
     [Fact]
     public void Fields_are_flattened_and_the_assignee_reduced_to_a_display_name()
     {
-        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null), "https://dev.azure.com/contoso");
+        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null));
 
         Assert.Equal(17, dto.Id);
         Assert.Equal("Bug", dto.Type);
@@ -236,13 +236,22 @@ public class WorkItemMappingTests
         Assert.Equal("Mike", dto.AssignedTo);
         Assert.Equal(2, dto.Priority);
         Assert.Equal(new DateTimeOffset(2026, 7, 1, 12, 0, 0, TimeSpan.Zero), dto.Changed);
-        Assert.Equal("https://dev.azure.com/contoso/Core/_workitems/edit/17", dto.WebUrl);
+    }
+
+    [Fact]
+    public void A_query_row_carries_no_address_because_the_id_and_the_organization_are_the_address()
+    {
+        // Every row of every listing paid for a string the caller can rebuild from the id and the
+        // organization this server is pinned to. The detail shapes still carry it.
+        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null));
+
+        Assert.DoesNotContain("WebUrl", dto.GetType().GetProperties().Select(p => p.Name));
     }
 
     [Fact]
     public void An_area_path_that_is_just_the_project_carries_no_information()
     {
-        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null), "https://x");
+        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null));
 
         Assert.Equal("Core\\Platform", dto.AreaPath);
         Assert.Null(dto.IterationPath); // "Core" is the project itself
@@ -251,7 +260,7 @@ public class WorkItemMappingTests
     [Fact]
     public void Tags_are_split_and_trimmed()
     {
-        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null), "https://x");
+        var dto = Mapping.WorkItem(new WireWorkItem(17, Fields(Typical), null, null));
 
         Assert.Equal(["sql", "regression"], dto.Tags);
     }
@@ -267,11 +276,10 @@ public class WorkItemMappingTests
     [Fact]
     public void A_work_item_with_almost_no_fields_maps_without_throwing()
     {
-        var dto = Mapping.WorkItem(new WireWorkItem(9, null, null, null), "https://x");
+        var dto = Mapping.WorkItem(new WireWorkItem(9, null, null, null));
 
         Assert.Equal(9, dto.Id);
         Assert.Null(dto.Title);
-        Assert.Null(dto.WebUrl); // no project, so no address that resolves
     }
 
     [Fact]
@@ -419,13 +427,12 @@ public class PipelineMappingTests
             "refs/heads/main", new WireBuildDefinition(1, "ci"), new WireIdentity("Mike", null, null),
             new WireProjectRef("p1", "Core"));
 
-        var dto = Mapping.Run(build, "https://dev.azure.com/contoso", "Fallback");
+        var dto = Mapping.Run(build);
 
         Assert.Null(dto.State);
         Assert.Equal("failed", dto.Result);
         Assert.Equal("main", dto.Branch);
         Assert.Equal("Mike", dto.RequestedFor);
-        Assert.Equal("https://dev.azure.com/contoso/Core/_build/results?buildId=77", dto.WebUrl);
     }
 
     [Fact]
@@ -433,7 +440,7 @@ public class PipelineMappingTests
     {
         var build = new WireBuild(77, "x", "inProgress", null, null, null, null, null, null, null, null);
 
-        var dto = Mapping.Run(build, "https://x", "Core");
+        var dto = Mapping.Run(build);
 
         Assert.Equal("inProgress", dto.State);
         Assert.Null(dto.Result);

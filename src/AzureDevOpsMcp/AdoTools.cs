@@ -138,7 +138,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                     hasMore = true;
                     break;
                 }
-                results.Add(Mapping.PullRequest(pr, client.OrgUrl, includeRepo: repoId is null));
+                results.Add(Mapping.PullRequest(pr, includeRepo: repoId is null));
             }
             if (hasMore || batch.Count < pageSize)
             {
@@ -301,7 +301,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     [McpServerTool(Name = "list_work_items", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Query work items. Either pass a full `wiql` query, or leave it out and use the " +
                  "filter arguments — the WIQL the server builds from them is echoed back in the result so it " +
-                 "can be refined and passed to `wiql` on the next call. Returns {workItems, hasMore?, wiql?}.")]
+                 "can be refined and passed to `wiql` on the next call. Rows carry no webUrl: an item's page is this organization and project plus " +
+                 "its id, which get_work_item returns in full. Returns {workItems, hasMore?, wiql?}.")]
     public Task<WorkItemsResult> ListWorkItems(
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
         [Description("Full WIQL query. When given, every other filter argument is ignored.")] string? wiql = null,
@@ -360,20 +361,23 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var position = ids.Select((id, index) => (id, index)).ToDictionary(p => p.id, p => p.index);
         var mapped = items
             .OrderBy(w => position.TryGetValue(w.Id, out var index) ? index : int.MaxValue)
-            .Select(w => Mapping.WorkItem(w, client.OrgUrl))
+            .Select(Mapping.WorkItem)
             .ToList();
         return new WorkItemsResult(mapped, hasMore ? true : null, generated);
     });
 
     [McpServerTool(Name = "get_work_item", UseStructuredContent = true, ReadOnly = true)]
-    [Description("Read-only. Read one work item with its description, links to other work items and " +
-                 "artifacts, and its discussion. Deleted comments are filtered out and counted in `skipped`.")]
+    [Description("Read-only. Read one work item with its description, repro steps and acceptance " +
+                 "criteria. The discussion and the links to other work items and artifacts are not " +
+                 "included unless asked for: set include_comments=true for the discussion, which " +
+                 "costs an extra request, and include_relations=true for the links. Deleted comments " +
+                 "are filtered out and counted in `skipped`.")]
     public Task<WorkItemDetailDto> GetWorkItem(
         [Description("Work item id")] int id,
-        [Description("Include the discussion (default true)")] bool include_comments = true,
-        [Description("Include links to other work items, commits and pull requests (default true)")] bool include_relations = true,
+        [Description("Include the discussion (default false; costs one extra request)")] bool include_comments = false,
+        [Description("Include links to other work items, commits and pull requests (default false)")] bool include_relations = false,
         [Description("Maximum comments to return (default 50)")] int max_comments = 50,
-        [Description("Max characters per body; longer bodies get truncated:true (0 = unlimited, default 4000)")] int body_limit = 4000,
+        [Description("Max characters per body; longer bodies get truncated:true (0 = unlimited, default 1200)")] int body_limit = 1200,
         CancellationToken ct = default) => Run("get_work_item",
         A("id", id) + A("include_comments", include_comments) + A("include_relations", include_relations) +
         A("max_comments", max_comments) + A("body_limit", body_limit), async () =>
@@ -449,7 +453,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var hasMore = builds.Count > limit;
         var runs = builds
             .Take(limit)
-            .Select(b => Mapping.Run(b, client.OrgUrl, resolvedProject.Name))
+            .Select(Mapping.Run)
             .ToList();
         return new PipelineRunsResult(runs, hasMore ? true : null);
     });
@@ -619,7 +623,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var resolved = await ResolveProjectAsync(client, project, ct);
         var definitions = await ListReleaseDefinitionsAsync(
             client, Deployments.VsrmBaseUrl(client.OrgUrl), resolved.Id, limit, ct);
-        return definitions.Select(d => Mapping.ReleaseDefinition(d, client.OrgUrl, resolved.Name)).ToList();
+        return definitions.Select(d => Mapping.ReleaseDefinition(d)).ToList();
     });
 
     [McpServerTool(Name = "get_release_definition", UseStructuredContent = true, ReadOnly = true)]
@@ -797,9 +801,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                 client, vsrm, resolvedProject,
                 summary.Id.ToString(CultureInfo.InvariantCulture), ct);
             scanned++;
-            foreach (var hit in ReleaseConfig.Matches(
-                         wire, variables, taskInputs, matcher,
-                         Mapping.ReleaseDefinitionUrl(client.OrgUrl, resolvedProject.Name, wire.Id)))
+            foreach (var hit in ReleaseConfig.Matches(wire, variables, taskInputs, matcher))
             {
                 if (results.Count >= limit)
                 {
@@ -815,7 +817,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     [McpServerTool(Name = "list_releases", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. List the releases of one classic release definition, newest first, each " +
                  "with the status of every environment it has. This is how to see what is deployed " +
-                 "where. `definition` may be a numeric id or a name. Returns {releases, hasMore?}.")]
+                 "where. `definition` may be a numeric id or a name. Rows carry no webUrl: a " +
+                 "release's page is this organization and project plus its id, and get_release " +
+                 "returns it. Returns {releases, hasMore?}.")]
     public Task<ReleasesResult> ListReleases(
         [Description("Release definition id (number) or name")] string definition,
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
@@ -844,7 +848,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var releases = page.Value ?? [];
         var hasMore = releases.Count > limit;
         return new ReleasesResult(
-            releases.Take(limit).Select(r => Mapping.Release(r, client.OrgUrl, resolvedProject.Name)).ToList(),
+            releases.Take(limit).Select(Mapping.Release).ToList(),
             hasMore ? true : null);
     });
 
@@ -1323,7 +1327,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             $"{Search.BaseUrl(client.OrgUrl)}/{Escape(resolvedProject.Id)}/_apis/search/workitemsearchresults?{SearchApi}",
             Search.BuildRequest(query, limit), ct);
         var results = (response.Results ?? [])
-            .Select(r => Mapping.WorkItemSearchHit(r, body_limit, client.OrgUrl))
+            .Select(r => Mapping.WorkItemSearchHit(r, body_limit))
             .ToList();
         return new WorkItemSearchResult(results, response.Count, response.Count > results.Count ? true : null);
     });
@@ -2246,7 +2250,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             : new { definition = new { id = definitionId }, sourceBranch = FullBranch(branch) };
         var build = await client.PostAsync<WireBuild>(
             $"{Escape(resolvedProject.Id)}/_apis/build/builds?{Api}", body, ct);
-        return Mapping.Run(build, client.OrgUrl, resolvedProject.Name);
+        return Mapping.Run(build);
     });
 
     // Destructive because it replaces what is running in that environment, and the annotation is
