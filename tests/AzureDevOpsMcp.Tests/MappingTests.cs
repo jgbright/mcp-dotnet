@@ -436,6 +436,41 @@ public class PipelineMappingTests
     }
 
     [Fact]
+    public void A_run_says_what_it_was_built_from()
+    {
+        // The standing question in a TFVC organization is which changeset is deployed, and the
+        // answer was already on the wire. It just never reached the result.
+        var tfvc = Mapping.Run(Built("34521"));
+        Assert.Equal("34521", tfvc.SourceVersion);
+        Assert.Equal(34521, tfvc.Changeset);
+
+        // In git the same field is a commit, and a commit is not a changeset number.
+        var git = Mapping.Run(Built("9f1c2ab7d3e4f5061728394a5b6c7d8e9f012345"));
+        Assert.Equal("9f1c2ab7d3e4f5061728394a5b6c7d8e9f012345", git.SourceVersion);
+        Assert.Null(git.Changeset);
+
+        var unknown = Mapping.Run(Built(null));
+        Assert.Null(unknown.SourceVersion);
+        Assert.Null(unknown.Changeset);
+    }
+
+    [Theory]
+    [InlineData("34521", 34521)]
+    [InlineData("C34521", null)]
+    [InlineData("9f1c2ab", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void Only_a_version_that_is_a_number_is_a_changeset(string? version, int? expected)
+    {
+        Assert.Equal(expected, Mapping.Changeset(version));
+    }
+
+    private static WireBuild Built(string? sourceVersion) => new(
+        77, "20260701.3", "completed", "succeeded", DateTimeOffset.UnixEpoch, null, null,
+        "refs/heads/main", new WireBuildDefinition(1, "ci"), new WireIdentity("Mike", null, null),
+        new WireProjectRef("p1", "Core"), sourceVersion);
+
+    [Fact]
     public void A_running_build_reports_its_status_because_there_is_no_result_yet()
     {
         var build = new WireBuild(77, "x", "inProgress", null, null, null, null, null, null, null, null);

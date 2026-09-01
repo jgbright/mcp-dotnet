@@ -422,7 +422,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
 
     [McpServerTool(Name = "list_pipeline_runs", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. List runs of one pipeline, newest first. `pipeline` may be a numeric pipeline id " +
-                 "or a name. Returns {runs, hasMore?}.")]
+                 "or a name. Each run carries `sourceVersion`, what it was built from, and " +
+                 "`changeset` when that is a changeset number rather than a commit. " +
+                 "Returns {runs, hasMore?}.")]
     public Task<PipelineRunsResult> ListPipelineRuns(
         [Description("Pipeline id (number) or name")] string pipeline,
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
@@ -462,7 +464,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     [Description("Read-only. Read one pipeline run and summarize why it failed: every failed task with the " +
                  "stage and job it belongs to and the errors recorded against it. Set include_logs=true to " +
                  "also get the tail of each failed task's log, which is where the actual error text is. " +
-                 "`skipped.succeeded` counts the timeline records that are not reported because they passed.")]
+                 "`skipped.succeeded` counts the timeline records that are not reported because they passed. " +
+                 "`sourceVersion` is what the run was built from, and `changeset` repeats it as a " +
+                 "number when the repository is TFVC, which is the answer to what version is deployed.")]
     public Task<PipelineRunDetailDto> GetPipelineRun(
         [Description("Run id (the same number as the build id)")] int run_id,
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
@@ -528,7 +532,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             build.RequestedFor?.DisplayName,
             reported.Count > 0 ? reported : null,
             counts.ToDto(),
-            Mapping.RunUrl(client.OrgUrl, build.Project?.Name ?? resolvedProject.Name, build.Id));
+            Mapping.RunUrl(client.OrgUrl, build.Project?.Name ?? resolvedProject.Name, build.Id),
+            build.SourceVersion is { Length: > 0 } ? build.SourceVersion : null,
+            Mapping.Changeset(build.SourceVersion));
     }
 
     [McpServerTool(Name = "wait_for_pipeline_run", UseStructuredContent = true, ReadOnly = true)]
@@ -876,17 +882,21 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("List every task each stage ran, not only the failures (default false)")] bool include_tasks = false,
         [Description("Fetch the log tail of one listed task: its id, its name, or 'stage / id' when " +
                      "an id or a name appears in more than one stage; implies include_tasks")] string? task_log = null,
+        [Description("Report what each Build artifact was built from — the changeset in TFVC, the " +
+                     "commit in git (default false; costs one request per artifact)")] bool include_source_version = false,
         CancellationToken ct = default) => Run("get_release",
         A("release_id", release_id) + A("project", project) + A("include_logs", include_logs) +
         A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors) +
-        A("include_tasks", include_tasks) + A("task_log", task_log),
+        A("include_tasks", include_tasks) + A("task_log", task_log) +
+        A("include_source_version", include_source_version),
         async () =>
     {
         var client = await ado.GetClientAsync(ct);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
         return await ReadReleaseAsync(
             client, Deployments.VsrmBaseUrl(client.OrgUrl), resolvedProject, release_id,
-            include_logs, log_tail_lines, max_failed, max_errors, include_tasks, task_log, ct);
+            include_logs, log_tail_lines, max_failed, max_errors, include_tasks, task_log, ct,
+            include_source_version);
     });
 
     /// <summary>
@@ -897,7 +907,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     private async Task<ReleaseDetailDto> ReadReleaseAsync(
         AdoClient client, string vsrm, Named project, int releaseId, bool includeLogs,
         int logTailLines, int maxFailed, int maxErrors, bool includeTasks, string? taskLog,
-        CancellationToken ct)
+        CancellationToken ct, bool includeSourceVersion = false)
     {
         maxFailed = Math.Clamp(maxFailed, 1, 50);
         maxErrors = Math.Clamp(maxErrors, 1, 50);
@@ -951,8 +961,53 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                 env, reported, [.. tasks[index].Select(t => t.Task)]));
         }
 
-        return Mapping.ReleaseDetail(
+        var detail = Mapping.ReleaseDetail(
             release, environments, counts.ToDto(), ReleaseDescriptionLimit, client.OrgUrl, project.Name);
+        return includeSourceVersion
+            ? detail with { Artifacts = await WithSourceVersionsAsync(client, project, detail.Artifacts, ct) }
+            : detail;
+    }
+
+    /// <summary>
+    /// Fills in what each Build artifact was built from. A release records the build it took, not
+    /// the source that build came from, so this is one request per artifact and opt-in for that
+    /// reason. A build that cannot be read leaves its artifact as it was rather than failing the
+    /// release: the version is an enrichment, not the answer being asked for.
+    /// </summary>
+    private async Task<List<ReleaseArtifactDto>?> WithSourceVersionsAsync(
+        AdoClient client, Named project, List<ReleaseArtifactDto>? artifacts, CancellationToken ct)
+    {
+        if (artifacts is null)
+        {
+            return null;
+        }
+        var enriched = new List<ReleaseArtifactDto>(artifacts.Count);
+        foreach (var artifact in artifacts)
+        {
+            if (artifact.BuildId is not { } buildId)
+            {
+                enriched.Add(artifact);
+                continue;
+            }
+            try
+            {
+                var build = await client.GetAsync<WireBuild>(
+                    $"{Escape(project.Id)}/_apis/build/builds/{buildId}?{Api}", ct);
+                enriched.Add(artifact with
+                {
+                    SourceVersion = build.SourceVersion is { Length: > 0 } ? build.SourceVersion : null,
+                    Changeset = Mapping.Changeset(build.SourceVersion),
+                });
+            }
+            catch (AdoApiException e)
+            {
+                log.Line(LogLevel.Warning, Ev.ToolFail,
+                    "build unreadable; artifact keeps its version only" +
+                    A("build", buildId) + A("status", e.Status) + A("reason", e.Message));
+                enriched.Add(artifact);
+            }
+        }
+        return enriched;
     }
 
     /// <summary>
