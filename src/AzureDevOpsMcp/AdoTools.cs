@@ -2144,8 +2144,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "hours on a Task, story points on an Agile User Story, effort on a Scrum backlog " +
                  "item — and writing one the type does not define is refused by Azure DevOps naming " +
                  "the field. `original_estimate` does not imply `remaining_work`: a sprint burndown " +
-                 "reads the second, so set both when starting from an estimate. Returns " +
-                 "the updated work item.")]
+                 "reads the second, so set both when starting from an estimate. Returns the item's " +
+                 "identity and the fields this call wrote, read back from the service; " +
+                 "return_full_item=true returns the whole item instead. A `comment` is appended to " +
+                 "the discussion and is not echoed, since the response does not carry it.")]
     public Task<WorkItemDetailDto> UpdateWorkItem(
         [Description("Work item id")] int id,
         [Description("New state, e.g. Active, Resolved, Closed")] string? state = null,
@@ -2168,6 +2170,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                      "replacing the current ones")] string? repro_steps = null,
         [Description("New acceptance criteria, replacing the current ones")] string? acceptance_criteria = null,
         [Description("Comment to add to the discussion")] string? comment = null,
+        [Description("Return the whole work item rather than the fields this call wrote (default false)")] bool return_full_item = false,
         CancellationToken ct = default) => Run("update_work_item",
         A("id", id) + A("state", state) + A("assigned_to", assigned_to) + A("area", area) +
         A("iteration", iteration) + A("add_tags", add_tags) + A("remove_tags", remove_tags) +
@@ -2178,7 +2181,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         AdoMcpLog.ContentArg("title", title) + AdoMcpLog.ContentArg("description", description) +
         AdoMcpLog.ContentArg("repro_steps", repro_steps) +
         AdoMcpLog.ContentArg("acceptance_criteria", acceptance_criteria) +
-        AdoMcpLog.ContentArg("comment", comment), async () =>
+        AdoMcpLog.ContentArg("comment", comment) + A("return_full_item", return_full_item), async () =>
     {
         RequireWriteEnabled();
         var estimates = new Writes.Estimates(
@@ -2247,7 +2250,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             $"_apis/wit/workitems/{id}?{Api}" + (reparenting ? "&$expand=relations" : ""),
             ops,
             ct);
-        return Mapping.WorkItemDetail(updated, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null);
+        return return_full_item
+            ? Mapping.WorkItemDetail(updated, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null)
+            : Mapping.WorkItemWritten(updated, Writes.FieldsWritten(ops), client.OrgUrl);
     });
 
     [McpServerTool(Name = "create_work_item", UseStructuredContent = true, Destructive = false, Idempotent = false)]

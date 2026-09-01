@@ -450,6 +450,46 @@ public class WorkItemMappingTests
     }
 
     [Fact]
+    public void A_write_echo_carries_identity_and_what_was_written()
+    {
+        var dto = Mapping.WorkItemWritten(
+            new WireWorkItem(17, Fields(Typical), null, null), ["System.State"], "https://dev.azure.com/contoso");
+
+        // Enough to recognize the item...
+        Assert.Equal(17, dto.Id);
+        Assert.Equal("Bug", dto.Type);
+        Assert.Equal("Retry loop spins", dto.Title);
+        Assert.Equal("Active", dto.State);
+        Assert.Equal("https://dev.azure.com/contoso/Core/_workitems/edit/17", dto.WebUrl);
+        // ...plus the value that landed, read back from the service's own response.
+        Assert.Equal("Active", dto.Fields!["System.State"]);
+        // ...and nothing else. The rest of the item was not asked about.
+        Assert.Null(dto.AreaPath);
+        Assert.Null(dto.Description);
+        Assert.Null(dto.Tags);
+        Assert.Null(dto.Priority);
+    }
+
+    [Fact]
+    public void A_reparent_echo_carries_the_relations_that_confirm_it()
+    {
+        // The reparent PATCH asks for $expand=relations because the parent link cannot be
+        // confirmed any other way, so the echo must not drop them. Every other write leaves
+        // relations off the wire and off the echo alike.
+        var attributes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+            """{ "name": "Parent" }""")!;
+        var dto = Mapping.WorkItemWritten(
+            new WireWorkItem(17, Fields(Typical),
+                [new WireRelation("System.LinkTypes.Hierarchy-Reverse",
+                    "https://dev.azure.com/contoso/_apis/wit/workItems/7834", attributes)],
+                null),
+            [], "https://dev.azure.com/contoso");
+
+        var relation = Assert.Single(dto.Relations!);
+        Assert.Equal(7834, relation.WorkItemId);
+    }
+
+    [Fact]
     public void The_detail_field_list_covers_what_the_detail_shape_reads()
     {
         // A batched read has to name its fields up front where a single read gets them through

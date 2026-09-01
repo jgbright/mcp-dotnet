@@ -27,6 +27,21 @@ internal static class Writes
     internal static PatchOp Field(string field, object value) => new("add", "/fields/" + field, value);
 
     /// <summary>
+    /// The field reference names a patch actually writes, in the order it writes them. This is what
+    /// a write echoes back, so the confirmation covers what changed rather than the whole item.
+    /// Relation operations address <c>/relations/…</c> and are not fields, so they are not listed:
+    /// a parent change is confirmed by the relations themselves.
+    /// </summary>
+    internal static List<string> FieldsWritten(IEnumerable<PatchOp> ops) =>
+        ops.Where(o => o.Path.StartsWith("/fields/", StringComparison.Ordinal))
+            .Select(o => o.Path["/fields/".Length..])
+            // System.History is the discussion; the patch adds a comment, and the response does not
+            // carry one back, so echoing the name would promise a value that is never there.
+            .Where(f => !string.Equals(f, "System.History", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    /// <summary>
     /// The scheduling fields, carried as one group instead of five arguments on each patch
     /// builder. They are one idea spelled per process template: hours on a Task, points on an
     /// Agile User Story, effort on a Scrum backlog item. A work item type defines some and not

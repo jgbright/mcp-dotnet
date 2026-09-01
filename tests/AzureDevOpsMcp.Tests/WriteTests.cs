@@ -30,6 +30,27 @@ public class PatchDocumentTests
     }
 
     [Fact]
+    public void A_write_echoes_the_fields_it_wrote_and_not_the_comment()
+    {
+        // The echo confirms the write. Returning the whole item after a one-field update spends
+        // the size of a read to do it, and the discussion is not in the patch response at all, so
+        // naming System.History would promise a value that is never there.
+        var written = Writes.FieldsWritten(Update(state: "Active", comment: "taking this"));
+
+        Assert.Equal(["System.State"], written);
+    }
+
+    [Fact]
+    public void A_relation_operation_is_not_a_field()
+    {
+        var ops = Update(state: "Active");
+        ops.AddRange(Writes.SetParent(null, 7834, "https://dev.azure.com/contoso"));
+
+        // A parent change is confirmed by the relations, not by a field that was never written.
+        Assert.Equal(["System.State"], Writes.FieldsWritten(ops));
+    }
+
+    [Fact]
     public void An_update_can_address_every_supported_field()
     {
         var ops = Update(
