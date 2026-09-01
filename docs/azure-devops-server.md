@@ -17,7 +17,8 @@ paging, which fields are requested, and the HTTP logging handler.
 | `GetAsync<T>` | The common case |
 | `GetPageAsync<T>` | Returns the `x-ms-continuationtoken` header alongside the body |
 | `PostAsync<T>` | JSON bodies (WIQL, search) |
-| `JsonPatchAsync<T>` | JSON Patch, see [writes](#writes) |
+| `PatchAsync<T>` | JSON Patch, see [writes](#writes) |
+| `PatchJsonAsync<T>` | PATCH under plain `application/json`, which the release endpoints take |
 | `GetTextAsync` | Build logs, which are not JSON |
 
 A relative path resolves against the organization URL; an absolute one passes through, so a log url
@@ -254,9 +255,9 @@ PATCH another release's stage.
 
 `deploy_release` is the Deploy button: it starts one environment of an existing release, and does not
 create releases; one is normally created by the definition's own CI trigger. Both write tools PATCH
-plain JSON through `AdoClient.PatchAsync`, added because `JsonPatchAsync` hardcodes
-`application/json-patch+json`, which the release endpoints reject, then re-read so each returns the
-release exactly as `get_release` would.
+plain JSON through `AdoClient.PatchJsonAsync`; the release endpoints reject the JSON Patch document
+that `AdoClient.PatchAsync` sends. Each then re-reads, so it returns the release exactly as
+`get_release` would.
 
 `approve_release` is gated twice: `RequireWriteEnabled()` **and** `RequireApprovalEnabled()`
 (`ADO_MCP_ALLOW_APPROVE=true`). The write gate answers "may this server change what other people
@@ -351,7 +352,7 @@ that DTO should arrive with the argument that sets it.
 
 Work item writes go over JSON Patch: PATCH updates, POST creates, `application/json-patch+json` both
 ways. Azure DevOps rejects the document under a plain `application/json`, which is why
-`AdoClient.JsonPatchAsync` takes the method as a parameter.
+`AdoClient.PatchAsync` takes the method as a parameter.
 
 `Writes.PatchOp` is `(Op, Path, Value)` with the value omitted when null; `remove` carries no value at
 all, and writing one as `null` is rejected. `add` covers every field write. On a work item field it

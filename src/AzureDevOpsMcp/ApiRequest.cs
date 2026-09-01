@@ -127,7 +127,7 @@ internal static class ApiRequest
     /// endpoints take a JSON Patch document and answer anything sent as <c>application/json</c>
     /// with a 400 naming <c>application/json-patch+json</c> as the only type they accept. The
     /// release endpoints take an ordinary object and reject a patch document. Same split as
-    /// <see cref="AdoClient.JsonPatchAsync{T}"/> against <see cref="AdoClient.PatchAsync{T}"/>.
+    /// <see cref="AdoClient.PatchAsync{T}"/> against <see cref="AdoClient.PatchJsonAsync{T}"/>.
     /// </summary>
     internal const string JsonMediaType = "application/json";
 

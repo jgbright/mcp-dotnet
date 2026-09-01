@@ -2081,7 +2081,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             return Mapping.WorkItemDetail(current!, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null);
         }
 
-        var updated = await client.JsonPatchAsync<WireWorkItem>(
+        var updated = await client.PatchAsync<WireWorkItem>(
             HttpMethod.Patch,
             // Relations are only in the response when asked for, and a parent change cannot be
             // confirmed without them.
@@ -2152,7 +2152,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             ops.AddRange(Writes.SetParent(relations: null, parentId, client.OrgUrl));
         }
 
-        var created = await client.JsonPatchAsync<WireWorkItem>(
+        var created = await client.PatchAsync<WireWorkItem>(
             HttpMethod.Post,
             // The route's $ prefix on the type name is literal. The name itself may contain spaces.
             $"{Escape(resolvedProject.Id)}/_apis/wit/workitems/${Escape(resolvedType.Name)}?{Api}" +
@@ -2280,7 +2280,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var release = await ReadReleaseWireAsync(client, vsrm, resolvedProject, release_id, ct);
         var env = ResolveReleaseEnvironment(release, environment);
 
-        await client.PatchAsync<WireReleaseEnvironment>(
+        await client.PatchJsonAsync<WireReleaseEnvironment>(
             $"{vsrm}/{Escape(resolvedProject.Id)}/_apis/release/releases/{release_id}" +
             $"/environments/{Uri.EscapeDataString(env.Id)}?{Api}",
             comment is null ? new { status = "inProgress" } : new { status = "inProgress", comment },
@@ -2332,7 +2332,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             .First(e => e.Id.ToString(CultureInfo.InvariantCulture) == env.Id);
         var approval = ChooseApproval(Mapping.PendingApprovals(wireEnv), approval_id, env.Name, release.Name);
 
-        var updated = await client.PatchAsync<WireReleaseApproval>(
+        var updated = await client.PatchJsonAsync<WireReleaseApproval>(
             $"{vsrm}/{Escape(resolvedProject.Id)}/_apis/release/approvals/{approval.Id}?{Api}",
             new { status = reject ? "rejected" : "approved", comments = comment },
             ct);

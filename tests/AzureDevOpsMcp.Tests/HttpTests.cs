@@ -364,7 +364,7 @@ public class AdoClientTests : IDisposable
             return Json("""{"id":17,"fields":{"System.State":"Active"}}""");
         });
 
-        var result = await client.JsonPatchAsync<WireWorkItem>(
+        var result = await client.PatchAsync<WireWorkItem>(
             HttpMethod.Patch, "_apis/wit/workitems/17",
             Writes.UpdatePatch("Active", null, null, null, null, null, null, null, null, null, null, null),
             default);

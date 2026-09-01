@@ -517,7 +517,7 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     /// item, POST creates one; the content type is application/json-patch+json either way, and
     /// Azure DevOps rejects the document under a plain application/json.
     /// </summary>
-    public async Task<T> JsonPatchAsync<T>(HttpMethod method, string path, object patch, CancellationToken ct)
+    public async Task<T> PatchAsync<T>(HttpMethod method, string path, object patch, CancellationToken ct)
     {
         using var content = JsonContent.Create(
             patch, new MediaTypeHeaderValue("application/json-patch+json"), Json);
@@ -528,9 +528,9 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
     /// <summary>
     /// PATCHes a plain JSON document under <c>application/json</c>, which is what the release
     /// endpoints take: they reject a patch document. Work item writes are the other way round and
-    /// use <see cref="JsonPatchAsync{T}"/>, JSON Patch being the only document that endpoint accepts.
+    /// use <see cref="PatchAsync{T}"/>, JSON Patch being the only document that endpoint accepts.
     /// </summary>
-    public async Task<T> PatchAsync<T>(string path, object body, CancellationToken ct)
+    public async Task<T> PatchJsonAsync<T>(string path, object body, CancellationToken ct)
     {
         using var content = JsonContent.Create(body, options: Json);
         using var response = await SendAsync(HttpMethod.Patch, path, content, ct);
