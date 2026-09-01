@@ -35,13 +35,14 @@ public class ToolOutputShapeTests
     public void An_uninteresting_work_item_carries_no_empty_fields()
     {
         var json = Serialize(new WorkItemDto(
-            17, "Bug", "Retry loop spins", "Active", null, null, null, null, null, null, null));
+            17, "Bug", "Retry loop spins", "Active", null, null, null, null, null, null));
 
         Assert.False(Has(json, "assignedTo"));
         Assert.False(Has(json, "areaPath"));
         Assert.False(Has(json, "iterationPath"));
         Assert.False(Has(json, "tags"));
         Assert.False(Has(json, "priority"));
+        // A query row carries no address at all now: the id plus the organization is the address.
         Assert.False(Has(json, "webUrl"));
         Assert.Equal(4, json.EnumerateObject().Count()); // id, type, title, state
     }
@@ -50,7 +51,7 @@ public class ToolOutputShapeTests
     public void Flags_appear_only_when_they_are_true()
     {
         var json = Serialize(new PullRequestDto(
-            42, "Fix", "active", null, null, null, null, null, true, "conflicts", null, null));
+            42, "Fix", "active", null, null, null, null, null, true, "conflicts", null));
 
         Assert.True(json.GetProperty("draft").GetBoolean());
         Assert.Equal("conflicts", json.GetProperty("mergeStatus").GetString());
@@ -143,7 +144,7 @@ public class ToolOutputShapeTests
     [Fact]
     public void A_run_that_is_still_going_omits_the_result_rather_than_sending_null()
     {
-        var json = Serialize(new PipelineRunDto(77, "20260701.3", "inProgress", null, null, null, null, null, null));
+        var json = Serialize(new PipelineRunDto(77, "20260701.3", "inProgress", null, null, null, null, null));
 
         Assert.False(Has(json, "result"));
         Assert.False(Has(json, "finished"));

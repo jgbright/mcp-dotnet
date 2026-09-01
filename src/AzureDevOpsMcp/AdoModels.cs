@@ -308,7 +308,7 @@ internal sealed record WireTeamFieldValues(string? DefaultValue, List<WireTeamFi
 
 public sealed record ProjectDto(string? Id, string? Name, string? Description, string? State, string? Visibility);
 
-public sealed record RepoDto(string? Id, string? Name, string? DefaultBranch, string? WebUrl, bool? Disabled);
+public sealed record RepoDto(string? Id, string? Name, string? DefaultBranch, bool? Disabled);
 
 public sealed record PullRequestDto(
     int Id,
@@ -321,8 +321,7 @@ public sealed record PullRequestDto(
     string? TargetBranch,
     bool? Draft,
     string? MergeStatus,
-    List<ReviewerDto>? Reviewers,
-    string? WebUrl);
+    List<ReviewerDto>? Reviewers);
 
 public sealed record ReviewerDto(string? Name, string? Vote, bool? Required);
 
@@ -355,6 +354,11 @@ public sealed record ThreadDto(int Id, string? Status, string? FilePath, int? Li
 public sealed record CommentDto(
     int Id, string? Author, DateTimeOffset? Created, string? Type, string? Body, bool? Truncated);
 
+/// <summary>
+/// A work item as a query row. No <c>webUrl</c>: the link is the org and project this server is
+/// pinned to plus the id, so carrying it on every row of every listing pays for a string the
+/// caller can already build.
+/// </summary>
 public sealed record WorkItemDto(
     int Id,
     string? Type,
@@ -365,8 +369,7 @@ public sealed record WorkItemDto(
     string? AreaPath,
     string? IterationPath,
     List<string>? Tags,
-    int? Priority,
-    string? WebUrl);
+    int? Priority);
 
 /// <summary>
 /// Envelope for work item queries. <c>wiql</c> is the query the server built from the filter
@@ -409,7 +412,7 @@ public sealed record PipelineDto(int Id, string? Name, string? Folder);
 
 public sealed record PipelineRunDto(
     int Id, string? Name, string? State, string? Result, DateTimeOffset? Created,
-    DateTimeOffset? Finished, string? Branch, string? RequestedFor, string? WebUrl);
+    DateTimeOffset? Finished, string? Branch, string? RequestedFor);
 
 /// <summary>Envelope for run listings: hasMore is omitted when the whole list was returned.</summary>
 public sealed record PipelineRunsResult(List<PipelineRunDto> Runs, bool? HasMore);
@@ -479,7 +482,7 @@ internal sealed record ReleaseTaskEntry(ReleaseTaskDto Task, string? LogUrl);
 // that distinction out for the model.
 
 public sealed record ReleaseDefinitionDto(
-    int Id, string? Name, string? Folder, List<string>? Environments, string? WebUrl);
+    int Id, string? Name, string? Folder, List<string>? Environments);
 
 public sealed record ReleaseDto(
     int Id,
@@ -488,8 +491,7 @@ public sealed record ReleaseDto(
     DateTimeOffset? Created,
     string? CreatedBy,
     string? Reason,
-    List<ReleaseEnvironmentDto>? Environments,
-    string? WebUrl);
+    List<ReleaseEnvironmentDto>? Environments);
 
 public sealed record ReleaseEnvironmentDto(int Id, string? Name, string? Status);
 
@@ -724,8 +726,7 @@ public sealed record ReleaseDefinitionMatchDto(
     string Key,
     string? Value,
     bool? IsSecret,
-    string MatchedIn,
-    string? WebUrl);
+    string MatchedIn);
 
 /// <summary>
 /// <c>scanned</c> is how many definitions were read, so an empty result means something. A capped
@@ -800,8 +801,7 @@ public sealed record WorkItemSearchHitDto(
     DateTimeOffset? Changed,
     List<string>? Tags,
     string? Snippet,
-    bool? Truncated,
-    string? WebUrl);
+    bool? Truncated);
 
 public sealed record WikiSearchResult(List<WikiSearchHitDto> Results, int Total, bool? HasMore);
 
@@ -920,9 +920,9 @@ internal static class Mapping
         string.Equals(p.Visibility, "private", StringComparison.OrdinalIgnoreCase) ? null : p.Visibility);
 
     internal static RepoDto Repo(WireRepo r) => new(
-        r.Id, r.Name, ShortBranch(r.DefaultBranch), r.WebUrl, r.IsDisabled is true ? true : null);
+        r.Id, r.Name, ShortBranch(r.DefaultBranch), r.IsDisabled is true ? true : null);
 
-    internal static PullRequestDto PullRequest(WirePullRequest pr, string orgUrl, bool includeRepo) => new(
+    internal static PullRequestDto PullRequest(WirePullRequest pr, bool includeRepo) => new(
         pr.PullRequestId,
         pr.Title,
         pr.Status,
@@ -934,8 +934,7 @@ internal static class Mapping
         pr.IsDraft is true ? true : null,
         // "succeeded" says nothing; every other merge status is a reason a PR is stuck.
         string.Equals(pr.MergeStatus, "succeeded", StringComparison.OrdinalIgnoreCase) ? null : pr.MergeStatus,
-        Reviewers(pr.Reviewers),
-        PullRequestUrl(orgUrl, pr));
+        Reviewers(pr.Reviewers));
 
     internal static List<ReviewerDto>? Reviewers(List<WireReviewer>? reviewers)
     {
@@ -1017,7 +1016,7 @@ internal static class Mapping
         return new CommentDto(c.Id, c.CreatedBy?.DisplayName, c.CreatedDate, null, body, truncated);
     }
 
-    internal static WorkItemDto WorkItem(WireWorkItem w, string orgUrl)
+    internal static WorkItemDto WorkItem(WireWorkItem w)
     {
         var project = Str(w.Fields, "System.TeamProject");
         return new WorkItemDto(
@@ -1030,8 +1029,7 @@ internal static class Mapping
             TrimPath(Str(w.Fields, "System.AreaPath"), project),
             TrimPath(Str(w.Fields, "System.IterationPath"), project),
             Tags(Str(w.Fields, "System.Tags")),
-            Int(w.Fields, "Microsoft.VSTS.Common.Priority"),
-            WorkItemUrl(orgUrl, project, w.Id));
+            Int(w.Fields, "Microsoft.VSTS.Common.Priority"));
     }
 
     internal static WorkItemDetailDto WorkItemDetail(
@@ -1098,7 +1096,7 @@ internal static class Mapping
     internal static PipelineDto Pipeline(WirePipeline p) => new(
         p.Id, p.Name, string.Equals(p.Folder, "\\", StringComparison.Ordinal) ? null : p.Folder);
 
-    internal static PipelineRunDto Run(WireBuild b, string orgUrl, string? project) => new(
+    internal static PipelineRunDto Run(WireBuild b) => new(
         b.Id,
         b.BuildNumber,
         // A finished run says everything through `result`; only unfinished runs need a status.
@@ -1107,8 +1105,7 @@ internal static class Mapping
         b.QueueTime,
         b.FinishTime,
         ShortBranch(b.SourceBranch),
-        b.RequestedFor?.DisplayName,
-        RunUrl(orgUrl, b.Project?.Name ?? project, b.Id));
+        b.RequestedFor?.DisplayName);
 
     /// <summary>
     /// Walks the build timeline and reports only what failed, with the stage and job it belongs to.
@@ -1207,17 +1204,16 @@ internal static class Mapping
     // ------------------------------------------------------- classic release pipelines
 
     internal static ReleaseDefinitionDto ReleaseDefinition(
-        WireReleaseDefinition d, string orgUrl, string? project) => new(
+        WireReleaseDefinition d) => new(
         d.Id,
         d.Name,
         // Release definitions live in folders spelled "\", the same as a pipeline's root folder.
         string.Equals(d.Path, "\\", StringComparison.Ordinal) ? null : d.Path,
         // Rank order: the order they deploy in. Names, not ids; the release tools take either.
         (d.Environments ?? []).OrderBy(e => e.Rank ?? 0).Select(e => e.Name).OfType<string>().ToList()
-            is { Count: > 0 } environments ? environments : null,
-        ReleaseDefinitionUrl(orgUrl, project, d.Id));
+            is { Count: > 0 } environments ? environments : null);
 
-    internal static ReleaseDto Release(WireRelease r, string orgUrl, string? project) => new(
+    internal static ReleaseDto Release(WireRelease r) => new(
         r.Id,
         r.Name,
         // "active" is the state of every release that was not abandoned or left as a draft.
@@ -1227,8 +1223,7 @@ internal static class Mapping
         r.Reason,
         (r.Environments ?? []).OrderBy(e => e.Rank ?? 0)
             .Select(e => new ReleaseEnvironmentDto(e.Id, e.Name, e.Status))
-            .ToList() is { Count: > 0 } environments ? environments : null,
-        ReleaseUrl(orgUrl, project, r.Id));
+            .ToList() is { Count: > 0 } environments ? environments : null);
 
     internal static ReleaseArtifactDto ReleaseArtifact(WireReleaseArtifact a)
     {
@@ -1664,7 +1659,7 @@ internal static class Mapping
     }
 
     internal static WorkItemSearchHitDto WorkItemSearchHit(
-        WireWorkItemSearchResult r, int bodyLimit, string orgUrl)
+        WireWorkItemSearchResult r, int bodyLimit)
     {
         int? id = int.TryParse(
             SearchField(r.Fields, "system.id"), CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
@@ -1685,8 +1680,7 @@ internal static class Mapping
                 : null,
             Tags(SearchField(r.Fields, "system.tags")),
             snippet,
-            truncated,
-            id is { } wid && r.Project?.Name is { } project ? WorkItemUrl(orgUrl, project, wid) : null);
+            truncated);
     }
 
     internal static WikiSearchHitDto WikiSearchHit(WireWikiResult r, int bodyLimit, string orgUrl, string project)
