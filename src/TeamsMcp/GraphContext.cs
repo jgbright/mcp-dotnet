@@ -202,6 +202,34 @@ public sealed class GraphContext(ILogger<GraphContext> log)
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private GraphServiceClient? _client;
+    private Microsoft.Graph.Models.User? _me;
+
+    /// <summary>
+    /// The signed-in user, read once. Who a cached token belongs to cannot change while the
+    /// process runs, and both the `self` chat alias and list_chats' own row resolve through this,
+    /// so re-reading /me per call would spend a request on a settled answer.
+    /// </summary>
+    public async Task<Microsoft.Graph.Models.User> GetMeAsync(CancellationToken ct = default)
+    {
+        if (_me is not null)
+        {
+            return _me;
+        }
+        // Before the gate: GetClientAsync takes the same one, and it does not re-enter.
+        var client = await GetClientAsync(ct);
+        await _gate.WaitAsync(ct);
+        try
+        {
+            return _me ??= await client.Me.GetAsync(cancellationToken: ct)
+                ?? throw new McpException(
+                    "Graph answered /me with nothing. The sign-in may have lapsed: run " +
+                    "`teams-mcp auth` to sign in again.");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
     /// <summary>Silent client for MCP tool calls. Never prompts; fails with guidance instead.</summary>
     public async Task<GraphServiceClient> GetClientAsync(CancellationToken ct = default)

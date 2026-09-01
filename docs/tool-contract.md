@@ -131,15 +131,30 @@ only what fit.
 ## Names resolve to ids leniently
 
 A caller usually has a name and not an id, so both servers accept either. One implementation each:
-`AdoTools.Resolve`, and `ResolveTeamAsync` / `ResolveChannelAsync` in Teams.
+`AdoTools.Resolve`, and `ResolveTeamAsync` / `ResolveChannelAsync` / `ResolveChatAsync` in Teams.
 
-1. An input that already looks like an id passes straight through: a GUID, a `19:` prefix, or a
-   number for a pipeline, release definition or environment.
-2. Otherwise match display names case-insensitively, **exact first, then substring**.
+1. An input that already looks like an id passes straight through: a GUID, a `19:` or `48:` prefix,
+   or a number for a pipeline, release definition or environment.
+2. Otherwise match display names case-insensitively, **exact first, then substring**. A chat is
+   matched on its topic or on another member's display name — a person's name deliberately reaches
+   the group chats they are in as well as the 1:1, since either can be the conversation meant. The
+   signed-in user is excluded from that comparison, being a member of every chat they can address.
 3. Exactly one match wins, and the resolution is logged at Debug (`resolve`) with which rule matched
    and how many candidates there were.
 4. Anything else throws an `McpException` **listing the candidates**. No match lists what was
    available; ambiguity lists what matched and says to use the id.
+
+Two chat-specific rules, because a chat is the one name that addresses a send:
+
+- The resolved chat id is logged at **Information**, not Debug. The tool's own argument log records
+  the name it was given, so without this line a message that reached the wrong conversation cannot
+  be traced to the destination it actually went to.
+- Ambiguity is never broken by recency. The chat listing arrives newest first and taking the first
+  match would be a silent choice of destination, so every candidate is named and the call fails.
+
+`self` is a reserved name on every chat tool, resolving to the signed-in user's notes-to-self chat.
+Graph does not return that chat from `/me/chats`, so it is the one destination no listing leads to;
+`get_current_user` and a `kind: "self"` row in `list_chats` are the other two ways to reach it.
 
 Never guess. On a write, `assigned_to` resolves through the vssps identity service and `type`
 against the project's own work item types, and an ambiguous name there is an error, not a coin flip.

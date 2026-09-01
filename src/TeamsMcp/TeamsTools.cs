@@ -54,9 +54,22 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             c.MembershipType == ChannelMembershipType.Standard ? null : c.MembershipType?.ToString())).ToList();
     });
 
+    /// <summary>
+    /// The signed-in user's own chat. Teams addresses it by this fixed alias rather than by a
+    /// per-user id, and Graph's /me/chats listing does not return it, so no listing ever leads a
+    /// caller to it. That is why every chat tool accepts the reserved name <c>self</c> and why
+    /// list_chats carries a row for it.
+    /// </summary>
+    internal const string SelfChatId = "48:notes";
+
     [McpServerTool(Name = "list_chats", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. List the signed-in user's 1:1 and group chats, most recently active first. " +
-                 "Filter by `member` (person's display name) or `topic` to find a chat without knowing its id.")]
+                 "Filter by `member` (person's display name) or `topic` to find a chat without knowing its id. " +
+                 "The signed-in user's own notes-to-self chat is listed first with kind: \"self\" — Graph " +
+                 "does not return it among the user's chats, so it would otherwise be unreachable without " +
+                 "knowing its id. Its position is fixed, not a claim about recency. Every chat tool also " +
+                 "takes a topic or a person's name in `chat` directly, so this is no longer a required " +
+                 "translation step before reading or sending.")]
     public Task<List<ChatDto>> ListChats(
         [Description("Only chats that include a member whose display name contains this (case-insensitive)")] string? member = null,
         [Description("Only chats whose topic contains this (case-insensitive)")] string? topic = null,
@@ -65,8 +78,60 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         A("member", member) + A("topic", topic) + A("limit", limit), async () =>
     {
         limit = Math.Clamp(limit, 1, 200);
-        const int scanCap = 500;
         var client = await graph.GetClientAsync(ct);
+        var results = new List<ChatDto>();
+        // Best-effort: a /me that will not answer costs the self row, not the listing. Every other
+        // path that needs the identity fails loudly instead.
+        try
+        {
+            if (SelfChatRow((await graph.GetMeAsync(ct)).DisplayName, member, topic) is { } self)
+            {
+                results.Add(self);
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            log.Line(LogLevel.Warning, Ev.ToolFail,
+                "self chat row omitted; /me did not answer" + A("reason", e.Message));
+        }
+        if (results.Count >= limit)
+        {
+            return results;
+        }
+        results.AddRange(await ScanChatsAsync(client, member, topic, limit - results.Count, log, ct));
+        return results;
+    });
+
+    /// <summary>
+    /// The self chat as a listing row, or null when the caller's filters exclude it. It has no
+    /// topic, so a `topic` filter always excludes it; its one member is the signed-in user, which
+    /// is what a `member` filter is matched against.
+    /// </summary>
+    internal static ChatDto? SelfChatRow(string? me, string? member, string? topic)
+    {
+        if (topic is not null)
+        {
+            return null;
+        }
+        if (member is not null && me?.Contains(member, StringComparison.OrdinalIgnoreCase) != true)
+        {
+            return null;
+        }
+        // `type` carries Graph's own chatType values, and Graph has none for this conversation;
+        // `kind` is the marker, so the row does not invent a type to say the same thing twice.
+        return new ChatDto(SelfChatId, null, null, null, [me], "self");
+    }
+
+    /// <summary>
+    /// The chats the signed-in user is in, newest activity first, filtered as list_chats filters.
+    /// Shared with the name resolver, which scans the same set to turn a topic or a person's name
+    /// into an id.
+    /// </summary>
+    private static async Task<List<ChatDto>> ScanChatsAsync(
+        GraphServiceClient client, string? member, string? topic, int limit, ILogger log,
+        CancellationToken ct)
+    {
+        const int scanCap = 500;
         var results = new List<ChatDto>();
         var scanned = 0;
         var page = await client.Me.Chats.GetAsync(rc =>
@@ -116,7 +181,21 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             page = await client.Me.Chats.WithUrl(page.OdataNextLink).GetAsync(cancellationToken: ct);
         }
         return results;
-    });
+    }
+
+    [McpServerTool(Name = "get_current_user", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Who this server is signed in as, and the id of that user's notes-to-self " +
+                 "chat — the destination for anything staged for the user's own review. Graph does not " +
+                 "list that chat among the user's chats, so this and the reserved name `self`, which " +
+                 "every chat tool accepts in `chat`, are the two ways to reach it. Doubles as a health " +
+                 "probe: it fails the way every other tool would if the sign-in has lapsed. One request.")]
+    public Task<CurrentUserDto> GetCurrentUser(CancellationToken ct = default) =>
+        Run("get_current_user", "", async () =>
+        {
+            var me = await graph.GetMeAsync(ct);
+            return new CurrentUserDto(
+                me.Id, me.DisplayName, me.Mail ?? me.UserPrincipalName, SelfChatId);
+        });
 
     [McpServerTool(Name = "read_channel_messages", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Read messages of a team channel, newest first. Set include_replies=true to get each " +
@@ -238,10 +317,12 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     }
 
     [McpServerTool(Name = "read_chat_messages", UseStructuredContent = true, ReadOnly = true)]
-    [Description("Read-only. Read messages of a 1:1 or group chat, newest first. `chat` is a chat id from " +
-                 "list_chats (use its member/topic filters to find one by name). Returns {messages, hasMore?, skipped?}.")]
+    [Description("Read-only. Read messages of a 1:1 or group chat, newest first. `chat` is a chat id, a " +
+                 "group chat's topic, the other person's display name for a 1:1, or 'self' for the " +
+                 "notes-to-self chat; a name that matches more than one chat is refused with the " +
+                 "candidates listed. Returns {messages, hasMore?, skipped?}.")]
     public Task<MessagesResult> ReadChatMessages(
-        [Description("Chat id, e.g. 19:...@thread.v2")] string chat,
+        [Description("Chat id (19:...@thread.v2), a topic, a person's display name, or 'self'")] string chat,
         [Description("Only messages created at/after this ISO-8601 timestamp")] string? since = null,
         [Description("Maximum messages to return (default 20, max 200)")] int limit = 20,
         [Description("Include system event messages such as member-added (default false; skipped ones are counted)")] bool include_system = false,
@@ -254,9 +335,10 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         limit = Math.Clamp(limit, 1, 200);
         var sinceTs = ParseSince(since);
         var client = await graph.GetClientAsync(ct);
+        var chatId = await ResolveChatAsync(client, chat, ct);
 
         return await PageMessagesAsync(
-            ChatPager(client, chat), Watermark.From(sinceTs), limit,
+            ChatPager(client, chatId), Watermark.From(sinceTs), limit,
             includeReplies: false, include_system, body_limit, ct);
     });
 
@@ -280,7 +362,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     public Task<DownloadedImagesResult> DownloadMessageImages(
         [Description("Id of the message carrying the images")] string message_id,
         [Description("Local directory to save into; created if it does not exist")] string directory,
-        [Description("Chat id, e.g. 19:...@thread.v2. Give this, or `team`+`channel`.")] string? chat = null,
+        [Description("Chat id (19:...@thread.v2), a topic, a person's display name, or 'self'. Give this, or `team`+`channel`.")] string? chat = null,
         [Description("Team id (GUID) or display name; requires `channel`")] string? team = null,
         [Description("Channel id (19:...) or display name; requires `team`")] string? channel = null,
         [Description("Id of a reply inside message_id's thread, when the images are on the reply " +
@@ -300,7 +382,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         Func<string, CancellationToken, Task<Stream?>> openHosted;
         if (chat is not null)
         {
-            var builder = client.Chats[chat].Messages[message_id];
+            var builder = client.Chats[await ResolveChatAsync(client, chat, ct)].Messages[message_id];
             fetchMessage = c => builder.GetAsync(cancellationToken: c);
             firstHosted = c => builder.HostedContents.GetAsync(cancellationToken: c);
             nextHosted = (url, c) => builder.HostedContents.WithUrl(url).GetAsync(cancellationToken: c);
@@ -496,15 +578,17 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     [Description("Read-only. Wait for new messages in one or more 1:1 or group chats and return them " +
                  "as soon as any arrive. Pass a single `chat`, or `chats` to watch several at once — " +
                  "they are polled concurrently and one call covers all of them, which is what makes " +
-                 "watching many conversations possible from a caller that can only block once. Chat " +
-                 "ids come from list_chats. Each message carries `chatId` when more than one chat is " +
+                 "watching many conversations possible from a caller that can only block once. Each " +
+                 "entry takes the forms read_chat_messages takes: a chat id, a group chat's topic, " +
+                 "the other person's display name for a 1:1, or 'self'. Each message carries " +
+                 "`chatId` when more than one chat is " +
                  "being watched. Waits for messages newer than `cursor` if given, else `since`, else " +
                  "the moment the call starts. Running out of `timeout_seconds` is not an error: it " +
                  "returns no messages and `timedOut: true`. " + CursorHelp +
                  "Returns {messages, hasMore?, skipped?, waitedSeconds, timedOut?, nextCursor}.")]
     public Task<MessagesWaitResult> WaitForChatMessages(
-        [Description("Chat id, e.g. 19:...@thread.v2. Give this or `chats`.")] string? chat = null,
-        [Description("Several chat ids to watch in one call, max 20. Give this or `chat`.")] string[]? chats = null,
+        [Description("Chat id (19:...@thread.v2), a topic, a person's display name, or 'self'. Give this or `chats`.")] string? chat = null,
+        [Description("Several chats to watch in one call (same forms as `chat`), max 20. Give this or `chat`.")] string[]? chats = null,
         [Description("Wait for messages at/after this ISO-8601 timestamp; defaults to now")] string? since = null,
         [Description("Opaque nextCursor from a previous call; overrides `since` and resumes exactly where that call stopped")] string? cursor = null,
         [Description("Give up after this many seconds (default 300, max 3600)")] int timeout_seconds = 300,
@@ -521,11 +605,22 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     {
         var targets = ChatTargets(chat, chats);
         var client = await graph.GetClientAsync(ct);
+        // Deduplicated again after resolution: two names ('self' and its id, a topic and its id)
+        // can mean one conversation, and a duplicate source would double-poll and double-deliver.
+        var ids = new List<string>();
+        foreach (var target in targets)
+        {
+            var id = await ResolveChatAsync(client, target, ct);
+            if (!ids.Contains(id, StringComparer.OrdinalIgnoreCase))
+            {
+                ids.Add(id);
+            }
+        }
         return await WaitForNewAsync(
-            [.. targets.Select(id => (id, ChatPager(client, id)))],
+            [.. ids.Select(id => (id, ChatPager(client, id)))],
             since, cursor, timeout_seconds, poll_seconds, MinPollSeconds, Math.Clamp(limit, 1, 200),
             includeReplies: false, include_system, body_limit,
-            labelSource: targets.Count > 1, ct);
+            labelSource: ids.Count > 1, ct);
     });
 
     /// <summary>
@@ -964,11 +1059,14 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     // Graph builds the card from the id, so the caller never restates the quoted text.
     [McpServerTool(Name = "send_chat_message", UseStructuredContent = true, Destructive = false, Idempotent = false)]
     [Description("MUTATION: sends a message visible to everyone in the chat. Disabled unless the environment " +
-                 "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `chat` is a chat id from list_chats. " +
+                 "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `chat` is a chat id, a group " +
+                 "chat's topic, the other person's display name for a 1:1, or 'self' for the notes-to-self " +
+                 "chat; a name matching more than one chat is refused with the candidates listed rather " +
+                 "than sent to the most recent. " +
                  "Set reply_to to a message id from read_chat_messages to answer that message as a quoted reply, " +
                  "the same card the Teams client's Reply button produces.")]
     public Task<SentMessageDto> SendChatMessage(
-        [Description("Chat id, e.g. 19:...@thread.v2")] string chat,
+        [Description("Chat id (19:...@thread.v2), a topic, a person's display name, or 'self'")] string chat,
         [Description("Message body. Plain text unless format says otherwise.")] string body,
         [Description("Body format: 'text' (default), 'markdown', or 'html'. Use markdown for anything beyond " +
                      "a single plain paragraph (Teams collapses newlines in a text body); it is converted " +
@@ -981,12 +1079,15 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             + TeamsMcpLog.ContentArg("body", body), async () =>
     {
         RequireSendEnabled();
-        RequireQuotableChat(chat, reply_to);
         var client = await graph.GetClientAsync(ct);
+        // The quote guard runs on the resolved id, not the argument: 'self' names the one chat it
+        // refuses, and would walk straight past a check made before resolution.
+        var chatId = await ResolveChatAsync(client, chat, ct);
+        RequireQuotableChat(chatId, reply_to);
         var message = new ChatMessage { Body = BuildBody(body, format) };
         var created = reply_to is null
-            ? await client.Chats[chat].Messages.PostAsync(message, cancellationToken: ct)
-            : await client.Chats[chat].Messages.ReplyWithQuote.PostAsync(
+            ? await client.Chats[chatId].Messages.PostAsync(message, cancellationToken: ct)
+            : await client.Chats[chatId].Messages.ReplyWithQuote.PostAsync(
                 new Microsoft.Graph.Chats.Item.Messages.ReplyWithQuote.ReplyWithQuotePostRequestBody
                 { MessageIds = [reply_to], ReplyMessage = message }, cancellationToken: ct);
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
@@ -1003,9 +1104,10 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                  "it off again. `reaction` is the emoji itself, e.g. 🤔 or ✅. The user holds one reaction per " +
                  "message through this API: setting a different emoji moves it rather than adding a second. " +
                  "Disabled unless the environment variable TEAMS_MCP_ALLOW_SEND=true is set for this server. " +
-                 "`chat` is a chat id from list_chats; message ids come from read_chat_messages.")]
+                 "`chat` is a chat id, a group chat's topic, the other person's display name for a 1:1, " +
+                 "or 'self'; message ids come from read_chat_messages.")]
     public Task<ReactionDto> ReactToChatMessage(
-        [Description("Chat id, e.g. 19:...@thread.v2")] string chat,
+        [Description("Chat id (19:...@thread.v2), a topic, a person's display name, or 'self'")] string chat,
         [Description("Id of the message to react to")] string message_id,
         [Description("The reaction emoji, e.g. 🤔")] string reaction,
         [Description("Remove the signed-in user's reaction instead of setting it (default false)")] bool remove = false,
@@ -1015,7 +1117,8 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         RequireSendEnabled();
         var emoji = NormalizeReaction(reaction);
         var client = await graph.GetClientAsync(ct);
-        var message = client.Chats[chat].Messages[message_id];
+        var chatId = await ResolveChatAsync(client, chat, ct);
+        var message = client.Chats[chatId].Messages[message_id];
         if (remove)
         {
             await message.UnsetReaction.PostAsync(
@@ -1303,6 +1406,96 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         };
     }
 
+    /// <summary>
+    /// How many chats the name resolver reads before it gives up. Higher than a listing's default
+    /// because a resolver that scanned only the recent ones would answer "no chat matches" for a
+    /// conversation that exists, which is the worse of the two failures.
+    /// </summary>
+    private const int ChatResolveScanCap = 200;
+
+    /// <summary>
+    /// A chat id from whatever the caller had: an id straight through, the reserved name
+    /// <c>self</c>, or a topic or person's name matched against the chats the user is in.
+    ///
+    /// The resolved id is logged at Information, not Debug like its team and channel siblings.
+    /// Once a name can address a conversation, the tool's own argument log records the name and
+    /// not the destination, so this line is what makes a message that reached the wrong chat
+    /// reconstructible afterwards.
+    /// </summary>
+    private async Task<string> ResolveChatAsync(
+        GraphServiceClient client, string chat, CancellationToken ct)
+    {
+        if (chat.StartsWith("19:", StringComparison.Ordinal) ||
+            chat.StartsWith("48:", StringComparison.Ordinal))
+        {
+            // An id names itself, and the tool already logged it as the argument it was given.
+            return chat;
+        }
+        if (string.Equals(chat, "self", StringComparison.OrdinalIgnoreCase))
+        {
+            log.Line(LogLevel.Information, Ev.Resolve,
+                "chat resolved" + A("input", chat) + A("match", "self") + A("id", SelfChatId));
+            return SelfChatId;
+        }
+        var me = (await graph.GetMeAsync(ct)).DisplayName;
+        var chats = await ScanChatsAsync(client, null, null, ChatResolveScanCap, log, ct);
+        var (matches, how) = MatchChats(chats, chat, me);
+        if (matches is [{ Id: not null } only])
+        {
+            log.Line(LogLevel.Information, Ev.Resolve,
+                "chat resolved" + A("input", chat) + A("match", how) + A("topic", only.Topic) +
+                A("members", string.Join(", ", only.Members)) + A("id", only.Id) +
+                A("candidates", chats.Count));
+            return only.Id;
+        }
+        throw matches.Count == 0
+            ? new McpException(
+                $"No chat matches '{chat}'. A chat is matched on its topic or on another member's " +
+                "display name, exactly first and then as a substring. Use list_chats to see what " +
+                "is there, or 'self' for the notes-to-self chat.")
+            : new McpException(
+                $"Chat name '{chat}' is ambiguous: {string.Join("; ", matches.Select(DescribeChat))}. " +
+                "Pass one of those ids. The most recent one is not assumed: a name that means more " +
+                "than one conversation is not a destination.");
+    }
+
+    /// <summary>
+    /// Which chats a name could mean, and how it matched. A chat matches on its topic or on any
+    /// other member's display name — a person's name deliberately reaches the group chats they
+    /// are in, not only the 1:1, because either can be the conversation the caller means — exact
+    /// before substring, the two tiers <see cref="ResolveTeamAsync"/> and
+    /// <see cref="ResolveChannelAsync"/> already use.
+    ///
+    /// Several matches in a tier are all returned, so the caller refuses. The same person can
+    /// appear in more than one conversation, and picking the most recent would send to a
+    /// destination the caller never named and do it without saying so.
+    /// </summary>
+    internal static (List<ChatDto> Matches, string How) MatchChats(
+        IReadOnlyList<ChatDto> chats, string input, string? me)
+    {
+        static bool Is(string? value, string wanted) =>
+            string.Equals(value, wanted, StringComparison.OrdinalIgnoreCase);
+        static bool Has(string? value, string wanted) =>
+            value?.Contains(wanted, StringComparison.OrdinalIgnoreCase) == true;
+
+        // The signed-in user is a member of every one of these, so leaving them in would make
+        // their own name match everything.
+        List<string?> Others(ChatDto c) =>
+            me is null ? c.Members : c.Members.Where(n => !Is(n, me)).ToList();
+
+        var exact = chats
+            .Where(c => Is(c.Topic, input) || Others(c).Any(n => Is(n, input)))
+            .ToList();
+        return exact.Count > 0
+            ? (exact, "exact")
+            : (chats.Where(c => Has(c.Topic, input) || Others(c).Any(n => Has(n, input))).ToList(),
+               "substring");
+    }
+
+    /// <summary>One candidate as a caller can act on it: what it is called, and the id to pass.</summary>
+    private static string DescribeChat(ChatDto c) =>
+        (c.Topic is { Length: > 0 } topic ? topic : string.Join(", ", c.Members)) + $" ({c.Id})";
+
     private static async Task<string> ResolveChannelAsync(
         GraphServiceClient client, string teamId, string channel, ILogger log, CancellationToken ct)
     {
@@ -1512,7 +1705,20 @@ public sealed record TeamDto(string? Id, string? Name, string? Description);
 
 public sealed record ChannelDto(string? Id, string? Name, string? Description, string? MembershipType);
 
-public sealed record ChatDto(string? Id, string? Topic, string? Type, DateTimeOffset? LastUpdated, List<string?> Members);
+/// <summary>
+/// One conversation as a listing row. <c>kind</c> is present only on the signed-in user's own
+/// notes-to-self chat, which is the one row a caller cannot recognize from its topic or members
+/// and the one Graph does not return.
+/// </summary>
+public sealed record ChatDto(
+    string? Id, string? Topic, string? Type, DateTimeOffset? LastUpdated, List<string?> Members,
+    string? Kind = null);
+
+/// <summary>
+/// The signed-in identity. <c>selfChatId</c> is the notes-to-self conversation, which every chat
+/// tool also takes as the reserved name <c>self</c>.
+/// </summary>
+public sealed record CurrentUserDto(string? Id, string? Name, string? Email, string SelfChatId);
 
 /// <summary>Envelope for message reads: hasMore/skipped are omitted when uninteresting.</summary>
 public sealed record MessagesResult(List<MessageDto> Messages, bool? HasMore, SkippedDto? Skipped);

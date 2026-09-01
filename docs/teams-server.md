@@ -250,19 +250,20 @@ idempotent (`Idempotent = true` where the sends are false).
 | --- | --- |
 | `list_teams` | Joined teams |
 | `list_channels` | `team` by id or name |
-| `list_chats` | Filters by `member` or `topic` client-side; scan capped at 500 |
+| `list_chats` | Filters by `member` or `topic` client-side; scan capped at 500; leads with the self chat |
+| `get_current_user` | One `/me` call, cached for the process; carries the self-chat id |
 | `read_channel_messages` | `include_replies` expands the thread |
-| `read_chat_messages` | |
-| `download_message_images` | Hosted content + OneDrive image references, saved to a local directory |
+| `read_chat_messages` | `chat` by id, topic, person or `self` |
+| `download_message_images` | Hosted content + OneDrive image references, saved to a local directory; same `chat` forms |
 | `wait_for_channel_messages` | Cursor-based, task-capable |
-| `wait_for_chat_messages` | Up to 20 chats in one call, cursor-based, task-capable |
+| `wait_for_chat_messages` | Up to 20 chats in one call, same `chat` forms, cursor-based, task-capable |
 | `search_messages` | Search index |
 | `list_mentions` | `IsMentioned:true` over the same index |
 | `wait_for_mentions` | Polls `list_mentions` |
 | `wait_for_any_message` | Polls `search_messages` |
 | `send_channel_message` | `TEAMS_MCP_ALLOW_SEND=true` |
-| `send_chat_message` | `TEAMS_MCP_ALLOW_SEND=true` |
-| `react_to_chat_message` | `TEAMS_MCP_ALLOW_SEND=true`; emoji via setReaction/unsetReaction |
+| `send_chat_message` | `TEAMS_MCP_ALLOW_SEND=true`; `chat` by id, topic, person or `self` |
+| `react_to_chat_message` | `TEAMS_MCP_ALLOW_SEND=true`; emoji via setReaction/unsetReaction; same `chat` forms |
 | `react_to_channel_message` | Same gate; `reply_id` reaches a reply through its thread root |
 
 ## Scopes
