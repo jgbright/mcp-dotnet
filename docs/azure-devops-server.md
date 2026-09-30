@@ -540,6 +540,36 @@ envelope, which `Writes.Property` unwraps.
 
 `type` resolves against the project's own work item types, with the same rule.
 
+### Work item mentions
+
+A person who types `#1234` in the web editor gets a mention and a Related link. An API write gets
+neither, whatever it sends. Measured on 2026-09-30 against scratch items: the editor's own markup
+(`<a href=".../_workitems/edit/1234/" data-vss-mention="version:1.0">#1234</a>`) in a description,
+the same markup and plain `#1234` in `System.History`, and a markdown comment through the comments
+API all stored as sent and added no relation, including the markdown comment the service itself
+rendered as a mention. A link that did come from a typed comment shows why: it is a relations-only
+update on the same revision, 250 ms after the comment, by the same person. The web client saves, then
+adds the links in a request of its own.
+
+So `create_work_item` and `update_work_item` do both halves themselves (`Mentions`). They find
+`#1234` and `AB#1234` in the body fields and the comment, plus any link to a work item, rewrite each
+reference to the editor's markup, and add a link for each referenced id the item does not already
+link to by any link type. The link is Related unless `link_type` names another. Rules that each came
+from a real false positive or a real item:
+
+- **Three digits or more.** A comment's "#1" linked an item to work item 1 through the web editor.
+- **Text inside a tag is never read**, so a style attribute's `#123456` stays a color.
+- **Inside a link to anything but a work item, `#123` is that thing's number**, a pull request or an
+  issue, and is ignored.
+- **An id that does not exist, or that this credential cannot read, stays as written**, and so does
+  the item's own id. Existence is one batched read of `System.TeamProject`, which also gives the
+  project the mention's href names.
+- **A mention already in the markup is left alone**, and a link with text of its own keeps its text.
+  Re-saving the same text therefore changes nothing and links nothing.
+
+`linked` in the result lists the ids this call linked. `ado_api_request` sends bodies as given and
+does neither half, which its description says.
+
 ## The deployment map
 
 `deployment_status` is the model for **organization-specific knowledge is configuration, never

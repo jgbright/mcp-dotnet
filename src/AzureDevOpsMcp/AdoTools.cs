@@ -2637,7 +2637,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "`filter` or the endpoint's own $top is the way out of. A `body` that is a JSON " +
                  "Patch document — an array of {op, path, value} — is sent as " +
                  "application/json-patch+json, which is the only type the work item endpoints " +
-                 "accept; `content_type` overrides that inference. Any method other than GET " +
+                 "accept; `content_type` overrides that inference. A body is sent exactly as given: " +
+                 "a #1234 in a work item field or comment written this way is neither made a mention " +
+                 "nor linked, which update_work_item and create_work_item do. Any method other than GET " +
                  "or HEAD requires ADO_MCP_ALLOW_WRITE=true in this server's environment and is " +
                  "refused otherwise, which no retry will change.")]
     public Task<ApiResponseDto> AdoApiRequest(
@@ -2833,6 +2835,21 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     // not depend on what was passed. Each returns the post-write state in the read tools'
     // null-omitting DTOs, so the caller can confirm without a second call.
 
+    // Azure DevOps turns a typed #1234 into a link only in its web editor, which adds the relation
+    // in a request of its own after saving. Through the API nothing links, whatever the markup, so
+    // both work item writes rewrite and link references themselves (Mentions).
+    private const string MentionsDescription =
+        " References to other work items in the body fields and any comment (#1234 or AB#1234, three " +
+        "digits or more, or a link to the item) are written as " +
+        "work item mentions, and each referenced item not already linked by any link type gets a " +
+        "link, Related unless `link_type` says otherwise. Azure DevOps adds no link for a mention " +
+        "written through the API, so this is what links them. `linked` lists the ids linked by this " +
+        "call; an id that does not exist is left as written.";
+
+    private const string LinkTypeDescription =
+        "Link type for the work items the text references: Related (default), Predecessor, " +
+        "Successor, Duplicate, Duplicate Of, or a link type reference name";
+
     // Destructive: it overwrites fields that already had values, unlike the two below, which
     // only add. Not idempotent either: a repeated call with the same `comment` posts it again.
     [McpServerTool(Name = "update_work_item", UseStructuredContent = true, Destructive = true, Idempotent = false)]
@@ -2853,7 +2870,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "field no argument covers, such as Severity, by reference name. Returns the item's " +
                  "identity and the fields this call wrote, read back from the service; " +
                  "return_full_item=true returns the whole item instead. A `comment` is appended to " +
-                 "the discussion and is not echoed, since the response does not carry it.")]
+                 "the discussion and is not echoed, since the response does not carry it." +
+                 MentionsDescription)]
     public Task<WorkItemDetailDto> UpdateWorkItem(
         [Description("Work item id")] int id,
         [Description("New state, e.g. Active, Resolved, Closed")] string? state = null,
@@ -2879,6 +2897,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Any other fields, as a JSON object of reference name to value, e.g. " +
                      "{\"Microsoft.VSTS.Common.Severity\": \"3 - Medium\"}. A field a typed argument " +
                      "sets is refused here; pass it there.")] string? fields = null,
+        [Description(LinkTypeDescription)] string? link_type = null,
         [Description("Return the whole work item rather than the fields this call wrote (default false)")] bool return_full_item = false,
         CancellationToken ct = default) => Run("update_work_item",
         A("id", id) + A("state", state) + A("assigned_to", assigned_to) + A("area", area) +
@@ -2891,9 +2910,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         AdoMcpLog.ContentArg("repro_steps", repro_steps) +
         AdoMcpLog.ContentArg("acceptance_criteria", acceptance_criteria) +
         AdoMcpLog.ContentArg("comment", comment) + AdoMcpLog.ContentArg("fields", fields) +
-        A("return_full_item", return_full_item), async () =>
+        A("link_type", link_type) + A("return_full_item", return_full_item), async () =>
     {
         RequireWriteEnabled();
+        var rel = Mentions.Rel(link_type);
         var estimates = new Writes.Estimates(
             original_estimate, remaining_work, completed_work, story_points, effort);
         var extra = Writes.ExtraFields(fields);
@@ -2930,16 +2950,20 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         }
 
         // Tags are one semicolon-joined field and the parent is a relation addressed by its index,
-        // so both are read-merge-write. One read serves both, but `fields` and `$expand` cannot be
-        // combined, so asking for the relations means taking every field too.
+        // so both are read-merge-write, and so is linking what the text references. One read serves
+        // all three, but `fields` and `$expand` cannot be combined, so asking for the relations
+        // means taking every field too.
         var reparenting = parent is not null || remove_parent;
         var merging = add_tags is not null || remove_tags is not null;
+        var referenced = Mentions.Find(description, repro_steps, acceptance_criteria, comment);
+        var linking = referenced.Count > 0;
         string? tags = null;
         List<Writes.PatchOp> relationOps = [];
+        List<int>? linked = null;
         WireWorkItem? current = null;
-        if (reparenting || merging)
+        if (reparenting || merging || linking)
         {
-            current = await client.GetAsync<WireWorkItem>(reparenting
+            current = await client.GetAsync<WireWorkItem>(reparenting || linking
                 ? $"_apis/wit/workitems/{id}?{Api}&$expand=relations"
                 : $"_apis/wit/workitems/{id}?{Api}&fields=System.Tags", ct);
             if (merging)
@@ -2949,6 +2973,18 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             relationOps = parent is { } parentId
                 ? Writes.SetParent(current.Relations, parentId, client.OrgUrl)
                 : remove_parent ? Writes.RemoveParent(current.Relations) : [];
+        }
+        if (linking)
+        {
+            var targets = await MentionTargetsAsync(client, referenced.Where(r => r != id).ToList(), ct);
+            description = Mentions.Rewrite(description, targets);
+            repro_steps = Mentions.Rewrite(repro_steps, targets);
+            acceptance_criteria = Mentions.Rewrite(acceptance_criteria, targets);
+            comment = Mentions.Rewrite(comment, targets);
+            // Appended after any parent operations, whose remove addresses the relations by index
+            // as they were read.
+            linked = Mentions.Unlinked(targets.Keys, current!.Relations, id, parent);
+            relationOps.AddRange(Writes.AddLinks(linked, rel, client.OrgUrl));
         }
 
         var ops = Writes.UpdatePatch(
@@ -2970,9 +3006,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             $"_apis/wit/workitems/{id}?{Api}" + (reparenting ? "&$expand=relations" : ""),
             ops,
             ct));
-        return return_full_item
+        return (return_full_item
             ? Mapping.WorkItemDetail(updated, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null)
-            : Mapping.WorkItemWritten(updated, Writes.FieldsWritten(ops), client.OrgUrl);
+            : Mapping.WorkItemWritten(updated, Writes.FieldsWritten(ops), client.OrgUrl))
+            with { Linked = linked is { Count: > 0 } ? linked : null };
     });
 
     [McpServerTool(Name = "create_work_item", UseStructuredContent = true, Destructive = false, Idempotent = false)]
@@ -2986,7 +3023,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "the field. `original_estimate` does not imply `remaining_work`: a sprint burndown " +
                  "reads the second, so set both when starting from an estimate. `fields` sets any " +
                  "field no argument covers, such as Severity, by reference name. Returns " +
-                 "the created work item with its id.")]
+                 "the created work item with its id." + MentionsDescription)]
     public Task<WorkItemDetailDto> CreateWorkItem(
         [Description("Work item type, e.g. Bug, Task, \"User Story\"")] string type,
         [Description("Title")] string title,
@@ -3010,6 +3047,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Any other fields, as a JSON object of reference name to value, e.g. " +
                      "{\"Microsoft.VSTS.Common.Severity\": \"3 - Medium\"}. A field a typed argument " +
                      "sets is refused here; pass it there.")] string? fields = null,
+        [Description(LinkTypeDescription)] string? link_type = null,
         CancellationToken ct = default) => Run("create_work_item",
         A("project", project) + A("type", type) + AdoMcpLog.ContentArg("title", title) +
         AdoMcpLog.ContentArg("description", description) + AdoMcpLog.ContentArg("repro_steps", repro_steps) +
@@ -3018,13 +3056,14 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         A("priority", priority) + A("original_estimate", original_estimate) +
         A("remaining_work", remaining_work) + A("completed_work", completed_work) +
         A("story_points", story_points) + A("effort", effort) + A("parent", parent) +
-        AdoMcpLog.ContentArg("fields", fields), async () =>
+        AdoMcpLog.ContentArg("fields", fields) + A("link_type", link_type), async () =>
     {
         RequireWriteEnabled();
         if (string.IsNullOrWhiteSpace(title))
         {
             throw new McpException("`title` is required.");
         }
+        var rel = Mentions.Rel(link_type);
         var extra = Writes.ExtraFields(fields);
         var client = await ado.GetClientAsync(ct);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
@@ -3034,6 +3073,12 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         {
             iteration = await CurrentIterationAsync(client, resolvedProject.Id, ct);
         }
+        var targets = await MentionTargetsAsync(
+            client, Mentions.Find(description, repro_steps, acceptance_criteria), ct);
+        description = Mentions.Rewrite(description, targets);
+        repro_steps = Mentions.Rewrite(repro_steps, targets);
+        acceptance_criteria = Mentions.Rewrite(acceptance_criteria, targets);
+        var linked = Mentions.Unlinked(targets.Keys, relations: null, parent);
 
         var ops = Writes.CreatePatch(
             title, description, repro_steps, acceptance_criteria, assignee, area, iteration,
@@ -3046,16 +3091,37 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             // Nothing exists yet to be parented elsewhere, so this is always a bare add.
             ops.AddRange(Writes.SetParent(relations: null, parentId, client.OrgUrl));
         }
+        ops.AddRange(Writes.AddLinks(linked, rel, client.OrgUrl));
 
         var created = await WithRuleHint(() => client.PatchAsync<WireWorkItem>(
             HttpMethod.Post,
             // The route's $ prefix on the type name is literal. The name itself may contain spaces.
             $"{Escape(resolvedProject.Id)}/_apis/wit/workitems/${Escape(resolvedType.Name)}?{Api}" +
-            (parent is null ? "" : "&$expand=relations"),
+            (parent is null && linked.Count == 0 ? "" : "&$expand=relations"),
             ops,
             ct));
-        return Mapping.WorkItemDetail(created, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null);
+        return Mapping.WorkItemDetail(created, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null)
+            with { Linked = linked.Count > 0 ? linked : null };
     });
+
+    /// <summary>
+    /// The referenced ids that exist and this credential can read, each to its web url in its own
+    /// project, which is what a mention's href names. The rest are left as written text.
+    /// </summary>
+    private async Task<Dictionary<int, string>> MentionTargetsAsync(
+        AdoClient client, List<int> ids, CancellationToken ct)
+    {
+        if (ids.Count == 0)
+        {
+            return [];
+        }
+        var found = await GetWorkItemsAsync(client, ids, ct, ["System.TeamProject"]);
+        return found
+            .Where(w => w is not null)
+            .Select(w => (w.Id, Url: Mapping.WorkItemUrl(client.OrgUrl, Mapping.Str(w.Fields, "System.TeamProject"), w.Id)))
+            .Where(t => t.Url is not null)
+            .ToDictionary(t => t.Id, t => t.Url!);
+    }
 
     /// <summary>
     /// The path of the project's current sprint for its default team, which is what

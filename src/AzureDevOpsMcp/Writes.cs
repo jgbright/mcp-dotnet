@@ -329,6 +329,10 @@ internal static class Writes
         return ops;
     }
 
+    /// <summary>One appended link per id, all of one link type.</summary>
+    internal static IEnumerable<PatchOp> AddLinks(IEnumerable<int> ids, string rel, string orgUrl) =>
+        ids.Select(id => new PatchOp("add", "/relations/-", new RelationRef(rel, WorkItemApiUrl(orgUrl, id))));
+
     internal static List<PatchOp> RemoveParent(IReadOnlyList<WireRelation>? relations) =>
         ParentIndex(relations) is { } index ? [new PatchOp("remove", $"/relations/{index}", null)] : [];
 

@@ -127,6 +127,19 @@ public class MentionsTests
         Assert.Equal([5102], Mentions.Unlinked([5105, 5100, 5102, 5102], null, 5105, 5100));
     }
 
+    [Fact]
+    public void Each_link_is_an_appended_relation_to_the_items_api_url()
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            Writes.AddLinks([5101], Mentions.RelatedRel, Org),
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+
+        Assert.Equal(
+            "[{\"op\":\"add\",\"path\":\"/relations/-\",\"value\":{\"rel\":\"System.LinkTypes.Related\"," +
+            $"\"url\":\"{Org}/_apis/wit/workItems/5101\"}}}}]",
+            json);
+    }
+
     [Theory]
     [InlineData(null, "System.LinkTypes.Related")]
     [InlineData("related", "System.LinkTypes.Related")]

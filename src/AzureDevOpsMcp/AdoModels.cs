@@ -482,7 +482,8 @@ public sealed record WorkItemDetailDto(
     List<CommentDto>? Comments,
     SkippedDto? Skipped,
     string? WebUrl,
-    Dictionary<string, string>? Fields = null);
+    Dictionary<string, string>? Fields = null,
+    List<int>? Linked = null);
 
 /// <summary>
 /// Envelope for a batched work item read. <c>notFound</c> lists the ids the service had nothing

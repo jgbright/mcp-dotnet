@@ -414,6 +414,12 @@ the item first if you mean to extend it. Its `comment` posts to the discussion; 
 A work item has at most one parent, so `parent` replaces whatever it is under; asking for the parent
 it already has writes nothing. `remove_parent` leaves it unparented.
 
+`#1234` and `AB#1234` in the body fields and the comment become work item mentions, and each
+referenced item gets a Related link unless it is already linked some way (`link_type` picks another
+type). Azure DevOps links a mention only when a person types it in the web editor, so without this a
+reference written through the API links nothing. The result's `linked` lists the ids linked, and an
+id that does not exist is left as written.
+
 `priority` is the process's own scale, commonly 1 to 4. Left off a `create_work_item` call it takes
 the process default, not a considered value, usually 2.
 

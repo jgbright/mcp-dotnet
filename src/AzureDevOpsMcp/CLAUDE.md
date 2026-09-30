@@ -101,7 +101,12 @@ one way in and the tag merge cannot be bypassed. The escape hatch is held to the
 standard: `ado_api_request` sends a JSON Patch body as `application/json-patch+json`
 (`ApiRequest.ContentType`, overridable), because a hardcoded `application/json` there put every
 work item endpoint out of reach and sent the work out to a shell anyway — which is the one thing
-that tool exists to prevent. Three of the writable things have their own trap:
+that tool exists to prevent. Four of the writable things have their own trap:
+- **A mention written through the API links nothing.** Azure DevOps adds the relation for a typed
+  `#1234` only from its web editor, in a separate request after the save, so markup alone (even
+  the editor's own `data-vss-mention`) leaves the item unlinked. Both work item writes rewrite
+  references and add the missing relations themselves through `Mentions`; the measurements and the
+  false-positive rules are in `docs/azure-devops-server.md` § Work item mentions.
 - **Priority is an integer field**, so `PatchOp.Value` is `object?` rather than `string` and the
   op carries a JSON number. Omitting it on a create does not mean "no priority" — the process
   template's default lands instead (usually 2), which is why `create_work_item` says so in the
