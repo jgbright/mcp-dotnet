@@ -21,7 +21,7 @@ public class SearchQueryTests
     public void Since_becomes_a_day_scope_that_starts_the_day_before()
     {
         // Graph's `sent>2026-07-28` excludes the 28th outright, so asking from 14:30 that day has
-        // to ask from the 27th and let IsAtOrAfter trim the morning off.
+        // to ask from the 27th and let IsInRange trim the morning off.
         Assert.Equal("sent>2026-07-27", Search.Build(null, Since, mentionsOnly: false));
     }
 
@@ -54,9 +54,9 @@ public class SearchQueryTests
     [Fact]
     public void A_hit_at_the_boundary_counts_as_at_or_after()
     {
-        Assert.True(Search.IsAtOrAfter(Hit(Since), Since));
-        Assert.True(Search.IsAtOrAfter(Hit(Since.AddSeconds(1)), Since));
-        Assert.False(Search.IsAtOrAfter(Hit(Since.AddSeconds(-1)), Since));
+        Assert.True(Search.IsInRange(Hit(Since), Since));
+        Assert.True(Search.IsInRange(Hit(Since.AddSeconds(1)), Since));
+        Assert.False(Search.IsInRange(Hit(Since.AddSeconds(-1)), Since));
     }
 
     [Fact]
@@ -64,9 +64,72 @@ public class SearchQueryTests
     {
         // A hit with no timestamp cannot be shown to satisfy the filter, and a waiter that took one
         // would report an arrival it has no evidence for.
-        Assert.True(Search.IsAtOrAfter(Hit(null), null));
-        Assert.False(Search.IsAtOrAfter(Hit(null), Since));
+        Assert.True(Search.IsInRange(Hit(null), null));
+        Assert.False(Search.IsInRange(Hit(null), Since));
     }
+
+    [Fact]
+    public void Until_alone_becomes_a_day_scope_that_ends_the_day_after()
+    {
+        // `sent<2026-08-01` excludes the 1st, so a bound at noon on the 1st asks up to the 2nd.
+        Assert.Equal("sent<2026-08-02", Search.Build(null, null, mentionsOnly: false, Until));
+    }
+
+    [Fact]
+    public void Since_and_until_together_are_one_range_term_never_two()
+    {
+        // The index ignores two sent terms together; the range form includes both days it names.
+        Assert.Equal("sent:2026-07-28..2026-08-01 from:Alice", Search.Build("from:Alice", Since, mentionsOnly: false, Until));
+    }
+
+    [Fact]
+    public void An_until_at_midnight_does_not_ask_for_the_day_it_excludes()
+    {
+        var midnight = new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero);
+
+        Assert.Equal("sent<2026-08-01", Search.Build(null, null, mentionsOnly: false, midnight));
+        Assert.Equal("sent:2026-07-28..2026-07-31", Search.Build(null, Since, mentionsOnly: false, midnight));
+    }
+    [Fact]
+    public void The_window_includes_since_and_excludes_until()
+    {
+        Assert.True(Search.IsInRange(Hit(Since), Since, Until));
+        Assert.True(Search.IsInRange(Hit(Until.AddTicks(-1)), Since, Until));
+        Assert.False(Search.IsInRange(Hit(Until), Since, Until));
+        Assert.False(Search.IsInRange(Hit(Since.AddTicks(-1)), Since, Until));
+        Assert.True(Search.IsInRange(Hit(Since.AddYears(-1)), null, Until));
+        Assert.False(Search.IsInRange(Hit(null), null, Until));
+    }
+
+    [Theory]
+    [InlineData("from:Alice sent>2026-07-26 sent<2026-08-01")]
+    [InlineData("sent>=2026-07-27 SENT<=2026-07-28")]
+    [InlineData("sent=2026-07-27 sent : 2026-07-28")]
+    public void Two_sent_terms_in_the_query_are_refused_naming_the_range_form(string query)
+    {
+        var e = Assert.Throws<ModelContextProtocol.McpException>(() => Search.CheckDateTerms(query, bounded: false));
+
+        Assert.Contains("sent:2026-07-27..2026-07-31", e.Message);
+    }
+
+    [Theory]
+    [InlineData("\"rate card\" sent<2026-08-03")]
+    [InlineData("sent:2026-07-27..2026-07-31")]
+    public void A_sent_term_beside_since_or_until_is_refused_and_alone_is_allowed(string query)
+    {
+        Search.CheckDateTerms(query, bounded: false);
+        Assert.Contains("since/until", Assert.Throws<ModelContextProtocol.McpException>(
+            () => Search.CheckDateTerms(query, bounded: true)).Message);
+    }
+
+    [Fact]
+    public void Sent_inside_a_quoted_phrase_or_a_word_is_not_a_term()
+    {
+        Search.CheckDateTerms("\"sent: yesterday\" \"sent>now\" consent:yes resent>", bounded: true);
+        Search.CheckDateTerms(null, bounded: true);
+    }
+
+    private static readonly DateTimeOffset Until = new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
 
     private static SearchHitDto Hit(DateTimeOffset? created) =>
         new("1", "19:chat", null, null, created, "Alice", "hi", null, null);

@@ -196,30 +196,32 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
 
     [McpServerTool(Name = "read_channel_messages", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Read messages of a team channel, newest first. Set include_replies=true to get each " +
-                 "root message's reply thread nested under it. `team`/`channel` accept ids or display names. " +
+                 "root message's reply thread nested under it; since and until read a past window. `team`/`channel` " +
+                 "accept ids or display names. " +
                  "Returns {messages, hasMore?, skipped?}.")]
     public Task<MessagesResult> ReadChannelMessages(
         [Description("Team id (GUID) or display name")] string team,
         [Description("Channel id (19:...) or display name")] string channel,
         [Description("Only messages created at/after this ISO-8601 timestamp, e.g. 2026-07-01T00:00:00Z")] string? since = null,
+        [Description(UntilDescription)] string? until = null,
         [Description("Maximum root messages to return (default 20, max 200)")] int limit = 20,
         [Description("Nest each root message's replies under it (default false)")] bool include_replies = false,
         [Description("Include system event messages such as member-added (default false; skipped ones are counted)")] bool include_system = false,
         [Description("Max characters per message body; longer bodies get truncated:true (0 = unlimited, default 2000)")] int body_limit = 2000,
         CancellationToken ct = default) => Run("read_channel_messages",
-        A("team", team) + A("channel", channel) + A("since", since) + A("limit", limit) +
+        A("team", team) + A("channel", channel) + A("since", since) + A("until", until) + A("limit", limit) +
         A("include_replies", include_replies) + A("include_system", include_system) + A("body_limit", body_limit),
         async () =>
     {
         limit = Math.Clamp(limit, 1, 200);
-        var sinceTs = ParseSince(since);
+        var (sinceTs, untilTs) = ParseWindow(since, until);
         var client = await graph.GetClientAsync(ct);
         var (teamId, _) = await ResolveTeamAsync(client, team, log, ct);
         var channelId = await ResolveChannelAsync(client, teamId, channel, log, ct);
 
         return await PageMessagesAsync(
             ChannelPager(client, teamId, channelId, include_replies),
-            Watermark.From(sinceTs), limit, include_replies, include_system, body_limit, ct);
+            Watermark.From(sinceTs), limit, include_replies, include_system, body_limit, ct, untilTs, log);
     });
 
     /// <summary>
@@ -243,8 +245,25 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
          (url, ct) => client.Teams[teamId].Channels[channelId].Messages
             .WithUrl(url).GetAsync(cancellationToken: ct));
 
-    private static (FirstPage First, NextPage Next) ChatPager(GraphServiceClient client, string chat) =>
-        (ct => client.Chats[chat].Messages.GetAsync(rc => rc.QueryParameters.Top = 50, ct),
+    /// <summary>
+    /// A chat's messages, and with <paramref name="until"/> only those created before it. Chats
+    /// accept <c>$filter</c> on <c>createdDateTime</c> when also ordered by it (measured; a channel
+    /// refuses both options), so the service skips the newer pages instead of this server reading
+    /// through them. Ordering by creation also means an edit or a reaction cannot move a message
+    /// across the bound, which filtering on <c>lastModifiedDateTime</c> would.
+    /// </summary>
+    private static (FirstPage First, NextPage Next) ChatPager(
+        GraphServiceClient client, string chat, DateTimeOffset? until = null) =>
+        (ct => client.Chats[chat].Messages.GetAsync(rc =>
+            {
+                rc.QueryParameters.Top = 50;
+                if (until is { } u)
+                {
+                    rc.QueryParameters.Orderby = ["createdDateTime desc"];
+                    rc.QueryParameters.Filter =
+                        $"createdDateTime lt {u.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture)}";
+                }
+            }, ct),
          (url, ct) => client.Chats[chat].Messages.WithUrl(url).GetAsync(cancellationToken: ct));
 
     /// <summary>
@@ -255,18 +274,27 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     /// <para>The stop is per page, not per message: Graph orders by <c>lastModifiedDateTime</c>,
     /// and a reaction moves that, so one old message can surface at the top with nothing new said.
     /// Only a whole page of them ends the scan.</para>
+    ///
+    /// <para>A message created at or after <paramref name="until"/> is passed over without
+    /// counting toward <paramref name="limit"/> or in <c>skipped</c>: the window is the caller's
+    /// choice, not a filter. Where the service cannot skip those pages itself (a channel), reaching
+    /// an old window means reading through them, so a bounded read stops after
+    /// <see cref="MaxUntilPages"/> pages, sets <c>hasMore</c> and logs a Warning.</para>
     /// </summary>
     internal static async Task<MessagesResult> PageMessagesAsync(
         (FirstPage First, NextPage Next) pager, Watermark? floor, int limit,
-        bool includeReplies, bool includeSystem, int bodyLimit, CancellationToken ct)
+        bool includeReplies, bool includeSystem, int bodyLimit, CancellationToken ct,
+        DateTimeOffset? until = null, ILogger? log = null)
     {
         var counts = new SkipCounter();
         var results = new List<MessageDto>();
         var hasMore = false;
         var done = false;
+        var pages = 0;
         var page = await pager.First(ct);
         while (!done && page is not null)
         {
+            pages++;
             var reachedFloorOnThisPage = floor is null;
             foreach (var msg in page.Value ?? [])
             {
@@ -275,6 +303,12 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                     hasMore = true;
                     done = true;
                     break;
+                }
+                if (msg.CreatedDateTime >= until)
+                {
+                    // Newer than the window, so the window's messages are still to come.
+                    reachedFloorOnThisPage = true;
+                    continue;
                 }
                 if (floor is { } f)
                 {
@@ -301,35 +335,47 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             {
                 break;
             }
+            if (until is not null && pages >= MaxUntilPages)
+            {
+                log?.Line(LogLevel.Warning, Ev.Page,
+                    "bounded read hit the page cap; older messages in the window were not reached" +
+                    A("pages", pages) + A("matched", results.Count));
+                hasMore = true;
+                break;
+            }
             page = await pager.Next(page.OdataNextLink, ct);
         }
         return new MessagesResult(results, hasMore ? true : null, counts.ToDto());
     }
 
+    /// <summary>Pages of 50 a read bounded by <c>until</c> reads before giving up.</summary>
+    internal const int MaxUntilPages = 40;
+
     [McpServerTool(Name = "read_chat_messages", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Read messages of a 1:1 or group chat, newest first. `chat` is a chat id, a " +
                  "group chat's topic, the other person's display name for a 1:1, or 'self' for the " +
                  "notes-to-self chat; a name that matches more than one chat is refused with the " +
-                 "candidates listed. Returns {messages, hasMore?, skipped?}.")]
+                 "candidates listed. since and until read a past window. Returns {messages, hasMore?, skipped?}.")]
     public Task<MessagesResult> ReadChatMessages(
         [Description("Chat id (19:...@thread.v2), a topic, a person's display name, or 'self'")] string chat,
         [Description("Only messages created at/after this ISO-8601 timestamp")] string? since = null,
+        [Description(UntilDescription)] string? until = null,
         [Description("Maximum messages to return (default 20, max 200)")] int limit = 20,
         [Description("Include system event messages such as member-added (default false; skipped ones are counted)")] bool include_system = false,
         [Description("Max characters per message body; longer bodies get truncated:true (0 = unlimited, default 2000)")] int body_limit = 2000,
         CancellationToken ct = default) => Run("read_chat_messages",
-        A("chat", chat) + A("since", since) + A("limit", limit) +
+        A("chat", chat) + A("since", since) + A("until", until) + A("limit", limit) +
         A("include_system", include_system) + A("body_limit", body_limit),
         async () =>
     {
         limit = Math.Clamp(limit, 1, 200);
-        var sinceTs = ParseSince(since);
+        var (sinceTs, untilTs) = ParseWindow(since, until);
         var client = await graph.GetClientAsync(ct);
         var chatId = await ResolveChatAsync(client, chat, ct);
 
         return await PageMessagesAsync(
-            ChatPager(client, chatId), Watermark.From(sinceTs), limit,
-            includeReplies: false, include_system, body_limit, ct);
+            ChatPager(client, chatId, untilTs), Watermark.From(sinceTs), limit,
+            includeReplies: false, include_system, body_limit, ct, untilTs, log);
     });
 
     // A Teams message carries images two ways:
@@ -793,7 +839,8 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     /// <summary>KQL scope terms, written once and repeated into each search tool's description.</summary>
     private const string KqlHelp =
         "KQL is supported: from:Alice, to:Jason, mentions:<user id>, IsMentioned:true, IsRead:false, " +
-        "hasAttachment:true, sent>2026-07-01, \"exact phrase\", AND/OR/NOT. ";
+        "hasAttachment:true, sent:2026-07-01..2026-07-31, \"exact phrase\", AND/OR/NOT. One sent term " +
+        "at most, and none alongside since/until, which are the way to bound by date. ";
 
     private const string HitHelp =
         "Hits carry a summary rather than the full body (Graph serves no body for a search hit) plus " +
@@ -806,25 +853,37 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     public Task<SearchResult> SearchMessages(
         [Description("Search query, e.g. \"deploy from:Alice\"")] string query,
         [Description("Only messages created at/after this ISO-8601 timestamp, e.g. 2026-07-01T00:00:00Z")] string? since = null,
+        [Description("Only messages created before this ISO-8601 timestamp (exclusive)")] string? until = null,
         [Description("Maximum hits to return (default 25, max 100)")] int limit = 25,
         [Description("Max characters per hit summary; longer ones get truncated:true (0 = unlimited, default 1000)")] int body_limit = 1000,
         CancellationToken ct = default) => Run("search_messages",
-        TeamsMcpLog.ContentArg("query", query) + A("since", since) + A("limit", limit) + A("body_limit", body_limit),
-        async () => await SearchAsync(query, ParseSince(since), mentionsOnly: false, limit, body_limit, ct));
+        TeamsMcpLog.ContentArg("query", query) + A("since", since) + A("until", until) + A("limit", limit) +
+        A("body_limit", body_limit),
+        async () =>
+        {
+            var (sinceTs, untilTs) = ParseWindow(since, until);
+            return await SearchAsync(query, sinceTs, mentionsOnly: false, limit, body_limit, ct, untilTs);
+        });
 
     [McpServerTool(Name = "list_mentions", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Messages that @-mention the signed-in user, across every chat and every channel " +
                  "of the teams they are in, newest first. This is the inbox-style 'what needs me' question; " +
                  "search_messages is the same index without the mention filter. Narrow it further with `query` (" +
-                 KqlHelp + ") or `since`. " + HitHelp)]
+                 KqlHelp + ") or `since`/`until`. " + HitHelp)]
     public Task<SearchResult> ListMentions(
         [Description("Optional extra terms to narrow the mentions, e.g. \"from:Alice\" or \"invoice\"")] string? query = null,
         [Description("Only mentions created at/after this ISO-8601 timestamp")] string? since = null,
+        [Description("Only mentions created before this ISO-8601 timestamp (exclusive)")] string? until = null,
         [Description("Maximum hits to return (default 25, max 100)")] int limit = 25,
         [Description("Max characters per hit summary; longer ones get truncated:true (0 = unlimited, default 1000)")] int body_limit = 1000,
         CancellationToken ct = default) => Run("list_mentions",
-        TeamsMcpLog.ContentArg("query", query) + A("since", since) + A("limit", limit) + A("body_limit", body_limit),
-        async () => await SearchAsync(query, ParseSince(since), mentionsOnly: true, limit, body_limit, ct));
+        TeamsMcpLog.ContentArg("query", query) + A("since", since) + A("until", until) + A("limit", limit) +
+        A("body_limit", body_limit),
+        async () =>
+        {
+            var (sinceTs, untilTs) = ParseWindow(since, until);
+            return await SearchAsync(query, sinceTs, mentionsOnly: true, limit, body_limit, ct, untilTs);
+        });
 
     [McpServerTool(Name = "wait_for_mentions", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Wait until somebody @-mentions the signed-in user anywhere in Teams — any chat, " +
@@ -875,13 +934,15 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     /// than passing the answer off as complete.
     /// </summary>
     private async Task<SearchResult> SearchAsync(
-        string? query, DateTimeOffset? since, bool mentionsOnly, int limit, int bodyLimit, CancellationToken ct)
+        string? query, DateTimeOffset? since, bool mentionsOnly, int limit, int bodyLimit, CancellationToken ct,
+        DateTimeOffset? until = null)
     {
         limit = Math.Clamp(limit, 1, 100);
-        var kql = Search.Build(query, since, mentionsOnly);
+        Search.CheckDateTerms(query, bounded: since is not null || until is not null);
+        var kql = Search.Build(query, since, mentionsOnly, until);
         if (kql.Length == 0)
         {
-            throw new McpException("A search needs something to search for: pass `query`, or `since`.");
+            throw new McpException("A search needs something to search for: pass `query`, `since` or `until`.");
         }
 
         var client = await graph.GetClientAsync(ct);
@@ -923,7 +984,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                     break;
                 }
                 var dto = Search.MapHit(hit, bodyLimit);
-                if (Search.IsAtOrAfter(dto, since))
+                if (Search.IsInRange(dto, since, until))
                 {
                     hits.Add(dto);
                 }
@@ -1492,7 +1553,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         };
     }
 
-    internal static DateTimeOffset? ParseSince(string? since)
+    internal static DateTimeOffset? ParseSince(string? since, string name = "since")
     {
         if (string.IsNullOrWhiteSpace(since))
         {
@@ -1502,7 +1563,20 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         {
             return ts;
         }
-        throw new McpException($"Could not parse `since` value '{since}' as an ISO-8601 timestamp.");
+        throw new McpException($"Could not parse `{name}` value '{since}' as an ISO-8601 timestamp.");
+    }
+
+    private const string UntilDescription =
+        "Only messages created before this ISO-8601 timestamp (exclusive); with since, reads a past window";
+
+    /// <summary><c>since</c> and <c>until</c> parsed, refusing a window that cannot hold anything.</summary>
+    internal static (DateTimeOffset? Since, DateTimeOffset? Until) ParseWindow(string? since, string? until)
+    {
+        var sinceTs = ParseSince(since);
+        var untilTs = ParseSince(until, "until");
+        return untilTs <= sinceTs
+            ? throw new McpException($"`until` ({until}) must be later than `since` ({since}).")
+            : (sinceTs, untilTs);
     }
 
     /// <summary>Maps a Graph message to the output DTO, or returns null (and counts it) if skipped.</summary>

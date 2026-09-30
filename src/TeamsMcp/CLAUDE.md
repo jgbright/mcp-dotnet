@@ -41,5 +41,7 @@ service behaviours are load-bearing and none are guessable from the SDK's types:
   that bag; a mapper written against the typed model compiles, runs, and returns nothing but nulls.
 - **There is no body**, with or without an explicit `fields` list — only the index's `summary`.
   Hits therefore address a message (`chatId`, or `teamId`+`channelId`) for a read tool to fetch.
-- **`sent>` is day-granular and excludes the day it names**, so `since` is pushed down as a scope
-  backed off by one day and then applied exactly client-side.
+- **`sent` terms are day-granular and two of them cancel each other**: the index ignores both and
+  answers as if unbounded. So `since`/`until` become exactly one widened term (`sent>`, `sent<` or
+  the `sent:a..b` range), applied exactly client-side, and `Search.CheckDateTerms` refuses a query
+  whose own `sent` term would make a second.

@@ -24,9 +24,27 @@ private delegate Task<ChatMessageCollectionResponse?> NextPage(string url, Cance
 ```
 
 `ChannelPager` and `ChatPager` each produce one pair. `PageMessagesAsync` walks it newest-first,
-mapping and skip-counting, and stops at `limit` (setting `hasMore`) or at the first message older
-than the floor, past which nothing newer can appear. The read tools and the waiters both go through
-it, so they return the same shape.
+mapping and skip-counting, and stops at `limit` (setting `hasMore`) or at the first *page* holding
+nothing at or after the floor. A single old message is not enough to stop: Graph lists by
+`lastModifiedDateTime`, and a reaction lifts an old message above newer ones. The read tools and the
+waiters both go through it, so they return the same shape.
+
+`until` bounds a read from above, so a caller can ask for a past week instead of paging down to it
+from today. A message created at or after it is passed over without counting toward `limit` or in
+`skipped`, since the window is the caller's choice and not a filter. The two collections reach the
+window differently, as measured against the live service:
+
+- **A chat skips the newer pages itself.** Its message list accepts
+  `$filter=createdDateTime lt {until}` together with `$orderby=createdDateTime desc`, and
+  `ChatPager` sends both when `until` is given. Ordering by creation rather than modification means
+  an edit or a reaction after the window cannot move a message out of it, so nothing is missed and
+  no slack is needed. A `lastModifiedDateTime` filter is also accepted, but it would drop a message
+  from the window that somebody reacted to afterwards. Reading a week from two months back took two
+  requests.
+- **A channel accepts neither option.** Its message list answers 400 to `$orderby` ("Query option
+  'OrderBy' is not allowed") and to `$filter` ("Parameter 'Filter' not supported"), so the newer
+  pages are read and passed over client-side. That walk is capped at `MaxUntilPages` (40 pages of
+  50); reaching the cap sets `hasMore` and logs a Warning, as the other client-side scans do.
 
 `MapMessage` applies the output conventions: deleted messages counted and dropped, system messages
 too unless `include_system`, `messageType` emitted only when it is not the default `Message`, replies
@@ -134,15 +152,23 @@ the text. `MapHit` returns only the address a follow-up read would open: a chann
 channel id as `chatId`, and a 1:1 chat hit carries a `channelIdentity` naming the personal-chat
 substrate, so both are filtered out.
 
-**`sent>` is day-granular and excludes the day it names.** `sent>2026-07-28` returns nothing from the
-28th. `Search.Build` backs the term off by one day and `IsAtOrAfter` applies the exact
-timestamp client-side. The KQL term is an optimization, not the filter.
+**A `sent` term is day-granular, and two of them cancel each other.** `sent>2026-07-28` returns
+nothing from the 28th, and `sent<` likewise excludes the day it names; the range form
+`sent:2026-07-27..2026-07-31` includes both. Measured on the live index: `sent<` alone narrows and
+the range form narrows, but `sent>2026-07-26 sent<2026-08-01` in one query ignores both bounds and
+returns every match, newest first, with nothing in the result to say so. So `Search.Build` turns
+`since` and `until` into exactly one term: `sent>` backed off a day, `sent<` pushed on a day (not
+when `until` is midnight, which already excludes that day), or the range when both are given.
+`IsInRange` then applies the exact bounds client-side; the KQL term is an optimization, not the
+filter. A `sent` term the caller writes in `query` would make a second one, so `CheckDateTerms`
+refuses it alongside `since`/`until`, and refuses two in the query, naming the range form. A single
+one on its own works and is left alone.
 
 Two smaller details:
 
 - The sender arrives as the Exchange substrate's `from.emailAddress.name`, not the `identitySet` the
   message APIs return. `Sender` reads both shapes.
-- A hit with an unreadable timestamp is kept when no `since` was asked for and dropped when one was:
+- A hit with an unreadable timestamp is kept when no `since` or `until` was asked for and dropped when one was:
   a waiter that accepted it would report an arrival it has no evidence for.
 
 Paging is `From`/`Size` at 25 per request, capped at 8 requests; hitting the cap sets `hasMore` and

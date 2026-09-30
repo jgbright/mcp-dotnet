@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Graph.Models;
 using Microsoft.Kiota.Abstractions.Serialization;
+using ModelContextProtocol;
 
 namespace TeamsMcp;
 
@@ -17,41 +19,85 @@ namespace TeamsMcp;
 /// primitive, or a raw JSON element. A mapper written against the typed model compiles, runs, and
 /// returns nothing but nulls.
 /// </summary>
-internal static class Search
+internal static partial class Search
 {
     /// <summary>
     /// Composes the query string. KQL ANDs a bare sequence of terms, so the parts are juxtaposed.
     ///
-    /// <paramref name="since"/> becomes a <c>sent&gt;</c> scope so the service does the narrowing,
-    /// but that term is day-granular and excludes the day it names: <c>sent&gt;2026-07-28</c>
-    /// returns nothing from the 28th. So it is backed off by a day, and
-    /// <see cref="IsAtOrAfter"/> applies the exact timestamp client-side.
+    /// <paramref name="since"/> and <paramref name="until"/> become one <c>sent</c> scope so the
+    /// service does the narrowing, and it has to be one: the index ignores two <c>sent</c> terms in
+    /// a query together and answers as if neither were there. The terms are day-granular.
+    /// <c>sent&gt;</c> and <c>sent&lt;</c> exclude the day they name, so each is widened by a day;
+    /// the range form <c>sent:a..b</c> includes both days. <see cref="IsInRange"/> applies the exact
+    /// timestamps client-side.
     /// </summary>
-    internal static string Build(string? query, DateTimeOffset? since, bool mentionsOnly)
+    internal static string Build(
+        string? query, DateTimeOffset? since, bool mentionsOnly, DateTimeOffset? until = null)
     {
+        static string Day(DateTimeOffset ts, int offset) =>
+            ts.UtcDateTime.Date.AddDays(offset).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        // until is exclusive, so a bound at midnight ends the day before: asking the index for that
+        // whole day would spend the page budget on hits the window then drops.
+        static DateTimeOffset LastDay(DateTimeOffset until) =>
+            until.UtcDateTime.TimeOfDay == TimeSpan.Zero ? until.AddDays(-1) : until;
+
         var terms = new List<string>();
         if (mentionsOnly)
         {
             terms.Add("IsMentioned:true");
         }
-        if (since is { } ts)
+        terms.Add((since, until) switch
         {
-            terms.Add($"sent>{ts.UtcDateTime.Date.AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}");
-        }
+            ({ } s, { } u) => $"sent:{Day(s, 0)}..{Day(LastDay(u), 0)}",
+            ({ } s, null) => $"sent>{Day(s, -1)}",
+            (null, { } u) => $"sent<{Day(LastDay(u), 1)}",
+            _ => "",
+        });
         if (!string.IsNullOrWhiteSpace(query))
         {
             terms.Add(query.Trim());
         }
-        return string.Join(" ", terms);
+        return string.Join(" ", terms.Where(t => t.Length > 0));
     }
 
     /// <summary>
-    /// Whether a hit satisfies the caller's <c>since</c>. A hit with an unreadable timestamp is
-    /// kept when no filter was asked for and dropped when one was, so a waiter never reports an
-    /// arrival it has no evidence for.
+    /// Refuses a <c>sent</c> term in the caller's query that would silently cancel the date bound:
+    /// one alongside <c>since</c>/<c>until</c>, which add their own, or two of them in the query.
+    /// Either way the index drops every <c>sent</c> term and the answer looks normal. A single term
+    /// on its own works and is left alone. Quoted phrases are not terms, so they are not counted.
     /// </summary>
-    internal static bool IsAtOrAfter(SearchHitDto hit, DateTimeOffset? since) =>
-        since is not { } ts || (hit.Created is { } created && created >= ts);
+    internal static void CheckDateTerms(string? query, bool bounded)
+    {
+        var terms = query is null ? 0 : SentTerm().Count(QuotedPhrase().Replace(query, ""));
+        if (terms > 0 && bounded)
+        {
+            throw new McpException(
+                "`query` has a sent term, and this call already bounds the search by date (since/until, " +
+                "or the moment a wait starts from); the search index ignores two date terms together. " +
+                "Drop the sent term, or on a search pass it alone without since/until.");
+        }
+        if (terms > 1)
+        {
+            throw new McpException(
+                "`query` has more than one sent term, and the search index ignores them all when there " +
+                "are two. Use the range form, sent:2026-07-27..2026-07-31, or the since/until arguments.");
+        }
+    }
+
+    [GeneratedRegex(@"\bsent\s*(>=|<=|>|<|:|=)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex SentTerm();
+
+    [GeneratedRegex("\"[^\"]*\"")]
+    private static partial Regex QuotedPhrase();
+
+    /// <summary>
+    /// Whether a hit falls in the caller's window: at or after <c>since</c>, before <c>until</c>.
+    /// A hit with an unreadable timestamp is kept when no bound was asked for and dropped when one
+    /// was, so a waiter never reports an arrival it has no evidence for.
+    /// </summary>
+    internal static bool IsInRange(SearchHitDto hit, DateTimeOffset? since, DateTimeOffset? until = null) =>
+        (since, until) is (null, null) ||
+        (hit.Created is { } created && !(created < since) && !(created >= until));
 
     /// <summary>
     /// Maps one hit to the output DTO. The summary is the only text a hit carries, since Graph
