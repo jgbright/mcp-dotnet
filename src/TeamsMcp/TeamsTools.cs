@@ -1414,14 +1414,18 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
 
     /// <summary>
     /// Which chats a name could mean, and how it matched. A chat matches on its topic or on any
-    /// other member's display name — a person's name deliberately reaches the group chats they
-    /// are in, not only the 1:1, because either can be the conversation the caller means — exact
-    /// before substring, the two tiers <see cref="ResolveTeamAsync"/> and
-    /// <see cref="ResolveChannelAsync"/> already use.
+    /// other member's display name, exact before substring, the two tiers
+    /// <see cref="ResolveTeamAsync"/> and <see cref="ResolveChannelAsync"/> already use.
     ///
-    /// Several matches in a tier are all returned, so the caller refuses. The same person can
-    /// appear in more than one conversation, and picking the most recent would send to a
-    /// destination the caller never named and do it without saying so.
+    /// A person's exact full name means the 1:1 with them (<c>exact-1:1</c>): a group chat that
+    /// merely has them as a member does not compete, since callers naming a person mean the 1:1,
+    /// and a group chat is still reachable by its topic or id. A topic equal to that name still
+    /// competes, because it names a conversation just as directly. The rule is chat type plus an
+    /// exact name, so it holds for sending as well as reading. A first name that is only a
+    /// substring of the full one stays ambiguous: guessing who "Bob" is was the risk.
+    ///
+    /// Otherwise several matches in a tier are all returned, so the caller refuses. Picking the
+    /// most recent would send to a destination the caller never named and do it without saying so.
     /// </summary>
     internal static (List<ChatDto> Matches, string How) MatchChats(
         IReadOnlyList<ChatDto> chats, string input, string? me)
@@ -1439,6 +1443,13 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         var exact = chats
             .Where(c => Is(c.Topic, input) || Others(c).Any(n => Is(n, input)))
             .ToList();
+        var oneOnOne = exact
+            .Where(c => Is(c.Type, "oneOnOne") && Others(c).Any(n => Is(n, input)))
+            .ToList();
+        if (oneOnOne.Count == 1 && !exact.Any(c => c != oneOnOne[0] && Is(c.Topic, input)))
+        {
+            return (oneOnOne, "exact-1:1");
+        }
         return exact.Count > 0
             ? (exact, "exact")
             : (chats.Where(c => Has(c.Topic, input) || Others(c).Any(n => Has(n, input))).ToList(),

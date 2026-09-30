@@ -136,9 +136,11 @@ A caller usually has a name and not an id, so both servers accept either. One im
 1. An input that already looks like an id passes straight through: a GUID, a `19:` or `48:` prefix,
    or a number for a pipeline, release definition or environment.
 2. Otherwise match display names case-insensitively, **exact first, then substring**. A chat is
-   matched on its topic or on another member's display name — a person's name deliberately reaches
-   the group chats they are in as well as the 1:1, since either can be the conversation meant. The
-   signed-in user is excluded from that comparison, being a member of every chat they can address.
+   matched on its topic or on another member's display name. A person's exact full name means the
+   1:1 with them: group chats that merely have them as a member do not compete with it, though a
+   topic equal to the name does, and a group chat is still reachable by topic or id. A first name
+   that is only a substring stays ambiguous. The signed-in user is excluded from the comparison,
+   being a member of every chat they can address.
 3. Exactly one match wins, and the resolution is logged at Debug (`resolve`) with which rule matched
    and how many candidates there were.
 4. Anything else throws an `McpException` **listing the candidates**. No match lists what was

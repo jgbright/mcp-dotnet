@@ -89,13 +89,61 @@ public class ChatAddressingTests
         // destination. Both come back and the caller refuses with them named.
         var chats = new[]
         {
-            OneOnOne("19:recent@unq.gbl.spaces", Me, "Bob"),
-            Group("19:older@thread.v2", "Bob and the release", Me, "Bob", "Carol"),
+            Group("19:recent@thread.v2", "Launch", Me, "Bob Jones", "Carol"),
+            Group("19:older@thread.v2", "Bob and the release", Me, "Bob Jones"),
         };
 
-        var (matches, _) = TeamsTools.MatchChats(chats, "Bob", Me);
+        var (matches, _) = TeamsTools.MatchChats(chats, "Bob Jones", Me);
 
         Assert.Equal(2, matches.Count);
+    }
+
+    [Fact]
+    public void A_persons_full_name_means_the_one_on_one_over_the_group_chats_they_are_in()
+    {
+        // Every name-addressed call in two weeks of logs meant the 1:1, and was refused because
+        // the person was also in several group chats.
+        var chats = new[]
+        {
+            Group("19:a@thread.v2", "Everyone", Me, "Alice Chen", "Bob Jones"),
+            OneOnOne("19:alice@unq.gbl.spaces", "Alice Chen", Me),
+            Group("19:b@thread.v2", "Launch Team", Me, "Alice Chen"),
+        };
+
+        var (matches, how) = TeamsTools.MatchChats(chats, "alice chen", Me);
+
+        Assert.Equal("19:alice@unq.gbl.spaces", Assert.Single(matches).Id);
+        Assert.Equal("exact-1:1", how);
+    }
+
+    [Fact]
+    public void A_topic_equal_to_a_persons_name_still_competes_with_their_one_on_one()
+    {
+        var chats = new[]
+        {
+            OneOnOne("19:bob@unq.gbl.spaces", Me, "Bob Jones"),
+            Group("19:a@thread.v2", "Bob Jones", Me, "Carol"),
+        };
+
+        var (matches, _) = TeamsTools.MatchChats(chats, "Bob Jones", Me);
+
+        Assert.Equal(2, matches.Count);
+    }
+
+    [Fact]
+    public void A_first_name_alone_is_still_ambiguous_across_a_one_on_one_and_a_group_chat()
+    {
+        // Guessing which Bob was meant is the risky case, so a substring never reaches the rule.
+        var chats = new[]
+        {
+            OneOnOne("19:bob@unq.gbl.spaces", Me, "Bob Jones"),
+            Group("19:a@thread.v2", "Release", Me, "Bob Jones"),
+        };
+
+        var (matches, how) = TeamsTools.MatchChats(chats, "Bob", Me);
+
+        Assert.Equal(2, matches.Count);
+        Assert.Equal("substring", how);
     }
 
     [Fact]
