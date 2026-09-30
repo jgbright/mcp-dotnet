@@ -518,9 +518,9 @@ public class WorkItemIdParsingTests
     {
         // Dropping it would answer with fewer items than were asked for, which is the exact
         // failure this tool exists to remove.
-        var error = Assert.Throws<McpException>(() => AdoTools.ParseIds("5201,x7834,oops"));
+        var error = Assert.Throws<McpException>(() => AdoTools.ParseIds("5201,x5202,oops"));
 
-        Assert.Contains("'x7834'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'x5202'", error.Message, StringComparison.Ordinal);
         Assert.Contains("'oops'", error.Message, StringComparison.Ordinal);
     }
 

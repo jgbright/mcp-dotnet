@@ -34,7 +34,7 @@ public class MentionsTests
     [InlineData("&#5101;")]
     [InlineData("AB#draft-slug")]
     [InlineData("x#5101")]
-    [InlineData("#8012abc")]
+    [InlineData("#5101abc")]
     [InlineData("<span style=\"color:#123456\">red</span>")]
     [InlineData("<div data-x=\"#5101\">text</div>")]
     public void Nothing_else_is_a_reference(string html) =>

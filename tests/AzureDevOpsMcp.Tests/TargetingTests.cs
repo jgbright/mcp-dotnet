@@ -5,11 +5,10 @@ using ModelContextProtocol;
 namespace AzureDevOpsMcp.Tests;
 
 /// <summary>
-/// Where a classic release stage lands. Each oddity in the fixtures
-/// gives a wrong answer rather than an error when assumed away: a
-/// stage tagged <c>portal</c> against machines tagged <c>Portal</c>, a production stage with no
-/// tags, a definition whose raw environment order is the reverse of its rank order, and a stage
-/// whose tags select nothing.
+/// Where a classic release stage lands. Each oddity in the fixtures gives a wrong answer rather
+/// than an error when assumed away: a stage tagged <c>portal</c> against machines tagged
+/// <c>Portal</c>, a production stage with no tags, a definition whose raw environment order is the
+/// reverse of its rank order, and a stage whose tags select nothing.
 /// </summary>
 public class TargetingTests
 {
