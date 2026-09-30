@@ -568,6 +568,24 @@ public sealed class AdoClient(HttpClient http, string orgUrl, ILogger log)
         return await response.Content.ReadAsStringAsync(ct);
     }
 
+    /// <summary>
+    /// A file's bytes as they arrived. File content never goes through a string before its
+    /// encoding is known: <see cref="SendRawAsync"/> reads as UTF-8 and would corrupt anything else.
+    /// </summary>
+    public async Task<(byte[] Bytes, string? MediaType)> GetBytesAsync(string url, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, Absolute(url));
+        request.Headers.Accept.Clear();
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
+        using var response = await http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw await ErrorAsync(response, url, ct);
+        }
+        ThrowIfSignInPage(response, url);
+        return (await response.Content.ReadAsByteArrayAsync(ct), response.Content.Headers.ContentType?.MediaType);
+    }
+
     private async Task<HttpResponseMessage> SendAsync(
         HttpMethod method, string path, HttpContent? content, CancellationToken ct)
     {

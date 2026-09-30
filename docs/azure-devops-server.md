@@ -326,6 +326,38 @@ to the timeout; the tool's description says to check `pendingApprovals` first. A
 is terminal, as with the other waiters. The environment is resolved once against the first read, not
 per poll, so a rename mid-wait cannot fail the wait.
 
+## TFVC
+
+`get_changesets`, `list_changesets`, `read_tfvc_file` and `get_shelveset` cover the changeset, item
+and shelveset routes, which had been the escape hatch's largest single use. **Every TFVC route is
+organization-scoped**: `_apis/tfvc/changesets/{id}` under a project prefix answers 404. The
+escape hatch points a `/_apis/tfvc/` path at these tools.
+
+A changeset read by id takes `maxChangeCount` and `includeWorkItems`, so one request carries the
+changes and the linked work items, and the service reports a cut in `hasMoreChanges`. An id that
+does not exist answers 404 `ChangesetNotFoundException`, which `get_changesets` turns into
+`notFound`. A listing carries no changes and cuts long comments (`commentTruncated`), so
+`include_changes` costs a request per changeset and is limited to 25 of them.
+
+**A `toId` past the newest changeset is an error** (`TF14019: The changeset … does not exist`), not
+an empty range. `list_changesets` reads the newest id first when `to_id` is given and clamps to it.
+
+A file is two requests. The first is the item's metadata (`scopePath`, one level), which says
+whether it is a folder and what its `encoding` is: a code page (65001, 1252) for text, -1 for a file
+TFVC stores as binary, -3 for a folder. A folder returns its children, and a binary file is refused
+without downloading it. The second request fetches the content as bytes (`$format=octetStream`,
+`AdoClient.GetBytesAsync`), which is decompressed if it is gzip and decoded by its byte-order mark or
+else the reported code page, so a 1252 file does not come back with replacement characters. **A
+pending branch in a shelveset has no content of its own**: the byte request answers
+`application/json` with the item's metadata, and the tool falls back to the `includeContent=true`
+form, which carries the text. A committed file, `.json` included, answers `application/octet-stream`,
+which is what makes the media type a safe signal.
+
+A shelveset's id is `name;owner`, and a name is unique only per owner. `requestData.name` matches the
+name exactly, ignoring case, and `Tfvc.PickShelveset` narrows by owner, refusing with every
+`name;owner` when two people used the name. `read_tfvc_file` resolves its `shelveset` argument the
+same way and passes the owner's sign-in name in the version descriptor.
+
 ## WIQL construction
 
 `list_work_items` takes either a full `wiql` query or filter arguments. When it builds the query
@@ -598,6 +630,11 @@ considerably more than `Not Found (404)`.
 | build definitions per project | 1000 | Warning: resolution may be incomplete |
 | environment deployment records | 100 | Reported as "no succeeded deployment in the last 100 records" |
 | TFVC paths searched per deployable | 10 | `hasMore` + Warning |
+| changesets per `get_changesets` call | 50, one request each | Refused above it |
+| changed paths per changeset or shelveset | `max_changes`, default 200 (50 in a listing), max 1000 | `hasMore` on that changeset |
+| changesets listed with `include_changes` | 25, one request each | Refused above it |
+| `read_tfvc_file` window | `max_lines`, default 300, max 2000; 100000 characters | `truncated`, page with `start_line` |
+| folder entries (`read_tfvc_file`) | 500 | `hasMore` |
 | work item ids per batch read | 200 | Batched; the endpoint 400s above this |
 | waiter timeout (all three waiters) | 1–21600 s | Clamped; returns `timedOut: true` |
 | waiter interval (all three waiters) | 5–600 s | Clamped |
@@ -609,8 +646,9 @@ Read: `list_projects`, `list_repos`, `list_pull_requests`, `get_pull_request`,
 `list_pipeline_runs`, `get_build_definition`, `search_build_definitions`,
 `get_pipeline_run`, `wait_for_pipeline_run`, `list_release_definitions`, `get_release_definition`,
 `get_release_definition_targets`, `list_deployment_groups`, `search_release_definitions`, `list_releases`,
-`get_release`, `wait_for_release`, `search_code`, `search_work_items`, `search_wiki`,
-`deployment_status`, `ado_api_request`, `ado_auth_status`.
+`get_release`, `wait_for_release`, `get_changesets`, `list_changesets`, `read_tfvc_file`,
+`get_shelveset`, `search_code`, `search_work_items`, `search_wiki`, `deployment_status`,
+`ado_api_request`, `ado_auth_status`.
 
 Write (`ADO_MCP_ALLOW_WRITE=true`): `update_work_item`, `create_work_item`,
 `add_pull_request_comment`, `run_pipeline`, `deploy_release`.

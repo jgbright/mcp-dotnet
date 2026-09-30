@@ -96,9 +96,30 @@ internal sealed record WireTimelineRecord(
 
 internal sealed record WireTimeline(List<WireTimelineRecord>? Records);
 
-internal sealed record WireTfvcItem(string? Path);
+// `encoding` is a code page: 65001 or 1252 for text, -1 for a binary file, -3 for a folder.
+internal sealed record WireTfvcItem(
+    string? Path, int? Version = null, bool? IsFolder = null, int? Encoding = null, long? Size = null);
 
-internal sealed record WireTfvcChange(WireTfvcItem? Item, string? ChangeType);
+// `sourceServerItem` is where a branched, merged or renamed item came from.
+internal sealed record WireTfvcChange(WireTfvcItem? Item, string? ChangeType, string? SourceServerItem = null);
+
+internal sealed record WireTfvcItemContent(string? Content);
+
+internal sealed record WireTfvcWorkItem(int Id, string? Title, string? WorkItemType, string? State);
+
+/// <summary>
+/// One changeset read by id. <c>maxChangeCount</c> bounds <c>changes</c> and the service says
+/// whether it cut them in <c>hasMoreChanges</c>; a listing carries no changes and cuts the comment.
+/// </summary>
+internal sealed record WireTfvcChangeset(
+    int ChangesetId, WireIdentity? Author, DateTimeOffset? CreatedDate, string? Comment,
+    bool? CommentTruncated = null, List<WireTfvcChange>? Changes = null, bool? HasMoreChanges = null,
+    List<WireTfvcWorkItem>? WorkItems = null);
+
+/// <summary>A shelveset's id is "name;owner id", and its name is unique per owner only.</summary>
+internal sealed record WireShelveset(
+    string? Name, string? Id, WireIdentity? Owner, DateTimeOffset? CreatedDate, string? Comment,
+    List<WireTfvcChange>? Changes = null, List<WireTfvcWorkItem>? WorkItems = null);
 
 internal sealed record WireTfvcChangesetRef(
     int ChangesetId, WireIdentity? Author, DateTimeOffset? CreatedDate, string? Comment);
@@ -1036,6 +1057,43 @@ public sealed record DeployableStatusDto(
 
 public sealed record ChangesetDto(int Id, string? Author, DateTimeOffset? Created, string? Comment);
 
+// ------------------------------------------------------- TFVC
+
+/// <summary>
+/// One changeset with what it touched. <c>hasMore</c> says <c>changes</c> was cut at
+/// <c>max_changes</c>; <c>commentTruncated</c> says the service cut the comment, which a listing
+/// does and a read by id does not.
+/// </summary>
+public sealed record ChangesetDetailDto(
+    int Id, string? Author, DateTimeOffset? Created, string? Comment, bool? CommentTruncated,
+    List<TfvcChangeDto>? Changes, bool? HasMore, List<TfvcWorkItemDto>? WorkItems);
+
+/// <summary><c>source</c> is where a branched, merged or renamed item came from.</summary>
+public sealed record TfvcChangeDto(string Path, string? ChangeType, string? Source);
+
+public sealed record TfvcWorkItemDto(int Id, string? Title, string? Type, string? State);
+
+/// <summary>
+/// Changesets from get_changesets (with <c>notFound</c> for ids that do not exist) or
+/// list_changesets (with <c>hasMore</c> when the limit was reached).
+/// </summary>
+public sealed record ChangesetsResult(List<ChangesetDetailDto> Changesets, List<int>? NotFound, bool? HasMore);
+
+/// <summary>
+/// A file's text at a version, windowed by line: <c>startLine</c> is the first line returned and
+/// <c>truncated</c> says lines exist outside the window. A folder instead returns its immediate
+/// <c>children</c>.
+/// </summary>
+public sealed record TfvcFileDto(
+    string Path, int? Version, string? Content, int? StartLine, int? TotalLines, bool? Truncated,
+    List<TfvcEntryDto>? Children, bool? HasMore);
+
+public sealed record TfvcEntryDto(string Path, bool? IsFolder);
+
+public sealed record ShelvesetDto(
+    string? Name, string? Owner, DateTimeOffset? Created, string? Comment,
+    List<TfvcWorkItemDto>? WorkItems, List<TfvcChangeDto>? Changes, bool? HasMore);
+
 public sealed record CommitDto(string Id, string? Author, DateTimeOffset? Date, string? Comment);
 
 /// <summary>
@@ -1377,6 +1435,56 @@ internal static class Mapping
 
     internal static ChangesetDto Changeset(WireTfvcChangesetRef c) =>
         new(c.ChangesetId, c.Author?.DisplayName, c.CreatedDate, c.Comment);
+
+    /// <summary>
+    /// A changeset with its changes cut at <paramref name="maxChanges"/>. The service's own
+    /// <c>hasMoreChanges</c> counts as a cut too: it is set when <c>maxChangeCount</c> was reached.
+    /// </summary>
+    internal static ChangesetDetailDto ChangesetDetail(WireTfvcChangeset c, int maxChanges)
+    {
+        var (changes, cut) = TfvcChanges(c.Changes, maxChanges);
+        return new ChangesetDetailDto(
+            c.ChangesetId,
+            c.Author?.DisplayName,
+            c.CreatedDate,
+            c.Comment is { Length: > 0 } comment ? comment : null,
+            c.CommentTruncated is true ? true : null,
+            changes,
+            cut || c.HasMoreChanges is true ? true : null,
+            TfvcWorkItems(c.WorkItems));
+    }
+
+    internal static ShelvesetDto Shelveset(WireShelveset s, int maxChanges)
+    {
+        var (changes, cut) = TfvcChanges(s.Changes, maxChanges);
+        return new ShelvesetDto(
+            s.Name, s.Owner?.DisplayName, s.CreatedDate, s.Comment is { Length: > 0 } c ? c : null,
+            TfvcWorkItems(s.WorkItems), changes, cut ? true : null);
+    }
+
+    /// <summary>
+    /// Changes cut at <paramref name="max"/>, and whether that cut anything. <c>source</c> is kept
+    /// only where it differs from the path, which is a branch, merge or rename.
+    /// </summary>
+    internal static (List<TfvcChangeDto>? Changes, bool Cut) TfvcChanges(List<WireTfvcChange>? changes, int max)
+    {
+        var mapped = (changes ?? [])
+            .Where(c => c.Item?.Path is not null)
+            .Select(c => new TfvcChangeDto(
+                c.Item!.Path!,
+                c.ChangeType,
+                c.SourceServerItem is { Length: > 0 } source &&
+                !string.Equals(source, c.Item.Path, StringComparison.OrdinalIgnoreCase)
+                    ? source
+                    : null))
+            .ToList();
+        return mapped.Count == 0 ? (null, false) : (mapped.Take(max).ToList(), mapped.Count > max);
+    }
+
+    private static List<TfvcWorkItemDto>? TfvcWorkItems(List<WireTfvcWorkItem>? items) =>
+        items is { Count: > 0 }
+            ? [.. items.Select(w => new TfvcWorkItemDto(w.Id, w.Title, w.WorkItemType, w.State))]
+            : null;
 
     internal static CommitDto Commit(WireGitCommitRef c) =>
         new(c.CommitId ?? "", c.Author?.Name, c.Author?.Date, c.Comment);

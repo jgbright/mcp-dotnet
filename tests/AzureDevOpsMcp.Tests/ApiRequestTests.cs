@@ -435,7 +435,7 @@ public class ApiRequestTests
     public void An_ordinary_path_gets_no_pointer()
     {
         Assert.Null(ApiRequest.Pointer("Project/_apis/wit/workitems/7938", null));
-        Assert.Null(ApiRequest.Pointer("_apis/tfvc/changesets", "value[].changesetId"));
+        Assert.Null(ApiRequest.Pointer("_apis/distributedtask/pools", "value[].name"));
     }
 
     [Fact]

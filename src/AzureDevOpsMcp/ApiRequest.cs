@@ -466,6 +466,13 @@ internal static class ApiRequest
                    "machines their tags select, in deploy order, without walking deployPhases by " +
                    "hand. get_release_definition returns the definition itself typed.";
         }
+        if (normalized.Contains("/_apis/tfvc/", StringComparison.OrdinalIgnoreCase))
+        {
+            return "get_changesets reads several changesets with the paths they changed in one call, " +
+                   "list_changesets finds them under a $/ path or in an id range, read_tfvc_file reads " +
+                   "a file or folder at a changeset or shelveset, and get_shelveset reads a shelveset. " +
+                   "TFVC routes are organization-scoped: no project prefix.";
+        }
         if (normalized.Contains("/_apis/build/definitions", StringComparison.OrdinalIgnoreCase))
         {
             return "get_build_definition returns a build definition typed: steps with their inputs, " +

@@ -2271,6 +2271,216 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             hasMore ? true : null, null, null);
     }
 
+    // ------------------------------------------------------- TFVC
+    //
+    // Changesets, items and shelvesets. Every route here is organization-scoped (see Tfvc).
+
+    private const int MaxChangesetIds = 50;
+
+    [McpServerTool(Name = "get_changesets", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Read several TFVC changesets in one call, each with its author, date, " +
+                 "comment and the paths it changed with their change type — the way to learn what a " +
+                 "set of changesets touched, not a call per changeset. `ids` is comma-separated, up " +
+                 "to 50. An id that does not exist is reported in `notFound` rather than failing the " +
+                 "call. `hasMore` on a changeset means its changes were cut at max_changes.")]
+    public Task<ChangesetsResult> GetChangesets(
+        [Description("Changeset ids, comma-separated, e.g. \"34315,34317\" (max 50)")] string ids,
+        [Description("Most changed paths to return per changeset (default 200, max 1000)")] int max_changes = 200,
+        [Description("Include the work items each changeset is linked to (default false)")] bool include_work_items = false,
+        CancellationToken ct = default) => Run("get_changesets",
+        A("ids", ids) + A("max_changes", max_changes) + A("include_work_items", include_work_items), async () =>
+    {
+        var requested = ParseIds(ids, "ids", "changeset");
+        if (requested.Count > MaxChangesetIds)
+        {
+            throw new McpException(
+                $"`ids` takes at most {MaxChangesetIds} changesets per call, since each is its own " +
+                $"request; {requested.Count} were supplied. Split the read.");
+        }
+        max_changes = Math.Clamp(max_changes, 1, 1000);
+        var client = await ado.GetClientAsync(ct);
+
+        var found = new List<ChangesetDetailDto>();
+        var missing = new List<int>();
+        foreach (var id in requested)
+        {
+            try
+            {
+                var changeset = await client.GetAsync<WireTfvcChangeset>(
+                    $"_apis/tfvc/changesets/{id}?{Api}&maxChangeCount={max_changes}" +
+                    (include_work_items ? "&includeWorkItems=true" : ""), ct);
+                found.Add(Mapping.ChangesetDetail(changeset, max_changes));
+            }
+            catch (AdoApiException e) when (e.Status == 404)
+            {
+                missing.Add(id);
+            }
+        }
+        return new ChangesetsResult(found, missing.Count > 0 ? missing : null, null);
+    });
+
+    private const int MaxListedWithChanges = 25;
+
+    [McpServerTool(Name = "list_changesets", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. List TFVC changesets newest first, optionally under a $/ server path, in an " +
+                 "id range, since a time or by an author — for example what has landed under an app " +
+                 "since a given changeset. A to_id past the newest changeset is fine. Comments in a " +
+                 "listing are cut by the service (`commentTruncated`); get_changesets has them whole. " +
+                 "include_changes adds each changeset's changed paths, for listings of 25 or fewer.")]
+    public Task<ChangesetsResult> ListChangesets(
+        [Description("TFVC server path to search under, e.g. $/Project/App (default: everything)")] string? path = null,
+        [Description("Lowest changeset id to include")] int? from_id = null,
+        [Description("Highest changeset id to include")] int? to_id = null,
+        [Description("Only changesets created at/after this ISO-8601 timestamp")] string? since = null,
+        [Description("Only changesets by this author (display name or sign-in name)")] string? author = null,
+        [Description("Maximum changesets to return (default 20, max 200)")] int limit = 20,
+        [Description("Include each changeset's changed paths (default false; one request per changeset, limit 25)")] bool include_changes = false,
+        [Description("Most changed paths per changeset when include_changes is set (default 50, max 1000)")] int max_changes = 50,
+        CancellationToken ct = default) => Run("list_changesets",
+        A("path", path) + A("from_id", from_id) + A("to_id", to_id) + A("since", since) + A("author", author) +
+        A("limit", limit) + A("include_changes", include_changes) + A("max_changes", max_changes), async () =>
+    {
+        limit = Math.Clamp(limit, 1, 200);
+        max_changes = Math.Clamp(max_changes, 1, 1000);
+        if (include_changes && limit > MaxListedWithChanges)
+        {
+            throw new McpException(
+                $"include_changes costs a request per changeset, so it takes limit {MaxListedWithChanges} or " +
+                "less. Lower limit, or list first and read the ones that matter with get_changesets.");
+        }
+        var sinceTs = ParseTimestamp(since, "since");
+        var client = await ado.GetClientAsync(ct);
+
+        // TF14019 answers a toId past the newest changeset, turning a harmless range into an error,
+        // so the bound is clamped to what exists.
+        var toId = to_id;
+        if (toId is not null)
+        {
+            var newest = await client.GetAsync<ListResponse<WireTfvcChangeset>>(
+                $"_apis/tfvc/changesets?{Api}&$top=1", ct);
+            toId = Math.Min(toId.Value, newest.Value?.FirstOrDefault()?.ChangesetId ?? toId.Value);
+            if (toId < from_id)
+            {
+                return new ChangesetsResult([], null, null);
+            }
+        }
+
+        var page = await client.GetAsync<ListResponse<WireTfvcChangeset>>(
+            $"_apis/tfvc/changesets?{Api}&$top={limit + 1}&$orderby=id desc" +
+            (path is { Length: > 0 } ? $"&searchCriteria.itemPath={Escape(path)}" : "") +
+            (from_id is { } from ? $"&searchCriteria.fromId={from}" : "") +
+            (toId is { } to ? $"&searchCriteria.toId={to}" : "") +
+            (sinceTs is { } s ? $"&searchCriteria.fromDate={Escape(s.UtcDateTime.ToString("O", CultureInfo.InvariantCulture))}" : "") +
+            (author is { Length: > 0 } ? $"&searchCriteria.author={Escape(author)}" : ""), ct);
+        var changesets = page.Value ?? [];
+
+        var listed = new List<ChangesetDetailDto>();
+        foreach (var c in changesets.Take(limit))
+        {
+            var changes = include_changes
+                ? (await client.GetAsync<ListResponse<WireTfvcChange>>(
+                    $"_apis/tfvc/changesets/{c.ChangesetId}/changes?{Api}&$top={max_changes + 1}", ct)).Value
+                : null;
+            listed.Add(Mapping.ChangesetDetail(c with { Changes = changes }, max_changes));
+        }
+        return new ChangesetsResult(listed, null, changesets.Count > limit ? true : null);
+    });
+
+    private const int MaxFolderEntries = 500;
+
+    private const int MaxFileChars = 100_000;
+
+    [McpServerTool(Name = "read_tfvc_file", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Read a TFVC file's text at the latest version, at a changeset, or as a " +
+                 "shelveset has it, a window of lines at a time: `totalLines` says how long it is and " +
+                 "`truncated` that lines exist outside the window, so page with start_line. A folder " +
+                 "path returns its immediate children instead. A binary file is refused.")]
+    public Task<TfvcFileDto> ReadTfvcFile(
+        [Description("TFVC server path, e.g. $/Project/App/Program.cs")] string path,
+        [Description("Read the version as of this changeset (default: latest)")] int? changeset = null,
+        [Description("Read the version in this shelveset: 'name' or 'name;owner' when the name is not unique")] string? shelveset = null,
+        [Description("First line to return, 1-based (default 1)")] int start_line = 1,
+        [Description("Most lines to return (default 300, max 2000)")] int max_lines = 300,
+        CancellationToken ct = default) => Run("read_tfvc_file",
+        A("path", path) + A("changeset", changeset) + A("shelveset", shelveset) +
+        A("start_line", start_line) + A("max_lines", max_lines), async () =>
+    {
+        if (changeset is not null && shelveset is { Length: > 0 })
+        {
+            throw new McpException("Pass `changeset` or `shelveset`, not both: they name different versions.");
+        }
+        var client = await ado.GetClientAsync(ct);
+        var shelved = shelveset is { Length: > 0 } ? await ResolveShelvesetAsync(client, shelveset, null, ct) : null;
+        var version = Tfvc.VersionQuery(changeset, shelved is null ? null : $"{shelved.Name};{shelved.Owner?.UniqueName}");
+
+        var items = (await client.GetAsync<ListResponse<WireTfvcItem>>(
+            $"_apis/tfvc/items?{Api}&scopePath={Escape(path)}&recursionLevel=OneLevel{version}", ct)).Value ?? [];
+        var item = items.FirstOrDefault(i => string.Equals(i.Path, path.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+            ?? items.FirstOrDefault()
+            ?? throw new McpException($"'{path}' does not exist at that version.");
+
+        if (item.IsFolder is true)
+        {
+            var children = items.Where(i => !ReferenceEquals(i, item) && i.Path is not null).ToList();
+            return new TfvcFileDto(
+                item.Path ?? path, item.Version, null, null, null, null,
+                [.. children.Take(MaxFolderEntries).Select(i => new TfvcEntryDto(i.Path!, i.IsFolder is true ? true : null))],
+                children.Count > MaxFolderEntries ? true : null);
+        }
+        if (item.Encoding == Tfvc.BinaryEncoding)
+        {
+            throw Tfvc.Binary(item.Path ?? path, item.Size);
+        }
+
+        var itemPath = Escape(item.Path ?? path);
+        var (bytes, mediaType) = await client.GetBytesAsync(
+            $"_apis/tfvc/items?{Api}&path={itemPath}&download=false&$format=octetStream{version}", ct);
+        // A pending branch in a shelveset has no content blob of its own, and the raw request
+        // answers with the item's metadata as JSON instead; the JSON form carries its text.
+        var text = mediaType == "application/json"
+            ? (await client.GetAsync<WireTfvcItemContent>(
+                $"_apis/tfvc/items?{Api}&path={itemPath}&includeContent=true{version}", ct)).Content ?? ""
+            : Tfvc.DecodeText(bytes, item.Encoding, item.Path ?? path);
+        var (content, start, total, truncated) =
+            Tfvc.Window(text, start_line, Math.Clamp(max_lines, 1, 2000), MaxFileChars);
+        return new TfvcFileDto(
+            item.Path ?? path, item.Version, content, start, total, truncated ? true : null, null, null);
+    });
+
+    [McpServerTool(Name = "get_shelveset", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Read a TFVC shelveset: its owner, date, comment, linked work items and the " +
+                 "paths it changes with their change type. The name must match exactly (case does not " +
+                 "matter); a name two people have used fails listing both, so pass the owner. " +
+                 "read_tfvc_file reads a file as the shelveset has it.")]
+    public Task<ShelvesetDto> GetShelveset(
+        [Description("Shelveset name, or 'name;owner'")] string name,
+        [Description("Owner's display name or sign-in name, when the name is not unique")] string? owner = null,
+        [Description("Most changed paths to return (default 200, max 1000)")] int max_changes = 200,
+        CancellationToken ct = default) => Run("get_shelveset",
+        A("name", name) + A("owner", owner) + A("max_changes", max_changes), async () =>
+    {
+        max_changes = Math.Clamp(max_changes, 1, 1000);
+        var client = await ado.GetClientAsync(ct);
+        var picked = await ResolveShelvesetAsync(client, name, owner, ct);
+        var detail = await client.GetAsync<WireShelveset>(
+            $"_apis/tfvc/shelvesets?{Api}&shelvesetId={Escape(picked.Id ?? $"{picked.Name};{picked.Owner?.Id}")}" +
+            $"&requestData.includeDetails=true&requestData.includeWorkItems=true&requestData.maxChangeCount={max_changes + 1}", ct);
+        return Mapping.Shelveset(detail, max_changes);
+    });
+
+    /// <summary>
+    /// The shelveset <paramref name="input"/> names, as "name" or "name;owner". The service matches
+    /// the name exactly and ignores case, and a name is unique only per owner.
+    /// </summary>
+    private static async Task<WireShelveset> ResolveShelvesetAsync(
+        AdoClient client, string input, string? owner, CancellationToken ct)
+    {
+        var (name, inlineOwner) = Tfvc.SplitShelveset(input);
+        var found = await client.GetAsync<ListResponse<WireShelveset>>(
+            $"_apis/tfvc/shelvesets?{Api}&requestData.name={Escape(name)}&$top=100", ct);
+        return Tfvc.PickShelveset(found.Value ?? [], name, owner ?? inlineOwner);
+    }
+
     // ------------------------------------------------------- escape hatch and diagnostics
     //
     // Without these, the next move when a typed tool falls short is a shell and a personal access
@@ -3054,6 +3264,12 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             A("results", w.Results.Count) + A("total", w.Total) + (w.HasMore is true ? A("hasMore", true) : ""),
         WikiSearchResult w =>
             A("results", w.Results.Count) + A("total", w.Total) + (w.HasMore is true ? A("hasMore", true) : ""),
+        ChangesetsResult c => A("changesets", c.Changesets.Count) + A("notFound", c.NotFound?.Count ?? 0) +
+            (c.HasMore is true ? A("hasMore", true) : ""),
+        TfvcFileDto f => f.Children is { } children
+            ? A("children", children.Count)
+            : A("totalLines", f.TotalLines) + A("startLine", f.StartLine) + (f.Truncated is true ? A("truncated", true) : ""),
+        ShelvesetDto s => A("changes", s.Changes?.Count ?? 0) + (s.HasMore is true ? A("hasMore", true) : ""),
         PipelineRunDetailDto run =>
             A("run", run.Id) + A("result", run.Result) + A("failedSteps", run.FailedSteps?.Count ?? 0) +
             (run.Steps is { } steps ? A("steps", steps.Count) : "") + Skipped(run.Skipped),

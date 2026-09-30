@@ -68,6 +68,16 @@ first one have their own traps:
   the project segment the service answers 404 with a plain-text body, which is why
   `AdoClient.ErrorAsync` surfaces a short plain-text error rather than `Not Found (404)`.
 
+**TFVC routes are organization-scoped, and three of their answers are traps** (`Tfvc.cs`,
+`docs/azure-devops-server.md` § TFVC):
+- **A `toId` past the newest changeset is TF14019**, an error rather than an empty range, so
+  `list_changesets` clamps `to_id` to the newest id before asking.
+- **An item's `encoding` is its code page**, and -1 means binary. File bytes are decoded with it (or
+  a byte-order mark) and never pass through a string first; 1252 files are common.
+- **A pending branch in a shelveset answers the raw content request with its metadata as JSON.**
+  The media type (`application/json` where a file is `application/octet-stream`) is the signal to
+  fall back to `includeContent=true`.
+
 Also: the *release* environment id and the *definition* environment id are different numbers for
 the same stage, and the deploy endpoint takes the former. `ResolveReleaseEnvironment` resolves
 against the release in hand and refuses a numeric id that release does not have, because `Resolve`

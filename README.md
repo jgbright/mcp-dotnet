@@ -333,6 +333,10 @@ Read:
 | `search_code` | Needs the Code Search extension, see below |
 | `search_work_items` | Full text. `list_work_items` is the structured query |
 | `search_wiki` | |
+| `get_changesets` | Several TFVC changesets in one call, each with the paths it changed; unknown ids in `notFound` |
+| `list_changesets` | TFVC changesets under a `$/` path, in an id range, since a time or by an author |
+| `read_tfvc_file` | A TFVC file's text a window of lines at a time, at the latest version, a changeset or a shelveset; a folder lists its children |
+| `get_shelveset` | A shelveset's owner, comment, work items and changed paths |
 | `deployment_status` | Config-driven, see the deployment map section |
 | `ado_api_request` | One REST call this server has no typed tool for, on its own credential and its own organization only. A JSON Patch body is sent as `application/json-patch+json`, which is the only type the work item endpoints take; `content_type` overrides that |
 | `ado_auth_status` | Which credential is in use, whether it still works, and whether `AZURE_DEVOPS_PAT` does |
