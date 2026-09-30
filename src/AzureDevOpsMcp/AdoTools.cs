@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Azure.Identity;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
@@ -453,7 +454,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// takes. A non-numeric entry is named rather than dropped: a silently shorter answer is the
     /// failure this tool exists to remove.
     /// </summary>
-    internal static List<int> ParseIds(string ids)
+    internal static List<int> ParseIds(string ids, string argument = "ids", string what = "work item")
     {
         var parsed = new List<int>();
         var bad = new List<string>();
@@ -479,17 +480,17 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         if (bad.Count > 0)
         {
             throw new McpException(
-                $"`ids` takes work item numbers, comma-separated. Not a number: " +
+                $"`{argument}` takes {what} numbers, comma-separated. Not a number: " +
                 $"{string.Join(", ", bad.Select(b => $"'{b}'"))}.");
         }
         if (parsed.Count == 0)
         {
-            throw new McpException("`ids` is required, e.g. \"5201,5202,5203\".");
+            throw new McpException($"`{argument}` is required, e.g. \"5201,5202,5203\".");
         }
         if (parsed.Count > 200)
         {
             throw new McpException(
-                $"`ids` takes at most 200 work items per call; {parsed.Count} were supplied. " +
+                $"`{argument}` takes at most 200 {what}s per call; {parsed.Count} were supplied. " +
                 "Split the read.");
         }
         return parsed;
@@ -516,44 +517,85 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     });
 
     [McpServerTool(Name = "list_pipeline_runs", UseStructuredContent = true, ReadOnly = true)]
-    [Description("Read-only. List runs of one pipeline, newest first. `pipeline` may be a numeric pipeline id " +
-                 "or a name. Each run carries `sourceVersion`, what it was built from, and " +
-                 "`changeset` when that is a changeset number rather than a commit. " +
+    [Description("Read-only. List pipeline runs, newest first: of one pipeline, of several at once " +
+                 "(`pipeline` as a comma-separated list, with `per_pipeline` for the latest N of " +
+                 "each), or exactly the runs named in `run_ids`. Pipelines may be numeric ids or " +
+                 "names. Each run carries `sourceVersion`, what it was built from, `changeset` when " +
+                 "that is a changeset number rather than a commit, `reason` when it was not a CI " +
+                 "trigger, and `pipeline` unless exactly one pipeline was named. " +
                  "Returns {runs, hasMore?}.")]
     public Task<PipelineRunsResult> ListPipelineRuns(
-        [Description("Pipeline id (number) or name")] string pipeline,
+        [Description("Pipeline id (number) or name, or several comma-separated")] string? pipeline = null,
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
         [Description("Only runs with this result: succeeded, partiallySucceeded, failed, canceled")] string? result = null,
         [Description("Only runs queued at/after this ISO-8601 timestamp")] string? since = null,
         [Description("Only runs of this branch, e.g. main")] string? branch = null,
         [Description("Maximum runs to return (default 20, max 200)")] int limit = 20,
+        [Description("At most this many runs of each pipeline, e.g. 1 for the latest of each")] int? per_pipeline = null,
+        [Description("Comma-separated run ids to read instead of listing by pipeline")] string? run_ids = null,
+        [Description("Only runs with this build number; a trailing * matches a prefix, e.g. 20260915.*")] string? build_number = null,
         CancellationToken ct = default) => Run("list_pipeline_runs",
         A("pipeline", pipeline) + A("project", project) + A("result", result) + A("since", since) +
-        A("branch", branch) + A("limit", limit), async () =>
+        A("branch", branch) + A("limit", limit) + A("per_pipeline", per_pipeline) + A("run_ids", run_ids) +
+        A("build_number", build_number), async () =>
     {
         limit = Math.Clamp(limit, 1, 200);
+        var runIds = RunIds(pipeline, run_ids, build_number);
         var client = await ado.GetClientAsync(ct);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
-        var resolvedPipeline = await ResolvePipelineAsync(client, resolvedProject.Id, pipeline, ct);
-        var sinceTs = ParseTimestamp(since, nameof(since));
-
-        // One id over the limit, so `hasMore` is answered without a second round trip.
-        var path = $"{Escape(resolvedProject.Id)}/_apis/build/builds?{Api}" +
-                   $"&definitions={Uri.EscapeDataString(resolvedPipeline.Id)}" +
-                   $"&queryOrder=queueTimeDescending&$top={limit + 1}" +
-                   (result is null ? "" : $"&resultFilter={Uri.EscapeDataString(result)}") +
-                   (branch is null ? "" : $"&branchName={Uri.EscapeDataString(FullBranch(branch))}") +
-                   (sinceTs is null ? "" : $"&minTime={Uri.EscapeDataString(sinceTs.Value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture))}");
+        var definitions = pipeline is { Length: > 0 }
+            ? await ResolvePipelinesAsync(client, resolvedProject.Id, pipeline.Split(',',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), ct)
+            : [];
+        var path = RunsPath(resolvedProject.Id, definitions.Select(d => d.Id).ToList(), runIds,
+            build_number, per_pipeline, result, branch, ParseTimestamp(since, nameof(since)), limit);
         var page = await client.GetAsync<ListResponse<WireBuild>>(path, ct);
 
         var builds = page.Value ?? [];
         var hasMore = builds.Count > limit;
+        // A caller who named one pipeline knows it; one who passed run ids, a build number or
+        // several pipelines does not, even when every run turns out to belong to the same one.
+        var namePipeline = definitions.Count != 1;
         var runs = builds
             .Take(limit)
-            .Select(Mapping.Run)
+            .Select(b => Mapping.Run(b, namePipeline))
             .ToList();
         return new PipelineRunsResult(runs, hasMore ? true : null);
     });
+
+    /// <summary>
+    /// The run ids to read, or null when listing by pipeline or build number. Naming runs and
+    /// naming pipelines are two different questions, so both at once is refused.
+    /// </summary>
+    internal static List<int>? RunIds(string? pipeline, string? runIds, string? buildNumber)
+    {
+        if (runIds is { Length: > 0 })
+        {
+            return pipeline is { Length: > 0 }
+                ? throw new McpException("Pass `pipeline` or `run_ids`, not both: run ids already name their runs.")
+                : ParseIds(runIds, "run_ids", "run");
+        }
+        return pipeline is { Length: > 0 } || buildNumber is { Length: > 0 }
+            ? null
+            : throw new McpException("Pass `pipeline` (one or several, comma-separated), `run_ids`, or `build_number`.");
+    }
+
+    /// <summary>
+    /// The build listing request. One over the limit, so `hasMore` is answered without a second
+    /// round trip.
+    /// </summary>
+    internal static string RunsPath(
+        string projectId, IReadOnlyList<string> definitionIds, IReadOnlyList<int>? runIds,
+        string? buildNumber, int? perPipeline, string? result, string? branch, DateTimeOffset? since, int limit) =>
+        $"{Escape(projectId)}/_apis/build/builds?{Api}" +
+        (definitionIds.Count > 0 ? $"&definitions={string.Join(",", definitionIds.Select(Uri.EscapeDataString))}" : "") +
+        (runIds is { Count: > 0 } ? $"&buildIds={string.Join(",", runIds)}" : "") +
+        (buildNumber is { Length: > 0 } ? $"&buildNumber={Uri.EscapeDataString(buildNumber)}" : "") +
+        (perPipeline is { } per ? $"&maxBuildsPerDefinition={Math.Clamp(per, 1, 200)}" : "") +
+        $"&queryOrder=queueTimeDescending&$top={limit + 1}" +
+        (result is null ? "" : $"&resultFilter={Uri.EscapeDataString(result)}") +
+        (branch is null ? "" : $"&branchName={Uri.EscapeDataString(FullBranch(branch))}") +
+        (since is null ? "" : $"&minTime={Uri.EscapeDataString(since.Value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture))}");
 
     [McpServerTool(Name = "get_pipeline_run", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Read one pipeline run and summarize why it failed: every failed task with the " +
@@ -561,7 +603,10 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "also get the tail of each failed task's log, which is where the actual error text is. " +
                  "`skipped.succeeded` counts the timeline records that are not reported because they passed. " +
                  "`sourceVersion` is what the run was built from, and `changeset` repeats it as a " +
-                 "number when the repository is TFVC, which is the answer to what version is deployed.")]
+                 "number when the repository is TFVC, which is the answer to what version is deployed. " +
+                 "Set include_steps=true to list every step that ran with its duration, and " +
+                 "step_log=<name or 'job / name'> to fetch one step's log, or with log_grep=<regex> " +
+                 "only its matching lines, which is how to see what a step that passed actually did.")]
     public Task<PipelineRunDetailDto> GetPipelineRun(
         [Description("Run id (the same number as the build id)")] int run_id,
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
@@ -569,16 +614,75 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Lines of log to keep per failed task (default 40)")] int log_tail_lines = 40,
         [Description("Maximum failed tasks to report (default 5)")] int max_failed = 5,
         [Description("Maximum error messages per failed task (default 5)")] int max_errors = 5,
+        [Description("List every step that ran, in order, not only the failures (default false)")] bool include_steps = false,
+        [Description(StepLogDescription)] string? step_log = null,
+        [Description(LogGrepDescription)] string? log_grep = null,
         CancellationToken ct = default) => Run("get_pipeline_run",
         A("run_id", run_id) + A("project", project) + A("include_logs", include_logs) +
-        A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors),
+        A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors) +
+        A("include_steps", include_steps) + A("step_log", step_log) + A("log_grep", log_grep),
         async () =>
     {
+        var grep = LogGrepPattern(log_grep, include_logs, step_log);
         var client = await ado.GetClientAsync(ct);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
         return await ReadRunAsync(
-            client, resolvedProject, run_id, include_logs, log_tail_lines, max_failed, max_errors, ct);
+            client, resolvedProject, run_id, include_logs, log_tail_lines, max_failed, max_errors,
+            include_steps, step_log, grep, ct);
     });
+
+    private const string StepLogDescription =
+        "Fetch the log of one step: its name, 'job / name' when the name repeats, or its record id; " +
+        "the tail, or only the lines log_grep matches; implies include_steps";
+
+    private const string LogGrepDescription =
+        "Case-insensitive regex: return the matching lines of step_log's log, numbered, instead of " +
+        "its tail (first 50); without step_log, applies to the failed steps' logs include_logs fetches";
+
+    private const int MaxGrepMatches = 50;
+
+    /// <summary>
+    /// <c>log_grep</c> compiled, or null. Checked before any request: a bad pattern, or a pattern
+    /// with no log to apply it to, is the caller's to fix. The timeout bounds a pattern that
+    /// backtracks badly against a long line.
+    /// </summary>
+    internal static Regex? LogGrepPattern(string? logGrep, bool includeLogs, string? stepLog)
+    {
+        if (logGrep is not { Length: > 0 })
+        {
+            return null;
+        }
+        if (!includeLogs && stepLog is not { Length: > 0 })
+        {
+            throw new McpException(
+                "log_grep searches a log, and none was asked for. Pass step_log to search one step's " +
+                "log, or include_logs=true to search the failed steps' logs.");
+        }
+        try
+        {
+            return new Regex(logGrep, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                TimeSpan.FromSeconds(1));
+        }
+        catch (ArgumentException e)
+        {
+            throw new McpException($"log_grep is not a valid regular expression: {e.Message}");
+        }
+    }
+
+    /// <summary>A log grepped, turning a pattern that ran away into the caller's error.</summary>
+    private static LogGrepDto Grep(string log, Regex grep)
+    {
+        try
+        {
+            return Mapping.LogGrep(log, grep, MaxGrepMatches);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            throw new McpException(
+                "log_grep took too long against this log. Simplify the pattern, e.g. drop nested " +
+                "quantifiers such as (a+)+.");
+        }
+    }
 
     /// <summary>
     /// Reads one run and summarizes why it failed. Shared by <c>get_pipeline_run</c> and
@@ -586,11 +690,14 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     /// </summary>
     private async Task<PipelineRunDetailDto> ReadRunAsync(
         AdoClient client, Named resolvedProject, int run_id, bool include_logs,
-        int log_tail_lines, int max_failed, int max_errors, CancellationToken ct)
+        int log_tail_lines, int max_failed, int max_errors, bool include_steps, string? step_log,
+        Regex? grep, CancellationToken ct)
     {
         max_failed = Math.Clamp(max_failed, 1, 50);
         max_errors = Math.Clamp(max_errors, 1, 50);
         log_tail_lines = Math.Clamp(log_tail_lines, 0, 500);
+        // Naming a step to fetch presupposes the list it was named from.
+        include_steps = include_steps || step_log is { Length: > 0 };
 
         var build = await client.GetAsync<WireBuild>(
             $"{Escape(resolvedProject.Id)}/_apis/build/builds/{run_id}?{Api}", ct);
@@ -598,10 +705,35 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             $"{Escape(resolvedProject.Id)}/_apis/build/builds/{run_id}/timeline?{Api}", ct);
 
         var counts = new SkipCounter();
-        var failed = Mapping.FailedSteps(timeline, max_errors, counts);
+        // A step that passed is only "skipped" while nothing reports it.
+        var failed = Mapping.FailedSteps(timeline, max_errors, counts, countSucceeded: !include_steps);
         var reported = failed.Take(max_failed).Select(f => f.Step).ToList();
+        var steps = include_steps ? Mapping.RunSteps(timeline) : [];
 
-        if (include_logs && log_tail_lines > 0)
+        if (step_log is { Length: > 0 } && (grep is not null || log_tail_lines > 0))
+        {
+            var index = ResolveRunStep(steps, step_log);
+            var entry = steps[index];
+            if (entry.LogUrl is not { } url)
+            {
+                throw new McpException(
+                    $"Step '{entry.Step.Name}' has no log yet — its state is '{entry.Step.State ?? "completed"}'.");
+            }
+            var text = await client.GetTextAsync(url, ct);
+            if (grep is not null)
+            {
+                steps[index] = entry with { Step = entry.Step with { LogGrep = Grep(text, grep) } };
+            }
+            else
+            {
+                var (tail, truncated) = Mapping.LogTail(text, log_tail_lines);
+                steps[index] = entry with { Step = entry.Step with { LogTail = tail, Truncated = truncated } };
+            }
+        }
+
+        // log_grep belongs to step_log when there is one, and to the failed steps' logs otherwise.
+        var grepFailed = step_log is { Length: > 0 } ? null : grep;
+        if (include_logs && (log_tail_lines > 0 || grepFailed is not null))
         {
             // Each step carries its own record's log url, so there is no re-matching by name.
             for (var i = 0; i < reported.Count; i++)
@@ -610,8 +742,16 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                 {
                     continue;
                 }
-                var (tail, truncated) = Mapping.LogTail(await client.GetTextAsync(url, ct), log_tail_lines);
-                reported[i] = reported[i] with { LogTail = tail, Truncated = truncated };
+                var text = await client.GetTextAsync(url, ct);
+                if (grepFailed is not null)
+                {
+                    reported[i] = reported[i] with { LogGrep = Grep(text, grepFailed) };
+                }
+                else if (log_tail_lines > 0)
+                {
+                    var (tail, truncated) = Mapping.LogTail(text, log_tail_lines);
+                    reported[i] = reported[i] with { LogTail = tail, Truncated = truncated };
+                }
             }
         }
 
@@ -629,7 +769,41 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             counts.ToDto(),
             Mapping.RunUrl(client.OrgUrl, build.Project?.Name ?? resolvedProject.Name, build.Id),
             build.SourceVersion is { Length: > 0 } ? build.SourceVersion : null,
-            Mapping.Changeset(build.SourceVersion));
+            Mapping.Changeset(build.SourceVersion),
+            steps.Count > 0 ? [.. steps.Select(s => s.Step)] : null);
+    }
+
+    /// <summary>
+    /// Which listed step <c>step_log</c> named, as an index into <paramref name="steps"/>. A step
+    /// name repeats across the jobs of a matrix, and within one job when two steps keep a task's
+    /// default name, so the candidates are spelled "job / name" and matched through the shared
+    /// lenient rule; one that still repeats carries its record id, which is then what to pass.
+    /// The input is never split on '/': a step named after a TFVC path has several.
+    /// </summary>
+    internal int ResolveRunStep(IReadOnlyList<RunStepEntry> steps, string input)
+    {
+        input = input.Trim();
+        if (steps.Count == 0)
+        {
+            throw new McpException(
+                "This run reports no steps that ran, so there is no log to fetch. A step appears " +
+                "once it has started.");
+        }
+        var labels = steps.Select(s => s.Step.Job is { } job ? $"{job} / {s.Step.Name}" : s.Step.Name ?? "").ToList();
+        var candidates = steps.Select((s, i) => new Named(
+            s.Id ?? "",
+            labels.Count(l => l == labels[i]) > 1 ? $"{labels[i]} #{s.Id}" : labels[i])).ToList();
+
+        // Resolve passes an id through unchecked, so an id is matched here; a name came back as a
+        // candidate, and the labels are unique.
+        var resolved = Resolve(input, IsGuid, candidates, "step", log);
+        var index = IsGuid(input)
+            ? candidates.FindIndex(c => string.Equals(c.Id, input, StringComparison.OrdinalIgnoreCase))
+            : candidates.FindIndex(c => c.Name == resolved.Name);
+        return index >= 0
+            ? index
+            : throw new McpException(
+                $"No step with id {input}. Available: {string.Join(", ", candidates.Select(c => c.Name))}");
     }
 
     [McpServerTool(Name = "wait_for_pipeline_run", UseStructuredContent = true, ReadOnly = true)]
@@ -637,7 +811,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "get_pipeline_run does. Polls until the run reaches a terminal state and returns " +
                  "as soon as it does. Running out of `timeout_seconds` is not an error: the run is " +
                  "returned as it stands with `timedOut: true`, so an unfinished run is " +
-                 "distinguishable from a failed one. Returns {run, waitedSeconds, timedOut?}.")]
+                 "distinguishable from a failed one; a timed-out wait lists the steps so far in place " +
+                 "of fetching step_log, whose step may not have run. Returns {run, waitedSeconds, timedOut?}.")]
     public Task<PipelineRunWaitResult> WaitForPipelineRun(
         [Description("Run id (the same number as the build id)")] int run_id,
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
@@ -647,12 +822,17 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Lines of log to keep per failed task (default 40)")] int log_tail_lines = 40,
         [Description("Maximum failed tasks to report (default 5)")] int max_failed = 5,
         [Description("Maximum error messages per failed task (default 5)")] int max_errors = 5,
+        [Description("List every step that ran, in order, not only the failures (default false)")] bool include_steps = false,
+        [Description(StepLogDescription)] string? step_log = null,
+        [Description(LogGrepDescription)] string? log_grep = null,
         CancellationToken ct = default) => Run("wait_for_pipeline_run",
         A("run_id", run_id) + A("project", project) + A("timeout_seconds", timeout_seconds) +
         A("poll_seconds", poll_seconds) + A("include_logs", include_logs) +
-        A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors),
+        A("log_tail_lines", log_tail_lines) + A("max_failed", max_failed) + A("max_errors", max_errors) +
+        A("include_steps", include_steps) + A("step_log", step_log) + A("log_grep", log_grep),
         async () =>
     {
+        var grep = LogGrepPattern(log_grep, include_logs, step_log);
         // Bounded: a caller cannot wait forever or poll hard enough to matter to the service.
         var timeout = TimeSpan.FromSeconds(Math.Clamp(timeout_seconds, 1, 21600));
         var interval = TimeSpan.FromSeconds(Math.Clamp(poll_seconds, 5, 600));
@@ -675,7 +855,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                     A("result", build.Result) + A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
                 return new PipelineRunWaitResult(
                     await ReadRunAsync(client, resolvedProject, run_id, include_logs,
-                        log_tail_lines, max_failed, max_errors, ct),
+                        log_tail_lines, max_failed, max_errors, include_steps, step_log, grep, ct),
                     (int)sw.Elapsed.TotalSeconds,
                     TimedOut: null);
             }
@@ -686,9 +866,14 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                 log.Line(LogLevel.Information, Ev.Poll,
                     "gave up waiting" + A("run_id", run_id) + A("status", build.Status) +
                     A("polls", polls) + A("waitedMs", sw.ElapsedMilliseconds));
+                // The step named for its log may not have started, and resolving it would throw
+                // where a timeout has to answer. The steps so far are listed instead, and the log
+                // (and a grep meant for it) is left to a call once the run has finished.
+                var named = step_log is { Length: > 0 };
                 return new PipelineRunWaitResult(
                     await ReadRunAsync(client, resolvedProject, run_id, include_logs,
-                        log_tail_lines, max_failed, max_errors, ct),
+                        log_tail_lines, max_failed, max_errors, include_steps || named, step_log: null,
+                        named ? null : grep, ct),
                     (int)sw.Elapsed.TotalSeconds,
                     TimedOut: true);
             }
@@ -2870,7 +3055,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             A("results", w.Results.Count) + A("total", w.Total) + (w.HasMore is true ? A("hasMore", true) : ""),
         PipelineRunDetailDto run =>
             A("run", run.Id) + A("result", run.Result) + A("failedSteps", run.FailedSteps?.Count ?? 0) +
-            Skipped(run.Skipped),
+            (run.Steps is { } steps ? A("steps", steps.Count) : "") + Skipped(run.Skipped),
         PullRequestCommentResult c =>
             A("pullRequest", c.PullRequestId) + A("thread", c.ThreadId) +
             AdoMcpLog.ContentArg("comment", c.Comment.Body),
@@ -3083,14 +3268,17 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     }
 
     private async Task<Named> ResolvePipelineAsync(
-        AdoClient client, string projectId, string pipeline, CancellationToken ct)
+        AdoClient client, string projectId, string pipeline, CancellationToken ct) =>
+        (await ResolvePipelinesAsync(client, projectId, [pipeline], ct))[0];
+
+    /// <summary>Several pipelines against one listing, each resolved on its own.</summary>
+    private async Task<List<Named>> ResolvePipelinesAsync(
+        AdoClient client, string projectId, IReadOnlyList<string> pipelines, CancellationToken ct)
     {
-        var pipelines = await ListPipelinesAsync(client, projectId, limit: 1000, ct);
-        return Resolve(
-            pipeline, IsNumber,
-            pipelines.Where(p => p.Name is not null)
-                .Select(p => new Named(p.Id.ToString(CultureInfo.InvariantCulture), p.Name!)).ToList(),
-            "pipeline", log);
+        var listed = await ListPipelinesAsync(client, projectId, limit: 1000, ct);
+        var candidates = listed.Where(p => p.Name is not null)
+            .Select(p => new Named(p.Id.ToString(CultureInfo.InvariantCulture), p.Name!)).ToList();
+        return pipelines.Select(p => Resolve(p, IsNumber, candidates, "pipeline", log)).ToList();
     }
 
     private async Task<Named> ResolveReleaseDefinitionAsync(

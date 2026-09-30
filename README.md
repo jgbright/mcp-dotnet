@@ -317,8 +317,8 @@ Read:
 | `get_work_item` | Description, repro steps and acceptance criteria; relations and discussion on request |
 | `get_work_items` | Several ids in one request, with their bodies, or exactly the fields named in `fields` |
 | `list_pipelines` | |
-| `list_pipeline_runs` | |
-| `get_pipeline_run` | Reports each failed task with its stage, job, errors and log tail, and what the run was built from |
+| `list_pipeline_runs` | One pipeline, several at once (`per_pipeline` for the latest N of each), or the runs named in `run_ids` |
+| `get_pipeline_run` | Reports each failed task with its stage, job, errors and log tail, and what the run was built from; `include_steps` lists every step with its duration, `step_log` fetches one step's log and `log_grep` keeps only its matching lines |
 | `wait_for_pipeline_run` | Polls until the run finishes, then reports like `get_pipeline_run`. A timeout returns the run as it stands with `timedOut: true` |
 | `get_build_definition` | How a build is configured: TFVC mappings, triggers, variables, and each step with its task and inputs |
 | `search_build_definitions` | Where a path, task, input or variable appears across every build definition, in one request |

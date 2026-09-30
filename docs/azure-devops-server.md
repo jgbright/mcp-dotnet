@@ -96,6 +96,19 @@ log, where the error text lives; each step carries its own record's log url, so 
 with no re-matching by name. Passed records are counted in `skipped.succeeded`; records that never
 ran are neither listed nor counted.
 
+The failure summary answers why a run failed and nothing else, so `include_steps` lists every task
+record that ran, in the order it ran, with its job and `seconds`; that covers how far a running
+build has got and how long each step took, and it costs nothing, since the timeline is already in
+hand. The order is a depth-first walk rather than one sort, because `order` restarts under each
+parent: a job's first task and its stage are both 1. While steps are listed, `skipped.succeeded`
+stops counting them. `step_log` fetches one listed step's log. Names are matched as `job / name`
+through the shared lenient rule, and the input is never split on `/`, because a classic build names
+steps after TFVC paths. A label that still repeats (two steps left at a task's default name) carries
+its record id in the ambiguity error, and the id is then what to pass. `log_grep` turns that log, or
+the failed steps' logs when there is no `step_log`, into its matching lines: numbered, the first 50,
+with `matches` counting all of them, each cut at 500 characters so a minified bundle cannot fill the
+answer, and with a one-second regex timeout because the pattern is the caller's.
+
 `wait_for_pipeline_run` polls **only the build**; the timeline and logs cost extra requests and are
 no use until a run finishes. It then calls the same `ReadRunAsync`, so waiting for a run and asking
 about one report identically.

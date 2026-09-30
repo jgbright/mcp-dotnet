@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace AzureDevOpsMcp;
 
@@ -79,7 +80,8 @@ internal sealed record WireBuild(
     // Defaulted so they bind by name without disturbing positional construction elsewhere.
     // sourceVersion is the changeset number as a bare string for TFVC, a commit SHA for git.
     string? SourceVersion = null,
-    WireBuildRepositoryRef? Repository = null);
+    WireBuildRepositoryRef? Repository = null,
+    string? Reason = null);
 
 internal sealed record WireBuildRepositoryRef(string? Id, string? Name, string? Type);
 
@@ -467,7 +469,11 @@ public sealed record PipelineDto(int Id, string? Name, string? Folder);
 public sealed record PipelineRunDto(
     int Id, string? Name, string? State, string? Result, DateTimeOffset? Created,
     DateTimeOffset? Finished, string? Branch, string? RequestedFor,
-    string? SourceVersion = null, int? Changeset = null);
+    string? SourceVersion = null, int? Changeset = null,
+    // Omitted when the caller named exactly one pipeline, whose rows would all repeat it.
+    string? Pipeline = null,
+    // Omitted for the CI trigger reasons, which are most rows.
+    string? Reason = null);
 
 /// <summary>Envelope for run listings: hasMore is omitted when the whole list was returned.</summary>
 public sealed record PipelineRunsResult(List<PipelineRunDto> Runs, bool? HasMore);
@@ -504,7 +510,9 @@ public sealed record PipelineRunDetailDto(
     SkippedDto? Skipped,
     string? WebUrl,
     string? SourceVersion = null,
-    int? Changeset = null);
+    int? Changeset = null,
+    // Every step that ran, only when include_steps or step_log asked for them.
+    List<RunStepDto>? Steps = null);
 
 /// <summary>
 /// One failed timeline record with the stage/job it sits under, the issues Azure DevOps recorded
@@ -517,13 +525,42 @@ public sealed record FailedStepDto(
     string? Result,
     List<string>? Errors,
     string? LogTail,
-    bool? Truncated);
+    bool? Truncated,
+    LogGrepDto? LogGrep = null);
+
+/// <summary>
+/// One step of a run as it ran, in timeline order. <c>state</c> appears only while it is not
+/// <c>completed</c> and <c>result</c> only when it is not <c>succeeded</c>, so a finished green
+/// step is its name, its place and its duration.
+/// </summary>
+public sealed record RunStepDto(
+    string? Stage,
+    string? Job,
+    string? Name,
+    string? State,
+    string? Result,
+    int? Seconds,
+    string? LogTail = null,
+    bool? Truncated = null,
+    LogGrepDto? LogGrep = null);
+
+/// <summary>
+/// The lines of a log matching <c>log_grep</c>, each prefixed with its 1-based line number.
+/// <c>matches</c> counts every matching line; <c>hasMore</c> says the list stopped short of it.
+/// </summary>
+public sealed record LogGrepDto(int TotalLines, int Matches, List<string> Lines, bool? HasMore);
 
 /// <summary>
 /// A failed step paired with its timeline record's log url, so fetching the log needs no
 /// re-matching by task name (not unique across jobs). Internal: the url is an API address.
 /// </summary>
 internal sealed record FailedStep(FailedStepDto Step, string? LogUrl);
+
+/// <summary>
+/// A listed run step with its record id, which <c>step_log</c> accepts, and its log url. Internal
+/// for the same reason as <see cref="FailedStep"/>.
+/// </summary>
+internal sealed record RunStepEntry(RunStepDto Step, string? Id, string? LogUrl);
 
 /// <summary>
 /// A listed release task paired with its log url. Internal for the same reason as
@@ -1335,7 +1372,9 @@ internal static class Mapping
     internal static PipelineDto Pipeline(WirePipeline p) => new(
         p.Id, p.Name, string.Equals(p.Folder, "\\", StringComparison.Ordinal) ? null : p.Folder);
 
-    internal static PipelineRunDto Run(WireBuild b) => new(
+    internal static PipelineRunDto Run(WireBuild b) => Run(b, namePipeline: false);
+
+    internal static PipelineRunDto Run(WireBuild b, bool namePipeline) => new(
         b.Id,
         b.BuildNumber,
         // A finished run says everything through `result`; only unfinished runs need a status.
@@ -1346,7 +1385,9 @@ internal static class Mapping
         ShortBranch(b.SourceBranch),
         b.RequestedFor?.DisplayName,
         b.SourceVersion is { Length: > 0 } ? b.SourceVersion : null,
-        Changeset(b.SourceVersion));
+        Changeset(b.SourceVersion),
+        namePipeline ? b.Definition?.Name : null,
+        b.Reason is "individualCI" or "batchedCI" or null or "" ? null : b.Reason);
 
     /// <summary>
     /// A source version as a changeset number, or null in a git repository. Whether the version
@@ -1365,7 +1406,8 @@ internal static class Mapping
     /// neither listed nor counted. Each step carries the log url of its own record, since a task
     /// name is not unique across jobs and pairing by name could attach the wrong log.
     /// </summary>
-    internal static List<FailedStep> FailedSteps(WireTimeline timeline, int maxErrors, SkipCounter counts)
+    internal static List<FailedStep> FailedSteps(
+        WireTimeline timeline, int maxErrors, SkipCounter counts, bool countSucceeded = true)
     {
         var records = timeline.Records ?? [];
         var byId = records.Where(r => r.Id is not null).ToDictionary(r => r.Id!, r => r);
@@ -1375,7 +1417,8 @@ internal static class Mapping
         {
             if (!IsRunTaskFailure(record.Result))
             {
-                if (IsRunTaskSuccess(record.Result))
+                // Not counted when include_steps lists the passing steps anyway.
+                if (countSucceeded && IsRunTaskSuccess(record.Result))
                 {
                     counts.Succeeded++;
                 }
@@ -1440,6 +1483,87 @@ internal static class Mapping
         }
         return (stage, job);
     }
+
+    /// <summary>
+    /// Every task record that ran, in the order it ran. <c>order</c> restarts under each parent
+    /// (a job's first task and its stage are both 1), so the order is a depth-first walk of the
+    /// record tree rather than one sort. A step that is still pending or was skipped never ran
+    /// and is not listed, as in <see cref="FailedSteps"/>.
+    /// </summary>
+    internal static List<RunStepEntry> RunSteps(WireTimeline timeline)
+    {
+        var records = timeline.Records ?? [];
+        var byId = records.Where(r => r.Id is not null).ToDictionary(r => r.Id!, r => r);
+        var children = records.ToLookup(r => r.ParentId is { } p && byId.ContainsKey(p) ? p : "");
+
+        var steps = new List<RunStepEntry>();
+        void Walk(string parent, int depth)
+        {
+            foreach (var record in children[parent].OrderBy(r => r.Order ?? int.MaxValue))
+            {
+                if (string.Equals(record.Type, "Task", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.Equals(record.State, "pending", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(record.Result, "skipped", StringComparison.OrdinalIgnoreCase))
+                    {
+                        steps.Add(RunStep(record, byId));
+                    }
+                }
+                else if (record.Id is { } id && depth < 10)
+                {
+                    Walk(id, depth + 1);
+                }
+            }
+        }
+        Walk("", 0);
+        return steps;
+    }
+
+    private static RunStepEntry RunStep(WireTimelineRecord record, Dictionary<string, WireTimelineRecord> byId)
+    {
+        var (stage, job) = Ancestors(record, byId);
+        return new RunStepEntry(
+            new RunStepDto(
+                // The stage a pipeline without stages runs in, named on every step and meaning none.
+                stage == "__default" ? null : stage,
+                job,
+                record.Name,
+                string.Equals(record.State, "completed", StringComparison.OrdinalIgnoreCase) ? null : record.State,
+                string.Equals(record.Result, "succeeded", StringComparison.OrdinalIgnoreCase) ? null : record.Result,
+                record is { StartTime: { } start, FinishTime: { } finish }
+                    ? (int)Math.Round((finish - start).TotalSeconds)
+                    : null),
+            record.Id,
+            record.Log?.Url);
+    }
+
+    /// <summary>
+    /// The lines of <paramref name="log"/> that <paramref name="pattern"/> matches, numbered from
+    /// 1, the first <paramref name="max"/> of them. A matching line longer than
+    /// <see cref="GrepLineLimit"/> is cut there: one minified bundle on a line would otherwise be
+    /// the whole answer.
+    /// </summary>
+    internal static LogGrepDto LogGrep(string log, Regex pattern, int max)
+    {
+        var all = log.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');
+        var lines = new List<string>();
+        var matches = 0;
+        for (var i = 0; i < all.Length; i++)
+        {
+            if (!pattern.IsMatch(all[i]))
+            {
+                continue;
+            }
+            if (++matches <= max)
+            {
+                var line = all[i].Length > GrepLineLimit ? all[i][..GrepLineLimit] + "…" : all[i];
+                lines.Add($"{i + 1}: {line}");
+            }
+        }
+        return new LogGrepDto(log.Length == 0 ? 0 : all.Length, matches, lines, matches > max ? true : null);
+    }
+
+    internal const int GrepLineLimit = 500;
 
     /// <summary>Keeps the end of a log: a build failure is explained by its last lines.</summary>
     internal static (string? Tail, bool? Truncated) LogTail(string log, int lines)
