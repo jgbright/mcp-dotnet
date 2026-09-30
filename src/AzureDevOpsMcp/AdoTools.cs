@@ -1978,22 +1978,22 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "server's own credential, for the case a typed tool does not cover. Prefer a typed " +
                  "tool when one fits: this returns the service's raw shape, which is large and " +
                  "unfiltered. `path` is relative to the organization and only this organization can " +
-                 "be addressed; most resources are project-scoped, so the path usually starts with " +
-                 "the project — Project/_apis/release/definitions/31, not _apis/release/definitions/31, " +
-                 "which answers 404. `host` " +
-                 "picks which host answers — core, vsrm, search or vssps — and is inferred from the " +
+                 "be addressed. Most routes are project-scoped (Project/_apis/release/definitions/31) and " +
+                 "some are organization-scoped (TFVC changesets, identities, agent pools); a " +
+                 "project-prefixed read of an organization-scoped route is retried once without the " +
+                 "prefix automatically. `host` " +
+                 "picks which host answers — core, vsrm, search, vssps or feeds (Azure Artifacts) — and is inferred from the " +
                  "path when omitted; getting it wrong is the classic 404, because releases and " +
                  "release definitions live on vsrm and nothing redirects. api-version=7.1 is added " +
                  "when neither the path nor the query names one, and `api_version` changes which " +
                  "version that is; a preview-only resource is retried once automatically with " +
-                 "-preview rather than costing a turn. A 404 naming a controller for the path is " +
-                 "answered with the organization-versus-project scoping to try instead. " +
+                 "-preview rather than costing a turn. " +
                  "`filter` narrows the response: dot-separated " +
                  "property names with [] to map over an array and [n] to index one, e.g. " +
-                 "value[].name — it is a projection, not jq or JMESPath, and an expression using " +
-                 "{}, |, ?, *, quotes or a comma is refused rather than evaluated to nothing. " +
-                 "There is no way to select several fields at once: omit `filter` and narrow with " +
-                 "the endpoint's own $select or $top instead. Matching nothing yields json: null " +
+                 "value[].name, and one trailing brace list picks several paths per element, e.g. " +
+                 "value[].{id,result,definition.name}, one object per element with the keys it has. " +
+                 "It is a projection, not jq or JMESPath: key aliases, |, ?, *, quotes and nested " +
+                 "braces are refused rather than evaluated to nothing. Matching nothing yields json: null " +
                  "with filterMatched: false and responseShape naming what was actually there, so " +
                  "an empty projection is never mistaken for an empty resource. " +
                  "Arrays arrive in the service's own order, which is not always a meaningful one: a " +
@@ -2015,7 +2015,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Media type for the body; inferred from it when omitted — a JSON Patch array " +
                      "goes as application/json-patch+json, anything else as application/json")] string? content_type = null,
         [Description("Projection over the response, e.g. value[].name")] string? filter = null,
-        [Description("Which host answers: core, vsrm, search, vssps; inferred from the path when omitted")] string? host = null,
+        [Description("Which host answers: core, vsrm, search, vssps, feeds; inferred from the path when omitted")] string? host = null,
         [Description("REST api-version (default 7.1); ignored when the path or query already names one")] string? api_version = null,
         [Description("Maximum characters of response to return (default 20000)")] int max_chars = 20000,
         CancellationToken ct = default) => Run("ado_api_request",
@@ -2041,7 +2041,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         // A path with a typed tool behind it says so either way. On a failure the pointer is the
         // more useful half of the answer, since the raw call is the one that did not work.
         var pointer = ApiRequest.Pointer(path, filter);
-        RawResponse raw;
+        RawResponse? raw = null;
+        AdoApiException? failure = null;
         try
         {
             try
@@ -2061,15 +2062,38 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         }
         catch (AdoApiException e)
         {
-            var hint = ApiRequest.ScopeHint(e.Status, e.Message, path);
+            failure = e;
+        }
+        var hint = failure is null ? null : ApiRequest.ScopeHint(failure.Status, failure.Message, path);
+        // The service has named the fix, so a read is re-aimed once rather than spending the
+        // caller's turn. A write sent to the wrong route fails as sent.
+        if (hint is not null && (verb == HttpMethod.Get || verb == HttpMethod.Head) &&
+            ApiRequest.WithoutProject(url, path) is { } unscoped)
+        {
+            log.Line(LogLevel.Information, Ev.ToolStart,
+                "route is organization-scoped; retrying once without the project prefix" + A("url", unscoped));
+            try
+            {
+                raw = await client.SendRawAsync(verb, unscoped, body, media, ct);
+                url = unscoped;
+                failure = null;
+            }
+            catch (AdoApiException)
+            {
+                // The original error, with its hint, is the more useful answer.
+            }
+        }
+        if (raw is null)
+        {
+            var error = failure!;
             if (pointer is null && hint is null)
             {
-                throw;
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
             }
             throw new AdoApiException(
-                e.Status,
-                string.Join(" ", new[] { e.Message, hint, pointer }.Where(s => s is { Length: > 0 })),
-                e.TypeKey, e.Path);
+                error.Status,
+                string.Join(" ", new[] { error.Message, hint, pointer }.Where(s => s is { Length: > 0 })),
+                error.TypeKey, error.Path);
         }
         var trimmed = raw.Body.TrimStart();
         var isJson = trimmed.Length > 0 && trimmed[0] is '{' or '[';

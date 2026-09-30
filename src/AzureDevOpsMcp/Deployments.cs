@@ -128,6 +128,23 @@ internal static class Deployments
     }
 
     /// <summary>
+    /// Azure Artifacts answers on feeds.dev.azure.com/{org}, or {org}.feeds.visualstudio.com on a
+    /// legacy host. The same bearer token works, since it is issued for Azure DevOps as a whole.
+    /// </summary>
+    internal static string FeedsBaseUrl(string orgUrl)
+    {
+        const string modern = "https://dev.azure.com/";
+        if (orgUrl.StartsWith(modern, StringComparison.OrdinalIgnoreCase))
+        {
+            return "https://feeds.dev.azure.com/" + orgUrl[modern.Length..];
+        }
+        var legacy = new Uri(orgUrl);
+        return legacy.Host.EndsWith(".visualstudio.com", StringComparison.OrdinalIgnoreCase)
+            ? $"{legacy.Scheme}://{legacy.Host[..legacy.Host.IndexOf('.')]}.feeds.visualstudio.com"
+            : orgUrl;
+    }
+
+    /// <summary>
     /// The mapped (not cloaked) server paths of a classic build definition's TFVC workspace: the
     /// definition's own answer to "which paths feed this build". The value arrives as a JSON
     /// string inside repository.properties.

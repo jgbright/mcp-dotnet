@@ -18,6 +18,7 @@ public class ApiRequestTests
     [InlineData("/Project/_apis/release/releases/4300", "vsrm")]
     [InlineData("Project/_apis/search/codesearchresults", "search")]
     [InlineData("_apis/identities", "vssps")]
+    [InlineData("Project/_apis/packaging/feeds/Feed/packages", "feeds")]
     public void The_host_is_inferred_from_the_path_when_it_is_not_given(string path, string host)
     {
         // A /_apis/release/ path on the core host answers 404, which reads as "no such
@@ -66,9 +67,21 @@ public class ApiRequestTests
         Assert.StartsWith("https://vsrm.dev.azure.com/contoso/", url);
     }
 
+    [Fact]
+    public void The_feeds_host_hangs_off_the_organization()
+    {
+        Assert.Equal("https://feeds.dev.azure.com/contoso", Deployments.FeedsBaseUrl(Org));
+        Assert.Equal("https://contoso.feeds.visualstudio.com",
+            Deployments.FeedsBaseUrl("https://contoso.visualstudio.com"));
+        Assert.StartsWith("https://feeds.dev.azure.com/contoso/Project/_apis/packaging/feeds",
+            ApiRequest.Url(Org, "https://feeds.dev.azure.com/contoso/Project/_apis/packaging/feeds",
+                query: null, host: null));
+    }
+
     [Theory]
     [InlineData("https://evil.example.com/_apis/projects")]
     [InlineData("https://dev.azure.com/other-org/_apis/projects")]
+    [InlineData("https://feeds.dev.azure.com/other-org/_apis/packaging/feeds")]
     public void An_absolute_url_outside_the_organization_is_refused(string url)
     {
         // The request carries this server's bearer token. Following a caller's url anywhere else
@@ -201,8 +214,8 @@ public class ApiRequestTests
     }
 
     [Theory]
-    [InlineData("value[].{id: id, name: name}", '{')]
-    [InlineData("environments[].{name: name}", '{')]
+    [InlineData("value[].{id: id, name: name}", ':')]
+    [InlineData("environments[].{name: name}", ':')]
     [InlineData("value[] | [0]", '|')]
     [InlineData("value[?name=='Dev']", '?')]
     [InlineData("value[].*", '*')]
@@ -232,8 +245,60 @@ public class ApiRequestTests
         var error = Assert.Throws<McpException>(
             () => ApiRequest.Validate("value[].{id: id, name: name}"));
 
-        Assert.Contains("'{'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("':'", error.Message, StringComparison.Ordinal);
         ApiRequest.Validate("value[].name");
+        ApiRequest.Validate("value[].{id,definition.name}");
+    }
+
+    [Fact]
+    public void A_brace_list_keeps_rows_aligned_when_an_element_lacks_a_field()
+    {
+        // One call per field drops the running build from the `result` list, so position N in one
+        // list is not position N in another. A row per element keeps them together.
+        var body = Parse("""
+            {"value":[
+              {"id":1,"result":"succeeded","definition":{"name":"Web"}},
+              {"id":2,"definition":{"name":"Admin"}}
+            ]}
+            """);
+
+        Assert.Equal(
+            """[{"id":1,"result":"succeeded","definition.name":"Web"},{"id":2,"definition.name":"Admin"}]""",
+            ApiRequest.Filter(body, "value[].{id,result,definition.name}")!.ToJsonString());
+    }
+
+    [Fact]
+    public void A_brace_list_on_an_object_gives_one_object()
+    {
+        var body = Parse("""{"triggers":[1],"environments":[{"name":"QA"},{"name":"Prod"}],"id":7}""");
+
+        Assert.Equal(
+            """{"triggers":[1],"environments[].name":["QA","Prod"]}""",
+            ApiRequest.Filter(body, "{triggers,environments[].name}")!.ToJsonString());
+        Assert.Null(ApiRequest.Filter(body, "{missing,also}"));
+    }
+
+    [Fact]
+    public void A_secret_stays_masked_inside_a_brace_row()
+    {
+        var body = ApiRequest.Mask(Parse("""{"variables":{"Key":{"value":"hunter2","isSecret":true}}}"""));
+
+        var row = ApiRequest.Filter(body, "{variables.Key}")!.ToJsonString();
+
+        Assert.DoesNotContain("hunter2", row, StringComparison.Ordinal);
+        Assert.Contains(ApiRequest.Redacted, row, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("value[].{id,{name}}")]
+    [InlineData("value[].{id}.name")]
+    [InlineData("value[].{id,}")]
+    [InlineData("value[].{}")]
+    public void A_brace_list_anywhere_but_last_or_nested_is_refused(string filter)
+    {
+        var error = Assert.Throws<McpException>(() => ApiRequest.Validate(filter));
+
+        Assert.Contains("brace list", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -310,6 +375,28 @@ public class ApiRequestTests
         // the advice.
         Assert.Null(ApiRequest.ScopeHint(
             404, message, "https://vsrm.dev.azure.com/contoso/Project/_apis/release/releases"));
+    }
+
+    [Fact]
+    public void An_org_scoped_read_is_retried_on_the_url_without_its_project_segment()
+    {
+        var url = ApiRequest.Url(Org, "Project/_apis/tfvc/changesets/100/changes", "$top=5", host: null);
+
+        Assert.Equal(
+            "https://dev.azure.com/contoso/_apis/tfvc/changesets/100/changes?$top=5&api-version=7.1",
+            ApiRequest.WithoutProject(url, "Project/_apis/tfvc/changesets/100/changes"));
+        Assert.Equal(
+            "https://dev.azure.com/contoso/_apis/tfvc/changesets?api-version=7.1",
+            ApiRequest.WithoutProject(
+                "https://dev.azure.com/contoso/Project/_apis/tfvc/changesets?api-version=7.1",
+                "/Project/_apis/tfvc/changesets"));
+
+        // Null is what stops the retry repeating: an unprefixed path has nothing left to drop.
+        Assert.Null(ApiRequest.WithoutProject(
+            "https://dev.azure.com/contoso/_apis/tfvc/changesets?api-version=7.1", "_apis/tfvc/changesets"));
+        Assert.Null(ApiRequest.WithoutProject(
+            "https://dev.azure.com/contoso/Project/_apis/x?api-version=7.1",
+            "https://dev.azure.com/contoso/Project/_apis/x"));
     }
 
     [Theory]

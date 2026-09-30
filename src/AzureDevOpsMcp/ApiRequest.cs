@@ -19,7 +19,7 @@ internal static class ApiRequest
     internal const string Redacted = "[redacted]";
 
     /// <summary>
-    /// The four hosts of one organization (see <c>docs/azure-devops-server.md</c>). `host` names
+    /// The hosts of one organization (see <c>docs/azure-devops-server.md</c>). `host` names
     /// one of these. Nothing else is reachable: the request carries this server's bearer token,
     /// which belongs to this organization alone.
     /// </summary>
@@ -30,6 +30,7 @@ internal static class ApiRequest
             ["vsrm"] = Deployments.VsrmBaseUrl,
             ["search"] = Search.BaseUrl,
             ["vssps"] = Writes.VsspsBaseUrl,
+            ["feeds"] = Deployments.FeedsBaseUrl,
         };
 
     /// <summary>
@@ -50,6 +51,7 @@ internal static class ApiRequest
         return normalized.Contains("/_apis/release/", StringComparison.OrdinalIgnoreCase) ? "vsrm"
             : normalized.Contains("/_apis/search/", StringComparison.OrdinalIgnoreCase) ? "search"
             : normalized.Contains("/_apis/identities", StringComparison.OrdinalIgnoreCase) ? "vssps"
+            : normalized.Contains("/_apis/packaging/", StringComparison.OrdinalIgnoreCase) ? "feeds"
             : "core";
     }
 
@@ -164,6 +166,25 @@ internal static class ApiRequest
         }
         return $"This route may be organization-scoped rather than project-scoped: try it without " +
                $"the '{prefix}/' prefix.";
+    }
+
+    /// <summary>
+    /// The url with the path's first segment, the project, removed: what a read is retried on after
+    /// <see cref="ScopeHint"/> says the route is organization-scoped. Null under the same conditions
+    /// as the hint (no first segment, a path already starting with _apis, an absolute url), which
+    /// is also what stops the retry from repeating.
+    /// </summary>
+    internal static string? WithoutProject(string url, string path)
+    {
+        var trimmed = path.TrimStart('/');
+        var slash = trimmed.IndexOf('/');
+        if (slash <= 0 || trimmed.StartsWith("_apis", StringComparison.OrdinalIgnoreCase) ||
+            trimmed[..slash].Contains(':', StringComparison.Ordinal))
+        {
+            return null;
+        }
+        var at = url.IndexOf("/" + trimmed, StringComparison.Ordinal);
+        return at < 0 ? null : url[..at] + url[(at + 1 + slash)..];
     }
 
     /// <summary>
@@ -282,31 +303,95 @@ internal static class ApiRequest
     /// <summary>
     /// A projection, not jq: dot-separated property names, <c>[]</c> to map over an array and
     /// <c>[n]</c> to index one. <c>value[].name</c>, <c>environments[].deployPhases[]</c>,
-    /// <c>count</c>. Anything it cannot express is a reason to read the whole response and narrow
-    /// the request instead. A segment that matches nothing yields null rather than an error, since
-    /// "no such field" is an answer.
+    /// <c>count</c>. A trailing brace list picks several paths per element and gives one object per
+    /// element keyed by the paths as written: <c>value[].{id,definition.name}</c>. A row keeps
+    /// whatever of its keys the element has, so rows stay aligned with the elements, which one call
+    /// per field cannot promise: a mapped step drops the elements lacking the field. Anything it
+    /// cannot express is a reason to read the whole response and narrow the request instead. A
+    /// path that matches nothing yields null rather than an error, since "no such field" is an
+    /// answer.
     /// </summary>
     internal static JsonNode? Filter(JsonNode? node, string filter)
     {
         Validate(filter);
-        var current = node;
-        foreach (var segment in Segments(filter))
+        var (prefix, items) = SplitSelect(filter);
+        var current = Walk(node, prefix);
+        if (items is null || current is null)
         {
-            current = Step(current, segment);
-            if (current is null)
+            return current;
+        }
+        if (current is JsonArray elements)
+        {
+            var rows = new JsonArray();
+            foreach (var element in elements)
+            {
+                rows.Add(Row(element, items));
+            }
+            return rows.Any(r => r is JsonObject { Count: > 0 }) ? rows : null;
+        }
+        var row = Row(current, items);
+        return row.Count > 0 ? row : null;
+    }
+
+    private static JsonObject Row(JsonNode? element, List<string> items)
+    {
+        var row = new JsonObject();
+        foreach (var item in items)
+        {
+            if (Walk(element, item) is { } value)
+            {
+                row[item] = value;
+            }
+        }
+        return row;
+    }
+
+    private static JsonNode? Walk(JsonNode? node, string path)
+    {
+        foreach (var segment in Segments(path))
+        {
+            node = Step(node, segment);
+            if (node is null)
             {
                 return null;
             }
         }
-        return current;
+        return node;
+    }
+
+    /// <summary>
+    /// Splits a trailing <c>{a,b.c}</c> off the path in front of it. Only that one form is
+    /// accepted: one group, last, not nested, no empty item. Null items means no group.
+    /// </summary>
+    private static (string Prefix, List<string>? Items) SplitSelect(string filter)
+    {
+        var open = filter.IndexOf('{');
+        if (open < 0)
+        {
+            return (filter, null);
+        }
+        var trimmed = filter.TrimEnd();
+        var close = trimmed.IndexOf('}');
+        var items = close > open
+            ? trimmed[(open + 1)..close].Split(',').Select(i => i.Trim()).ToList()
+            : [];
+        if (close != trimmed.Length - 1 || trimmed.IndexOf('{', open + 1) >= 0 ||
+            items.Count == 0 || items.Any(i => i.Length == 0))
+        {
+            throw new McpException(
+                "`filter` accepts one brace list, as the last step and not nested, with no empty " +
+                $"item: value[].{{id,buildNumber,definition.name}}. Rejected: {filter}");
+        }
+        return (filter[..open].TrimEnd().TrimEnd('.'), items);
     }
 
     /// <summary>
     /// The characters that mean this expression was written for a language this projection does not
-    /// speak. A JMESPath multi-select (<c>value[].{id: id, name: name}</c>) is the one that arrives:
-    /// <see cref="Segments"/> splits it on its dots into fragments matching no property, so every
+    /// speak. A JMESPath multi-select with aliases (<c>value[].{id: id, name: name}</c>) is the one
+    /// that arrives: split on its dots it yields fragments matching no property, so every
     /// <see cref="Step"/> misses and the result is empty exactly as an empty response is. Refusing
-    /// the expression is the only way to tell those apart.
+    /// the expression is the only way to tell those apart. Braces and commas are checked outside
+    /// the one brace list <see cref="SplitSelect"/> accepts.
     /// </summary>
     private static readonly (char Char, string Means)[] Unsupported =
     [
@@ -333,18 +418,23 @@ internal static class ApiRequest
     /// </summary>
     internal static void Validate(string filter)
     {
-        foreach (var (character, means) in Unsupported)
+        var (prefix, items) = SplitSelect(filter);
+        IEnumerable<string> parts = items is null ? [prefix] : items.Prepend(prefix);
+        foreach (var part in parts)
         {
-            if (!filter.Contains(character, StringComparison.Ordinal))
+            foreach (var (character, means) in Unsupported)
             {
-                continue;
+                if (!part.Contains(character, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                throw new McpException(
+                    $"`filter` contains '{character}', which reads as {means}. This is a projection, " +
+                    "not jq or JMESPath: dot-separated property names, [] to map over an array, [n] to " +
+                    "index one, and one trailing brace list of paths to pick several fields per " +
+                    "element. So value[].name, environments[].deployPhases[], count, " +
+                    $"value[].{{id,result,definition.name}}. Rejected: {filter}");
             }
-            throw new McpException(
-                $"`filter` contains '{character}', which reads as {means}. This is a projection, not " +
-                "jq or JMESPath: dot-separated property names, [] to map over an array, [n] to index " +
-                "one. So value[].name, environments[].deployPhases[], count. To pick several fields " +
-                "at once, omit `filter` and narrow with the endpoint's own $select or $top, or make " +
-                $"one call per field. Rejected: {filter}");
         }
     }
 

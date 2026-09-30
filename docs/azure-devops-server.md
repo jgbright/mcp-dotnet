@@ -32,7 +32,7 @@ A sign-in page comes back with a success status, not a 401 (see
 [authentication.md](authentication.md#azure-devops-one-resource-scope-and-a-200-that-means-401)).
 `ThrowIfSignInPage` guards both the JSON and the plain-text paths.
 
-## Four hosts, one organization
+## Five hosts, one organization
 
 Azure DevOps splits its APIs across hosts derived from the organization URL. Each derivation handles
 the legacy `{org}.visualstudio.com` spelling as well as `dev.azure.com/{org}`.
@@ -43,6 +43,7 @@ the legacy `{org}.visualstudio.com` spelling as well as `dev.azure.com/{org}`.
 | `vsrm.dev.azure.com/{org}` | Release definitions, releases, deployments, approvals | `Deployments.VsrmBaseUrl` |
 | `almsearch.dev.azure.com/{org}` | Code, work item and wiki search | `Search.BaseUrl` |
 | `vssps.dev.azure.com/{org}` | Identities | `Writes.VsspsBaseUrl` |
+| `feeds.dev.azure.com/{org}` | Azure Artifacts feeds and packages (`ado_api_request` only) | `Deployments.FeedsBaseUrl` |
 
 ## API versions
 
@@ -489,13 +490,18 @@ second, usually staler credential, failing for a reason nobody has checked, whil
 unused in this process. `ado_api_request` makes it another tool call.
 
 - **Only this organization is reachable.** A relative path is hung off the resolved host; an absolute
-  url is accepted only when its host and path prefix match one of the four hosts derived from
+  url is accepted only when its host and path prefix match one of the hosts derived from
   `ADO_MCP_ORG_URL`. The request carries this server's bearer token, so following a caller's url
   anywhere else would hand that token over.
 - **`host` is inferred from the path** (`/_apis/release/` → vsrm, `/_apis/search/` → search,
-  `/_apis/identities` → vssps) and an explicit value wins. Getting it wrong is a 404, not a redirect.
-  Most resources are project-scoped, so a path usually starts with the project:
-  `Project/_apis/release/definitions/31`, not `_apis/release/definitions/31`.
+  `/_apis/identities` → vssps, `/_apis/packaging/` → feeds, the Azure Artifacts host) and an
+  explicit value wins. Getting it wrong is a 404, not a redirect.
+  Most routes are project-scoped (`Project/_apis/release/definitions/31`), and some are
+  organization-scoped (TFVC changesets, identities, agent pools). The service answers a
+  project-prefixed request to an organization-scoped route with a 404 naming "the controller for
+  path", so a GET or HEAD that gets that answer is retried once without the first segment
+  (`ApiRequest.WithoutProject`), logged at Information, and the result's `url` is the one that
+  answered. A write is not re-aimed; it fails with the hint to drop the prefix.
 - **`api-version=7.1` is appended** when the path names no version; the service refuses a request
   without one.
 - **The body's media type is inferred from the body.** A non-empty array of objects each carrying
@@ -508,7 +514,13 @@ unused in this process. `ado_api_request` makes it another tool call.
   passthrough has no type for the response.
 - **`filter` is a projection, not jq**: dot-separated names, `[]` to map over an array (flattening one
   level, so `environments[].deployPhases[].workflowTasks[].name` reads as one list) and `[n]` to
-  index one. A filter matching nothing yields `json: null`, which is an answer.
+  index one. A filter matching nothing yields `json: null`, which is an answer. One trailing brace
+  list picks several paths per element, `value[].{id,result,definition.name}`, giving one object per
+  element keyed by the paths as written. Each row keeps the keys its element has. That is the reason
+  for the form: a mapped step drops elements lacking the field, so `value[].id` and `value[].result`
+  fetched separately are different lengths whenever a build is still running, and lining them up by
+  position pairs the wrong values. Key aliases (`{id: id}`), nesting and a brace list before the last
+  step are refused.
 - **Non-GET requires `ADO_MCP_ALLOW_WRITE=true`**, checked before anything else. The tool is annotated
   `ReadOnly` because it reads under every configuration this server ships with; a client gating
   confirmation on that annotation will not prompt for a write made through it with the gate open,
