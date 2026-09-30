@@ -328,7 +328,7 @@ Read:
 | `list_deployment_groups` | The machines classic release stages deploy to, with their tags and agent status. Not the Environments YAML pipelines use |
 | `search_release_definitions` | Where a name or value appears across every definition: in a variable, a task input, or both |
 | `list_releases` | Releases of one definition, newest first, with every environment's status |
-| `get_release` | Artifacts, pending approvals, and each failed task with its phase, job, errors and log tail; `include_tasks` lists every task and `task_log` fetches one's log |
+| `get_release` | Artifacts, pending approvals, the machines each stage deployed to, and each failed task with its phase, job, errors and log tail; `include_tasks` lists every task and `task_log` fetches one's log |
 | `wait_for_release` | Polls one environment until it stops moving, then reports like `get_release` |
 | `search_code` | Needs the Code Search extension, see below |
 | `search_work_items` | Full text. `list_work_items` is the structured query |

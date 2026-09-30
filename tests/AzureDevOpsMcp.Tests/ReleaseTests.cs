@@ -780,3 +780,66 @@ public class ReleaseToolTests : IDisposable
         Assert.Contains("ADO_MCP_ALLOW_WRITE=true", e.Message);
     }
 }
+
+/// <summary>
+/// A deployment-group phase runs one job per machine, and which machines got a release is the
+/// question after a deploy. Shaped after a real two-machine phase, with placeholder names.
+/// </summary>
+public class ReleaseJobTests
+{
+    private static readonly DateTimeOffset T0 = new(2026, 9, 29, 20, 29, 0, TimeSpan.Zero);
+
+    private static WireDeploymentJob Job(int rank, string agent, string status, params string[] tasks) => new(
+        new WireReleaseTask(10 + rank, "Release", status, rank, agent, T0.AddMinutes(rank), T0.AddMinutes(rank + 1), null, null),
+        [.. tasks.Select((t, i) => new WireReleaseTask(i + 1, t, status, i + 1, agent, null, null, $"log/{agent}/{i}", null))]);
+
+    private static WireReleaseEnvironment Stage(params WireReleaseDeployPhase[] phases) =>
+        new(10, "Deploy to QA", "rejected", 1, 7, "Manual",
+            [new WireDeploymentAttempt(1, 1, "failed", "PhaseFailed", null, null, "manual", null, [.. phases])],
+            null, null);
+
+    private static WireReleaseEnvironment TwoMachines() => Stage(
+        new WireReleaseDeployPhase("Deploy Files", "machineGroupBasedDeployment", 1, "failed", null,
+            [Job(2, "WEB-002", "failed", "Copy Files"), Job(1, "WEB-001", "succeeded", "Copy Files")]));
+
+    [Fact]
+    public void A_stage_on_several_machines_lists_one_job_per_machine_without_being_asked()
+    {
+        var jobs = Mapping.ReleaseEnvironment(TwoMachines(), []).Jobs!;
+
+        Assert.Equal(["WEB-002", "WEB-001"], jobs.Select(j => j.Agent)); // as listed, like the tasks
+        Assert.Null(jobs[1].Status); // succeeded says nothing
+        Assert.Equal("failed", jobs[0].Status);
+        Assert.Equal("Deploy Files", jobs[1].Phase);
+        Assert.Equal(T0.AddMinutes(1), jobs[1].Started);
+        Assert.Equal(T0.AddMinutes(2), jobs[1].Finished);
+    }
+
+    [Fact]
+    public void A_single_job_stage_lists_its_job_only_when_tasks_are_asked_for()
+    {
+        // An agent-phase stage has one job, and a row for it would repeat the stage.
+        var single = Stage(new WireReleaseDeployPhase("Run on agent", "agentBasedDeployment", 1, "succeeded", null,
+            [Job(1, "Hosted Agent", "succeeded", "Deploy")]));
+
+        Assert.Null(Mapping.ReleaseEnvironment(single, []).Jobs);
+        Assert.Equal("Hosted Agent", Assert.Single(Mapping.ReleaseEnvironment(single, [], [], includeTasks: true).Jobs!).Agent);
+    }
+
+    [Fact]
+    public void Each_listed_task_names_the_machine_it_ran_on()
+    {
+        var tasks = Mapping.ReleaseTasks(TwoMachines());
+
+        Assert.Equal(["WEB-002", "WEB-001"], tasks.Select(t => t.Task.Agent));
+        Assert.Equal(["failed", "succeeded"], tasks.Select(t => t.Task.Status));
+    }
+
+    [Fact]
+    public void A_stage_that_has_not_deployed_has_no_jobs()
+    {
+        var notStarted = new WireReleaseEnvironment(11, "Production", "notStarted", 2, 8, null, null, null, null);
+
+        Assert.Null(Mapping.ReleaseEnvironment(notStarted, [], [], includeTasks: true).Jobs);
+    }
+}

@@ -273,8 +273,16 @@ need no data file.
 
 `get_release` reports failures and counts what passed, which is right by default and wrong when the
 question is "what did this stage actually run". `include_tasks=true` lists every task of the latest
-attempt with its status and times, and `skipped.succeeded` then stops counting them: a task cannot
-be both listed and reported as filtered out.
+attempt with its status, times and `agent`, and `skipped.succeeded` then stops counting them: a
+task cannot be both listed and reported as filtered out.
+
+The other question after a deploy is which machines got it. A deployment-group phase runs one
+deployment job per machine, and the job record names the machine in `agentName`, so each stage
+carries `jobs`: one row per job with its phase, `agent`, status (omitted when it succeeded) and
+times. The rows are there whenever a stage has more than one job, because that is the deployment-group
+case and the list is short. A single-job stage gets its row only with `include_tasks`, since on an
+agent phase the row would just repeat the stage. The data is already in the `$expand=tasks` read, so
+the rows cost no request.
 
 `task_log` fetches one task's log, often the most direct statement of what a deploy wrote (the File
 Transform task logs every key it substituted). **Neither half of a release task's identity is

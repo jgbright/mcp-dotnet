@@ -639,7 +639,17 @@ public sealed record ReleaseEnvironmentDetailDto(
     List<FailedStepDto>? FailedSteps,
     // Every task of the latest attempt, only when include_tasks asked for them. Otherwise a
     // succeeded stage says nothing about what it ran beyond the `skipped.succeeded` count.
-    List<ReleaseTaskDto>? Tasks);
+    List<ReleaseTaskDto>? Tasks,
+    // One row per deployment job, which in a deployment-group phase is one per machine. Always
+    // when there is more than one; a single job only with include_tasks, since it repeats the stage.
+    List<ReleaseJobDto>? Jobs = null);
+
+/// <summary>
+/// One deployment job of a stage's latest attempt: where it ran (<c>agent</c>, the machine in a
+/// deployment-group phase) and how it went. <c>status</c> is omitted when it succeeded.
+/// </summary>
+public sealed record ReleaseJobDto(
+    string? Phase, string? Name, string? Agent, string? Status, DateTimeOffset? Started, DateTimeOffset? Finished);
 
 public sealed record PendingApprovalDto(int Id, string? Type, string? Approver, DateTimeOffset? Created);
 
@@ -653,6 +663,8 @@ public sealed record ReleaseTaskDto(
     int Id,
     string? Phase,
     string? Job,
+    // The machine the task ran on, so a failure on one machine of several names it.
+    string? Agent,
     string? Name,
     string? Status,
     DateTimeOffset? Started,
@@ -1718,10 +1730,12 @@ internal static class Mapping
     /// that part cannot be pure).
     /// </summary>
     internal static ReleaseEnvironmentDetailDto ReleaseEnvironment(
-        WireReleaseEnvironment env, List<FailedStepDto> failedSteps, List<ReleaseTaskDto>? tasks = null)
+        WireReleaseEnvironment env, List<FailedStepDto> failedSteps, List<ReleaseTaskDto>? tasks = null,
+        bool includeTasks = false)
     {
         var attempt = LatestAttempt(env);
         var pending = PendingApprovals(env).Select(PendingApproval).ToList();
+        var jobs = ReleaseJobs(env);
         return new ReleaseEnvironmentDetailDto(
             env.Id,
             env.Name,
@@ -1743,8 +1757,33 @@ internal static class Mapping
             attempt?.RequestedFor?.DisplayName,
             pending.Count > 0 ? pending : null,
             failedSteps.Count > 0 ? failedSteps : null,
-            tasks is { Count: > 0 } ? tasks : null);
+            tasks is { Count: > 0 } ? tasks : null,
+            jobs.Count > 1 || (includeTasks && jobs.Count > 0) ? jobs : null);
     }
+
+    /// <summary>
+    /// The deployment jobs of the stage's latest attempt: phases in rank order, jobs as the
+    /// service lists them, the same order <see cref="ReleaseTasks"/> walks. The job record is
+    /// where the machine is named (<c>agentName</c>); its tasks carry the same name again.
+    /// </summary>
+    internal static List<ReleaseJobDto> ReleaseJobs(WireReleaseEnvironment env) =>
+        LatestAttempt(env) is not { } attempt
+            ? []
+            : [.. (attempt.ReleaseDeployPhases ?? []).OrderBy(p => p.Rank ?? 0)
+                .SelectMany(phase => (phase.DeploymentJobs ?? [])
+                    .Select(j => j.Job)
+                    .OfType<WireReleaseTask>()
+                    .Select(j => new ReleaseJobDto(
+                        phase.Name,
+                        j.Name,
+                        j.AgentName,
+                        // Both spellings of success; partiallySucceeded is worth saying.
+                        j.Status is { } s && (s.Equals("succeeded", StringComparison.OrdinalIgnoreCase) ||
+                                              s.Equals("success", StringComparison.OrdinalIgnoreCase))
+                            ? null
+                            : j.Status,
+                        j.StartTime,
+                        j.FinishTime)))];
 
     /// <summary>
     /// Every task of the stage's latest attempt, in the order it ran, with the phase and job it
@@ -1766,7 +1805,8 @@ internal static class Mapping
                 {
                     tasks.Add(new ReleaseTaskEntry(
                         new ReleaseTaskDto(
-                            task.Id, phase.Name, job.Job?.Name, task.Name, task.Status,
+                            task.Id, phase.Name, job.Job?.Name, task.AgentName ?? job.Job?.AgentName,
+                            task.Name, task.Status,
                             task.StartTime, task.FinishTime, null, null),
                         task.LogUrl));
                 }

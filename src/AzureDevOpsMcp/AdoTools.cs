@@ -1266,7 +1266,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "`pendingApprovals` entry is waiting for a person, not broken. An environment has " +
                  "no `failed` status: a deployment that failed reports as `rejected` with " +
                  "`operationStatus: PhaseFailed`, which is what tells it apart from an approval " +
-                 "somebody turned down. " +
+                 "somebody turned down. A stage that ran on several machines lists `jobs`, one per " +
+                 "machine with its `agent` and status. " +
                  "`skipped.succeeded` counts the tasks that are not reported because they passed; " +
                  "set include_tasks=true to list every task each stage ran instead of counting the " +
                  "ones that passed, and task_log=<id or 'stage / task'> to fetch one of their logs, " +
@@ -1358,7 +1359,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             }
 
             environments.Add(Mapping.ReleaseEnvironment(
-                env, reported, [.. tasks[index].Select(t => t.Task)]));
+                env, reported, [.. tasks[index].Select(t => t.Task)], includeTasks));
         }
 
         var detail = Mapping.ReleaseDetail(
