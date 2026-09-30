@@ -233,8 +233,48 @@ internal sealed record WireVariableGroup(int Id, string? Name);
 
 internal sealed record WireBuildRepository(string? Type, string? Name, Dictionary<string, string>? Properties);
 
-/// <summary>A build definition read individually. The list shape (WirePipeline) has no repository.</summary>
-internal sealed record WireBuildDefinitionDetail(int Id, string? Name, WireBuildRepository? Repository);
+/// <summary>
+/// A build definition read individually, or listed with <c>includeAllProperties=true</c>, which
+/// returns the same shape. The pipelines listing (WirePipeline) has none of it. A variable group
+/// arrives embedded with its variables; only the id and name are ever read.
+/// </summary>
+internal sealed record WireBuildDefinitionDetail(
+    int Id, string? Name, WireBuildRepository? Repository,
+    string? Path = null, int? Revision = null, WireDefinitionRef? DraftOf = null,
+    WireBuildQueue? Queue = null, WireBuildProcess? Process = null,
+    Dictionary<string, WireReleaseVariable>? Variables = null,
+    List<WireVariableGroup>? VariableGroups = null, List<WireBuildTrigger>? Triggers = null);
+
+internal sealed record WireDefinitionRef(int Id, string? Name);
+
+internal sealed record WireBuildQueue(int? Id, string? Name, WireDefinitionRef? Pool);
+
+/// <summary><c>type</c> 1 is the designer, 2 is YAML, whose steps live in the file, not here.</summary>
+internal sealed record WireBuildProcess(int? Type, string? YamlFilename, List<WireBuildPhase>? Phases);
+
+internal sealed record WireBuildPhase(string? Name, string? Condition, List<WireBuildStep>? Steps);
+
+/// <summary>A designer step. It names its task by id only; the name comes from the task catalog.</summary>
+internal sealed record WireBuildStep(
+    string? DisplayName, bool? Enabled, string? Condition, WireBuildTaskRef? Task,
+    Dictionary<string, string?>? Inputs);
+
+internal sealed record WireBuildTaskRef(string? Id, string? VersionSpec);
+
+/// <summary>
+/// One trigger. <c>triggerType</c> decides which fields mean anything: branch and path filters for
+/// continuousIntegration and gatedCheckIn, <c>schedules</c> for schedule.
+/// </summary>
+internal sealed record WireBuildTrigger(
+    string? TriggerType, List<string>? BranchFilters, List<string>? PathFilters, bool? BatchChanges,
+    List<WireBuildSchedule>? Schedules);
+
+internal sealed record WireBuildSchedule(
+    List<string>? BranchFilters, string? TimeZoneId, int? StartHours, int? StartMinutes,
+    JsonElement? DaysToBuild);
+
+/// <summary>An entry of the task catalog, <c>_apis/distributedtask/tasks</c>.</summary>
+internal sealed record WireTaskDefinition(string? Id, string? Name);
 
 // Pipeline (modern/YAML) deployables. Deployments into an ADO Environment arrive as
 // distributedtask environmentdeploymentrecords, newest first. A record's `owner` is the run
@@ -756,6 +796,66 @@ public sealed record ReleaseDefinitionMatchDto(
 /// </summary>
 public sealed record ReleaseDefinitionSearchResult(
     List<ReleaseDefinitionMatchDto> Results, int Scanned, bool? HasMore);
+
+/// <summary>
+/// A build definition as configuration. <c>draftOf</c> names the definition this one is a draft
+/// of. <c>mappings</c> is the TFVC workspace, <c>cloaked</c> set on the paths it excludes.
+/// <c>yamlFile</c> replaces <c>phases</c> on a YAML definition, whose steps are in the file.
+/// </summary>
+public sealed record BuildDefinitionDetailDto(
+    int Id,
+    string? Name,
+    string? Folder,
+    int? Revision,
+    int? DraftOf,
+    string? Queue,
+    string? Pool,
+    string? RepositoryType,
+    List<TfvcMappingDto>? Mappings,
+    List<BuildTriggerDto>? Triggers,
+    List<ReleaseVariableDto>? Variables,
+    List<VariableGroupDto>? VariableGroups,
+    string? YamlFile,
+    List<BuildPhaseConfigDto>? Phases,
+    string? WebUrl);
+
+public sealed record TfvcMappingDto(string ServerPath, bool? Cloaked);
+
+/// <summary><c>paths</c> keep the service's own +/- include and exclude prefixes.</summary>
+public sealed record BuildTriggerDto(
+    string? Type, List<string>? Branches, List<string>? Paths, bool? Batch,
+    List<BuildScheduleDto>? Schedules);
+
+/// <summary><c>days</c> is the service's own value: a day list or its flags number.</summary>
+public sealed record BuildScheduleDto(string? Days, string At, string? TimeZone, List<string>? Branches);
+
+public sealed record BuildPhaseConfigDto(string? Name, string? Condition, List<BuildStepConfigDto> Steps);
+
+/// <summary>
+/// One configured step. <c>task</c> is the task's name and version spec (<c>Npm@1.*</c>), or its
+/// id when the catalog did not name it. Empty inputs are dropped, as for a release task.
+/// </summary>
+public sealed record BuildStepConfigDto(
+    string? Name, string? Task, bool? Disabled, string? Condition, Dictionary<string, string>? Inputs);
+
+/// <summary>
+/// One place a pattern matched across the project's build definitions. <c>kind</c> is variable,
+/// taskInput, mapping (key map or cloak, value the server path) or task (value the task and its
+/// id). <c>phase</c> and <c>step</c> are set for the two step kinds.
+/// </summary>
+public sealed record BuildDefinitionMatchDto(
+    int DefinitionId,
+    string? Definition,
+    string Kind,
+    string? Phase,
+    string? Step,
+    string Key,
+    string? Value,
+    bool? IsSecret,
+    string MatchedIn);
+
+public sealed record BuildDefinitionSearchResult(
+    List<BuildDefinitionMatchDto> Results, int Scanned, bool? HasMore);
 
 /// <summary>
 /// A raw REST response. <c>json</c> carries the parsed body when it is JSON and fits the cap;
@@ -2025,6 +2125,78 @@ internal static class Mapping
 
     internal static string? ReleaseDefinitionUrl(string orgUrl, string? project, int definitionId) =>
         project is null ? null : $"{orgUrl}/{Escape(project)}/_release?definitionId={definitionId}";
+
+    internal static string? BuildDefinitionUrl(string orgUrl, string? project, int definitionId) =>
+        project is null ? null : $"{orgUrl}/{Escape(project)}/_build?definitionId={definitionId}";
+
+    /// <summary>
+    /// A build definition as configuration. <paramref name="taskNames"/> is the task catalog by
+    /// id, which may be empty when the catalog could not be read; a step then names its task id.
+    /// </summary>
+    internal static BuildDefinitionDetailDto BuildDefinitionDetail(
+        WireBuildDefinitionDetail d, IReadOnlyDictionary<string, string> taskNames, bool includeSteps,
+        string orgUrl, string? project)
+    {
+        var yaml = d.Process?.Type == 2;
+        return new(
+            d.Id,
+            d.Name,
+            string.Equals(d.Path, "\\", StringComparison.Ordinal) ? null : d.Path,
+            d.Revision,
+            d.DraftOf?.Id,
+            d.Queue?.Name,
+            d.Queue?.Pool?.Name is { } pool && pool != d.Queue.Name ? pool : null,
+            d.Repository?.Type,
+            Deployments.TfvcWorkspace(TfvcMappingJson(d)) is { Count: > 0 } mappings ? mappings : null,
+            (d.Triggers ?? []).Select(BuildTrigger).ToList() is { Count: > 0 } triggers ? triggers : null,
+            ReleaseVariables(d.Variables),
+            (d.VariableGroups ?? []).Select(g => new VariableGroupDto(g.Id, g.Name)).ToList()
+                is { Count: > 0 } groups ? groups : null,
+            yaml ? d.Process?.YamlFilename : null,
+            includeSteps && !yaml
+                ? (d.Process?.Phases ?? []).Select(p => new BuildPhaseConfigDto(
+                        p.Name, Condition(p.Condition),
+                        (p.Steps ?? []).Select(s => BuildStep(s, taskNames)).ToList()))
+                    .ToList() is { Count: > 0 } phases ? phases : null
+                : null,
+            BuildDefinitionUrl(orgUrl, project, d.Id));
+    }
+
+    internal static string? TfvcMappingJson(WireBuildDefinitionDetail d) =>
+        d.Repository?.Properties?.GetValueOrDefault("tfvcMapping");
+
+    internal static BuildStepConfigDto BuildStep(WireBuildStep s, IReadOnlyDictionary<string, string> taskNames) => new(
+        s.DisplayName,
+        TaskLabel(s.Task, taskNames),
+        s.Enabled is false ? true : null,
+        Condition(s.Condition),
+        (s.Inputs ?? [])
+            .Where(i => !string.IsNullOrWhiteSpace(i.Value))
+            .OrderBy(i => i.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(i => i.Key, i => i.Value!) is { Count: > 0 } inputs ? inputs : null);
+
+    /// <summary><c>Npm@1.*</c>, or the task id in place of the name when the catalog lacks it.</summary>
+    internal static string? TaskLabel(WireBuildTaskRef? task, IReadOnlyDictionary<string, string> taskNames)
+    {
+        if (task?.Id is not { Length: > 0 } id)
+        {
+            return null;
+        }
+        var name = taskNames.TryGetValue(id, out var known) ? known : id;
+        return task.VersionSpec is { Length: > 0 } version ? $"{name}@{version}" : name;
+    }
+
+    internal static BuildTriggerDto BuildTrigger(WireBuildTrigger t) => new(
+        t.TriggerType,
+        t.BranchFilters is { Count: > 0 } branches ? branches : null,
+        t.PathFilters is { Count: > 0 } paths ? paths : null,
+        t.BatchChanges is true ? true : null,
+        (t.Schedules ?? []).Select(s => new BuildScheduleDto(
+                s.DaysToBuild is { } days ? days.ToString() : null,
+                $"{s.StartHours ?? 0:00}:{s.StartMinutes ?? 0:00}",
+                s.TimeZoneId,
+                s.BranchFilters is { Count: > 0 } b ? b : null))
+            .ToList() is { Count: > 0 } schedules ? schedules : null);
 
     /// <summary>A $/-rooted path is TFVC and browses under _versionControl. Anything else is git.</summary>
     internal static string? CodeUrl(string orgUrl, string project, WireCodeResult r) =>

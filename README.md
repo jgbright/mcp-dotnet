@@ -320,6 +320,8 @@ Read:
 | `list_pipeline_runs` | |
 | `get_pipeline_run` | Reports each failed task with its stage, job, errors and log tail, and what the run was built from |
 | `wait_for_pipeline_run` | Polls until the run finishes, then reports like `get_pipeline_run`. A timeout returns the run as it stands with `timedOut: true` |
+| `get_build_definition` | How a build is configured: TFVC mappings, triggers, variables, and each step with its task and inputs |
+| `search_build_definitions` | Where a path, task, input or variable appears across every build definition, in one request |
 | `list_release_definitions` | Classic release pipelines, with the environments each deploys to |
 | `get_release_definition` | How one is configured: variables at both scopes, variable groups, and each environment's tasks with their inputs and the deployment group and tags each phase targets |
 | `get_release_definition_targets` | Where each stage lands: its deployment group and the machines its tags select right now. An empty `machines` list is a stage that would deploy to nothing |

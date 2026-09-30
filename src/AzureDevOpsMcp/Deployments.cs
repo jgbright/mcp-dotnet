@@ -149,7 +149,11 @@ internal static class Deployments
     /// definition's own answer to "which paths feed this build". The value arrives as a JSON
     /// string inside repository.properties.
     /// </summary>
-    internal static List<string> ParseTfvcMappings(string? tfvcMappingJson)
+    internal static List<string> ParseTfvcMappings(string? tfvcMappingJson) =>
+        TfvcWorkspace(tfvcMappingJson).Where(m => m.Cloaked is null).Select(m => m.ServerPath).ToList();
+
+    /// <summary>The whole workspace, cloaks included, in the definition's own order.</summary>
+    internal static List<TfvcMappingDto> TfvcWorkspace(string? tfvcMappingJson)
     {
         if (string.IsNullOrWhiteSpace(tfvcMappingJson))
         {
@@ -157,10 +161,12 @@ internal static class Deployments
         }
         var parsed = JsonSerializer.Deserialize<WireTfvcMappingFile>(tfvcMappingJson, AdoClient.Json);
         return (parsed?.Mappings ?? [])
-            .Where(m => string.Equals(m.MappingType, "map", StringComparison.OrdinalIgnoreCase))
-            .Select(m => m.ServerPath)
-            .OfType<string>()
-            .Where(p => p.Length > 0)
+            .Where(m => m.ServerPath is { Length: > 0 } &&
+                        (string.Equals(m.MappingType, "map", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(m.MappingType, "cloak", StringComparison.OrdinalIgnoreCase)))
+            .Select(m => new TfvcMappingDto(
+                m.ServerPath!,
+                string.Equals(m.MappingType, "cloak", StringComparison.OrdinalIgnoreCase) ? true : null))
             .ToList();
     }
 

@@ -700,6 +700,124 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         }
     });
 
+    [McpServerTool(Name = "get_build_definition", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Read one build pipeline definition as configuration: what it is set up " +
+                 "to do, rather than what a run of it did. Returns its folder, revision, queue and " +
+                 "pool, repository type and TFVC workspace mappings (`cloaked` on excluded paths), " +
+                 "triggers with their branch and path filters and schedules, variables, variable " +
+                 "groups by id and name, and (include_steps, on by default) each phase's steps in " +
+                 "order with the task and version they run and their non-empty **inputs**, which " +
+                 "say which folder a step works in and which files it touches. A secret variable " +
+                 "comes back as its name with `isSecret: true` and no value, always. A YAML " +
+                 "definition reports `yamlFile` instead of steps. `definition` may be a numeric id " +
+                 "or a name; search_build_definitions finds one by what it maps or runs.")]
+    public Task<BuildDefinitionDetailDto> GetBuildDefinition(
+        [Description("Build definition (pipeline) id or name")] string definition,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Include each phase's steps and their inputs (default true)")] bool include_steps = true,
+        CancellationToken ct = default) => Run("get_build_definition",
+        A("definition", definition) + A("project", project) + A("include_steps", include_steps), async () =>
+    {
+        var client = await ado.GetClientAsync(ct);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+        var resolved = await ResolvePipelineAsync(client, resolvedProject.Id, definition, ct);
+        var wire = await client.GetAsync<WireBuildDefinitionDetail>(
+            $"{Escape(resolvedProject.Id)}/_apis/build/definitions/{resolved.Id}?{Api}", ct);
+        var taskNames = include_steps ? await TaskNamesAsync(client, ct) : new Dictionary<string, string>();
+        return Mapping.BuildDefinitionDetail(wire, taskNames, include_steps, client.OrgUrl, resolvedProject.Name);
+    });
+
+    [McpServerTool(Name = "search_build_definitions", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. Find where a name or value appears across every build pipeline " +
+                 "definition in a project: in a variable, a step's input, a TFVC workspace mapping, " +
+                 "or the task a step runs (`scope`: variables, task_inputs, mappings, tasks, or all). " +
+                 "It answers \"which CI build maps $/Project/App\" or \"which definitions " +
+                 "use the npm task\" in one call. Each hit names the definition, the phase and step " +
+                 "for a step hit, the key, the value, and whether it matched the name or the value. " +
+                 "A secret matches on its name only. `pattern` is a case-insensitive substring " +
+                 "unless regex=true. `scanned` says how many definitions were read, and `hasMore` " +
+                 "that the scan or the limit cut it short.")]
+    public Task<BuildDefinitionSearchResult> SearchBuildDefinitions(
+        [Description("Name or text to look for, e.g. $/Project/App or Npm")] string pattern,
+        [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
+        [Description("Where to look: variables, task_inputs, mappings, tasks, or all (default all)")] string scope = "all",
+        [Description("Treat `pattern` as a regular expression (default false)")] bool regex = false,
+        [Description("Maximum matches to return (default 50, max 500)")] int limit = 50,
+        CancellationToken ct = default) => Run("search_build_definitions",
+        A("pattern", pattern) + A("project", project) + A("scope", scope) + A("regex", regex) +
+        A("limit", limit), async () =>
+    {
+        limit = Math.Clamp(limit, 1, 500);
+        var parsedScope = BuildConfig.ParseScope(scope);
+        var matcher = ReleaseConfig.Matcher(pattern, regex);
+
+        var client = await ado.GetClientAsync(ct);
+        var resolvedProject = await ResolveProjectAsync(client, project, ct);
+        // includeAllProperties makes the listing carry each definition whole, so the scan is one
+        // request rather than one per definition. One over the cap answers "there are more".
+        var definitions = await client.GetAsync<ListResponse<WireBuildDefinitionDetail>>(
+            $"{Escape(resolvedProject.Id)}/_apis/build/definitions?{Api}&includeAllProperties=true" +
+            $"&$top={BuildConfig.ScanCap + 1}", ct);
+        var all = definitions.Value ?? [];
+        var capped = all.Count > BuildConfig.ScanCap;
+        if (capped)
+        {
+            log.Line(LogLevel.Warning, Ev.Page,
+                "build definition scan capped" + A("cap", BuildConfig.ScanCap) + A("project", resolvedProject.Name));
+        }
+        var taskNames = parsedScope.Tasks ? await TaskNamesAsync(client, ct) : new Dictionary<string, string>();
+
+        var results = new List<BuildDefinitionMatchDto>();
+        var scanned = 0;
+        var truncated = false;
+        foreach (var definition in all.Take(BuildConfig.ScanCap).OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            scanned++;
+            foreach (var hit in BuildConfig.Matches(definition, parsedScope, taskNames, matcher))
+            {
+                if (results.Count >= limit)
+                {
+                    truncated = true;
+                    break;
+                }
+                results.Add(hit);
+            }
+            if (truncated)
+            {
+                break;
+            }
+        }
+        return new BuildDefinitionSearchResult(results, scanned, capped || truncated ? true : null);
+    });
+
+    /// <summary>
+    /// The task catalog by id, for naming a build step's task. Like the variable group names, a
+    /// failure here is logged and swallowed: the step still names its task by id.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, string>> TaskNamesAsync(AdoClient client, CancellationToken ct)
+    {
+        try
+        {
+            var response = await client.GetAsync<ListResponse<WireTaskDefinition>>(
+                $"_apis/distributedtask/tasks?{Api}", ct);
+            var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var task in response.Value ?? [])
+            {
+                if (task.Id is { Length: > 0 } id && task.Name is { Length: > 0 } name)
+                {
+                    names.TryAdd(id, name);
+                }
+            }
+            return names;
+        }
+        catch (AdoApiException e)
+        {
+            log.Line(LogLevel.Warning, Ev.ToolFail,
+                "task catalog unavailable; naming steps by task id" + A("status", e.Status) + A("reason", e.Message));
+            return new Dictionary<string, string>();
+        }
+    }
+
     // ------------------------------------------------------- classic release tools
     //
     // Release Management answers on its own host (Deployments.VsrmBaseUrl) and keeps its own
@@ -2764,6 +2882,15 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             A("tasks", d.Environments.Sum(e => e.Phases?.Sum(p => p.Tasks?.Count ?? 0) ?? 0)) +
             A("secrets", d.Variables?.Count(v => v.IsSecret is true) ?? 0),
         ReleaseDefinitionSearchResult s =>
+            A("results", s.Results.Count) + A("scanned", s.Scanned) +
+            (s.HasMore is true ? A("hasMore", true) : ""),
+        BuildDefinitionDetailDto b =>
+            A("definition", b.Id) + A("name", b.Name) +
+            A("mappings", b.Mappings?.Count ?? 0) +
+            A("variables", b.Variables?.Count ?? 0) +
+            A("steps", b.Phases?.Sum(p => p.Steps.Count) ?? 0) +
+            A("secrets", b.Variables?.Count(v => v.IsSecret is true) ?? 0),
+        BuildDefinitionSearchResult s =>
             A("results", s.Results.Count) + A("scanned", s.Scanned) +
             (s.HasMore is true ? A("hasMore", true) : ""),
         ReleaseTargetsDto t =>

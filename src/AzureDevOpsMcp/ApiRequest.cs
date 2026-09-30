@@ -466,6 +466,12 @@ internal static class ApiRequest
                    "machines their tags select, in deploy order, without walking deployPhases by " +
                    "hand. get_release_definition returns the definition itself typed.";
         }
+        if (normalized.Contains("/_apis/build/definitions", StringComparison.OrdinalIgnoreCase))
+        {
+            return "get_build_definition returns a build definition typed: steps with their inputs, " +
+                   "TFVC mappings, triggers and variables. search_build_definitions finds which " +
+                   "definitions map a path, run a task or set a value, in one call.";
+        }
         return null;
     }
 

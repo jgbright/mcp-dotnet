@@ -182,6 +182,26 @@ Warning, and sets `hasMore`. Thirteen definitions take about three seconds.
 the whole answer. `search_release_definitions` matches a secret on its name only, never its value:
 matching on a value the tool refuses to return would leak it a bit at a time.
 
+### Build definitions as configuration
+
+`get_build_definition` and `search_build_definitions` answer the same question for CI builds:
+which folders a build maps, what triggers it, and what its steps do. Three things differ from the
+release side:
+
+- **A step names its task by id only** (`task.id` and `versionSpec`). The name comes from the task
+  catalog (`_apis/distributedtask/tasks`, organization-scoped, about a second to read). It is the
+  third lookup whose failure is logged and swallowed; a step then shows the task id in place of the
+  name.
+- **The listing carries whole definitions** when asked with `includeAllProperties=true`, so the
+  search is one request for the project rather than one per definition. The scan is capped at
+  `BuildConfig.ScanCap` (500).
+- **Variable groups arrive embedded with their variables.** Only the id and name are read, the
+  same rule as for release definitions.
+
+The TFVC workspace is reported whole, cloaks included (`cloaked: true`), where
+`deployment_status` uses only the mapped paths (`Deployments.ParseTfvcMappings`). A YAML
+definition reports its `yamlFile`, since its steps live in the file.
+
 ### Where a stage lands
 
 What a stage *runs* and where it *runs it* are separate configuration. Its deploy phase carries a
@@ -550,6 +570,7 @@ considerably more than `Not Found (404)`.
 | release definitions per project (`deployment_status`) | 500 | Warning: resolution may be incomplete |
 | release definitions per project (`list_release_definitions`) | `limit`, default 200, max 1000 | Paged to the limit |
 | release definitions read in full (`search_release_definitions`) | 200 | `hasMore` + Warning |
+| build definitions scanned (`search_build_definitions`) | 500, one request | `hasMore` + Warning |
 | deployment groups per project (`list_deployment_groups`) | `limit`, default 100, max 200 | Paged to the limit; one more request per group when machines are included |
 | deployment group reads (`get_release_definition_targets`) | one per distinct group | A group that fails to read is that phase's `error` |
 | `ado_api_request` response | `max_chars`, default 20000, max 200000 | Returned as truncated text instead of json |
@@ -564,7 +585,7 @@ considerably more than `Not Found (404)`.
 
 Read: `list_projects`, `list_repos`, `list_pull_requests`, `get_pull_request`,
 `wait_for_pull_request`, `list_work_items`, `get_work_item`, `get_work_items`, `list_pipelines`,
-`list_pipeline_runs`,
+`list_pipeline_runs`, `get_build_definition`, `search_build_definitions`,
 `get_pipeline_run`, `wait_for_pipeline_run`, `list_release_definitions`, `get_release_definition`,
 `get_release_definition_targets`, `list_deployment_groups`, `search_release_definitions`, `list_releases`,
 `get_release`, `wait_for_release`, `search_code`, `search_work_items`, `search_wiki`,
