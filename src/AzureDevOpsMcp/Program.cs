@@ -316,64 +316,12 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    // Sized like a system prompt. Only what a tool description cannot carry: how this server fails
-    // and what its silences mean.
-    const string instructions = """
-        Reads and writes one Azure DevOps organization, fixed by this server's environment.
-
-        Ids and names are interchangeable wherever a project, repository or pipeline is named: an
-        ambiguous or unknown name fails with the candidates listed, so re-call with one of them rather
-        than guessing. Project defaults to the server's configured project when omitted.
-
-        Absent fields are absent on purpose — results omit anything null or uninteresting, so a missing
-        field means "nothing to say", not "unknown". `skipped` counts records that were filtered out;
-        no `skipped` and no results means nothing matched. `hasMore` means the limit was reached, not
-        that the query was wrong.
-
-        Azure DevOps has two unrelated kinds of pipeline and this server keeps them apart by name. The
-        *_pipeline* tools mean build/YAML pipelines and their runs. The *_release* tools mean classic
-        release pipelines: a release definition has environments (stages), a release is one instance of
-        it, and each environment deploys separately. A release definition never appears in
-        list_pipelines, so "not found" there is not evidence it does not exist.
-
-        A release is history and a release definition is configuration, and only the second one says
-        what a deploy is set up to do — which variables it overrides and which files its tasks
-        rewrite. get_release_definition reads one, search_release_definitions finds either across the
-        project. No tool returns a value Azure DevOps marks secret; the name and `isSecret` are the
-        whole answer, and asking again another way will not produce it.
-
-        Where a stage lands is configuration too, and a stage's name is a label rather than evidence
-        of it. get_release_definition_targets resolves each stage to the machines its deployment
-        group and tags select now, and is the answer to "which servers does this touch";
-        deployment_status says what version is out, not where. Deployment groups are not the
-        Environments of YAML pipelines — the two share a word and nothing else.
-
-        When no tool covers what is needed, ado_api_request calls the REST API with this server's own
-        credential rather than sending you looking for a personal access token, which is how a
-        session ends up debugging a second, staler credential instead of the question it started
-        with. ado_auth_status says whether this server's credential still works, and reports a dead
-        one as an answer rather than a failure.
-
-        The write tools (create_work_item, update_work_item, add_pull_request_comment, run_pipeline,
-        deploy_release, approve_release) refuse unless ADO_MCP_ALLOW_WRITE=true in this server's
-        environment, and approve_release needs ADO_MCP_ALLOW_APPROVE=true as well. Those refusals are
-        configuration and will not change on retry — report it and stop.
-
-        Every error a tool call returns carries a req=N and the path of this server's log file. Quote
-        both when reporting a failure; they are what makes it diagnosable. A protocol-level refusal —
-        an unknown tool or method name — carries neither, because it never reached a tool.
-
-        An error naming an argument the tool does not take has been rejected before the tool ran, so
-        nothing happened: read the parameter list it gives you and call again. Parameter names are
-        snake_case.
-        """;
-
     var mcp = builder.Services
         // The SDK advertises the MCP `logging` capability unconditionally and McpServerOptions
         // cannot switch it off, so the advertisement overstates what a client gets. This server
         // never emits notifications/message; it logs to stderr and its own file, which is the
         // 2026-07-28 migration path off the deprecated logging feature.
-        .AddMcpServer(options => options.ServerInstructions = instructions);
+        .AddMcpServer(options => options.ServerInstructions = ServerInstructions);
 
     mcp = input is not null && output is not null
         ? mcp.WithStreamServerTransport(input, output)
@@ -410,4 +358,61 @@ IHost BuildMcpHost(Stream? input, Stream? output)
                     request.Services?.GetService<ILoggerFactory>()?.CreateLogger<AdoTools>()))));
 
     return builder.Build();
+}
+
+partial class Program
+{
+    // Sized like a system prompt, and ordered by importance: Claude Code keeps only the first 2,048
+    // characters of a server's instructions, so what has to survive that cut comes first and
+    // ServerInstructionsTests holds it under 2,000. Only what a tool description cannot carry: how
+    // this server fails and what its silences mean.
+    internal const string ServerInstructions = """
+        Reads and writes one Azure DevOps organization, fixed by this server's environment.
+
+        The write tools (create_work_item, update_work_item, add_pull_request_comment, run_pipeline,
+        deploy_release, approve_release) refuse unless ADO_MCP_ALLOW_WRITE=true in this server's
+        environment, and approve_release needs ADO_MCP_ALLOW_APPROVE=true as well. Those refusals are
+        configuration and will not change on retry — report it and stop.
+
+        Every error a tool call returns carries a req=N and the path of this server's log file. Quote
+        both when reporting a failure; they are what makes it diagnosable. A protocol-level refusal —
+        an unknown tool or method name — carries neither, because it never reached a tool.
+
+        Absent fields are absent on purpose — results omit anything null or uninteresting, so a missing
+        field means "nothing to say", not "unknown". `skipped` counts records that were filtered out;
+        no `skipped` and no results means nothing matched. `hasMore` means the limit was reached, not
+        that the query was wrong.
+
+        Azure DevOps has two unrelated kinds of pipeline and this server keeps them apart by name. The
+        *_pipeline* tools mean build/YAML pipelines and their runs. The *_release* tools mean classic
+        release pipelines: a release definition has environments (stages), a release is one instance of
+        it, and each environment deploys separately. A release definition never appears in
+        list_pipelines, so "not found" there is not evidence it does not exist.
+
+        An error naming an argument the tool does not take has been rejected before the tool ran, so
+        nothing happened: read the parameter list it gives you and call again. Parameter names are
+        snake_case.
+
+        Ids and names are interchangeable wherever a project, repository or pipeline is named: an
+        ambiguous or unknown name fails with the candidates listed, so re-call with one of them rather
+        than guessing. Project defaults to the server's configured project when omitted.
+
+        A release is history and a release definition is configuration, and only the second one says
+        what a deploy is set up to do — which variables it overrides and which files its tasks
+        rewrite. get_release_definition reads one, search_release_definitions finds either across the
+        project. No tool returns a value Azure DevOps marks secret; the name and `isSecret` are the
+        whole answer, and asking again another way will not produce it.
+
+        Where a stage lands is configuration too, and a stage's name is a label rather than evidence
+        of it. get_release_definition_targets resolves each stage to the machines its deployment
+        group and tags select now, and is the answer to "which servers does this touch";
+        deployment_status says what version is out, not where. Deployment groups are not the
+        Environments of YAML pipelines — the two share a word and nothing else.
+
+        When no tool covers what is needed, ado_api_request calls the REST API with this server's own
+        credential rather than sending you looking for a personal access token, which is how a
+        session ends up debugging a second, staler credential instead of the question it started
+        with. ado_auth_status says whether this server's credential still works, and reports a dead
+        one as an answer rather than a failure.
+        """;
 }

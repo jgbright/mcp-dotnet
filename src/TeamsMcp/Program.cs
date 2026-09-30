@@ -271,53 +271,12 @@ IHost BuildMcpHost(Stream? input, Stream? output)
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    // Sized like a system prompt. Only what a tool description cannot carry: how this server fails
-    // and what its silences mean.
-    const string instructions = """
-        Reads Microsoft Teams conversations, and sends messages, as the signed-in user.
-
-        Teams and channels are named or given by id, whichever the caller has: an ambiguous or unknown
-        name fails with the candidates listed, so re-call with one of them rather than guessing.
-
-        Message bodies arrive as plain text, not HTML — links are kept as "text (url)". A body cut at
-        `body_limit` is marked `truncated`; raise the limit and re-read rather than inferring the rest.
-
-        The search tools (search_messages, list_mentions, and the two waiters over them) read an index,
-        not the conversations: they reach every chat and channel at once, but a hit trails what was just
-        said by seconds or longer and carries a summary rather than a body. Treat one as an address — read
-        the conversation it names for the text, and do not conclude "nothing was said" from a search
-        that came back empty seconds after the fact.
-
-        Absent fields are absent on purpose — results omit anything null or uninteresting, so a missing
-        field means "nothing to say", not "unknown". `skipped` counts system events and deleted
-        messages that were filtered out; no `skipped` and no results means nothing matched.
-
-        A watch is a loop of waiter calls, not a single call: each one returns a `nextCursor` that the
-        next one passes back as `cursor`, and that round trip is the whole of resuming. Do not
-        reconstruct a cursor from a timestamp you saw in a result — the boundary is inclusive, so that
-        re-delivers the last message every time. A wait that timed out still returns a cursor and is
-        still the right thing to call again.
-
-        The sending and reaction tools (send_channel_message, send_chat_message,
-        react_to_chat_message, react_to_channel_message) refuse unless TEAMS_MCP_ALLOW_SEND=true in
-        this server's environment. That refusal is configuration and will not change on retry —
-        report it and stop.
-
-        Every error a tool call returns carries a req=N and the path of this server's log file. Quote
-        both when reporting a failure; they are what makes it diagnosable. A protocol-level refusal —
-        an unknown tool or method name — carries neither, because it never reached a tool.
-
-        An error naming an argument the tool does not take has been rejected before the tool ran, so
-        nothing happened: read the parameter list it gives you and call again. Parameter names are
-        snake_case.
-        """;
-
     var mcp = builder.Services
         // The SDK advertises the MCP `logging` capability unconditionally and McpServerOptions
         // cannot switch it off, so the advertisement overstates what a client gets. This server
         // never emits notifications/message; it logs to stderr and its own file, which is the
         // 2026-07-28 migration path off the deprecated logging feature.
-        .AddMcpServer(options => options.ServerInstructions = instructions);
+        .AddMcpServer(options => options.ServerInstructions = ServerInstructions);
 
     mcp = input is not null && output is not null
         ? mcp.WithStreamServerTransport(input, output)
@@ -353,4 +312,50 @@ IHost BuildMcpHost(Stream? input, Stream? output)
                     request.Services?.GetService<ILoggerFactory>()?.CreateLogger<TeamsTools>()))));
 
     return builder.Build();
+}
+
+partial class Program
+{
+    // Sized like a system prompt, and ordered by importance: Claude Code keeps only the first 2,048
+    // characters of a server's instructions, so what has to survive that cut comes first and
+    // ServerInstructionsTests holds it under 2,000. Only what a tool description cannot carry: how
+    // this server fails and what its silences mean.
+    internal const string ServerInstructions = """
+        Reads Microsoft Teams conversations, and sends messages, as the signed-in user.
+
+        The sending and reaction tools (send_channel_message, send_chat_message,
+        react_to_chat_message, react_to_channel_message) refuse unless TEAMS_MCP_ALLOW_SEND=true in
+        this server's environment. That refusal is configuration and will not change on retry —
+        report it and stop.
+
+        Every error a tool call returns carries a req=N and the path of this server's log file. Quote
+        both when reporting a failure; they are what makes it diagnosable. A protocol-level refusal —
+        an unknown tool or method name — carries neither, because it never reached a tool.
+
+        Absent fields are absent on purpose — results omit anything null or uninteresting, so a missing
+        field means "nothing to say", not "unknown". `skipped` counts system events and deleted
+        messages that were filtered out; no `skipped` and no results means nothing matched.
+
+        A watch is a loop of waiter calls, not a single call: each one returns a `nextCursor` that the
+        next one passes back as `cursor`, and that round trip is the whole of resuming. Do not
+        reconstruct a cursor from a timestamp you saw in a result — the boundary is inclusive, so that
+        re-delivers the last message every time. A wait that timed out still returns a cursor and is
+        still the right thing to call again.
+
+        The search tools (search_messages, list_mentions, and the two waiters over them) read an index,
+        not the conversations: they reach every chat and channel at once, but a hit trails what was just
+        said by seconds or longer and carries a summary rather than a body. Treat one as an address — read
+        the conversation it names for the text, and do not conclude "nothing was said" from a search
+        that came back empty seconds after the fact.
+
+        An error naming an argument the tool does not take has been rejected before the tool ran, so
+        nothing happened: read the parameter list it gives you and call again. Parameter names are
+        snake_case.
+
+        Message bodies arrive as plain text, not HTML — links are kept as "text (url)". A body cut at
+        `body_limit` is marked `truncated`; raise the limit and re-read rather than inferring the rest.
+
+        Teams and channels are named or given by id, whichever the caller has: an ambiguous or unknown
+        name fails with the candidates listed, so re-call with one of them rather than guessing.
+        """;
 }

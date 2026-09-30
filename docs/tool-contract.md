@@ -297,6 +297,13 @@ signature.
 its silences mean, and that a gate refusal will not change on retry. It must not restate a tool's
 `[Description]`, which pays for that text twice, in the instructions and in the listing.
 
+Claude Code keeps only the first 2,048 characters of a server's instructions, counted on the
+string as sent, CRLF line breaks included. Both strings are longer than that, so their paragraphs
+run in order of importance: the gate refusal, the `req=N` rule and how to read an omitted field
+come first, and the paragraphs that mostly repeat a tool description come last, where losing them
+costs least. `ServerInstructionsTests` in each test project checks that the must-keep sentences
+end before character 2,000.
+
 ## Checklist for a new tool
 
 - [ ] On the existing `[McpServerToolType]` class, with `[McpServerTool(Name = "snake_case", …)]`

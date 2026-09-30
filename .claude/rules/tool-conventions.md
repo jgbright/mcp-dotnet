@@ -121,7 +121,10 @@ shaped the way it is.
   `Program.cs` is sized like a system prompt, not documentation: how the server fails, what its
   silences mean (an omitted field is "nothing to say"; `skipped` versus no results), and that a
   gate refusal will not change on retry. It must not restate what is already in a tool's
-  `[Description]` — that text is paid for twice.
+  `[Description]` — that text is paid for twice. Claude Code keeps only its first 2,048
+  characters, so paragraphs are ordered by what a model can least do without, and
+  `ServerInstructionsTests` holds the must-keep ones under 2,000; a new paragraph goes where its
+  importance puts it, not at the end or the top by default.
 - **Organization-specific knowledge is configuration, never code.** `deployment_status` is the
   model: the server knows mechanisms — the classic-release chain, the pipeline/Environment chain,
   TFVC path containment and branch walking (`Deployments.cs`) — while which deployables exist and
