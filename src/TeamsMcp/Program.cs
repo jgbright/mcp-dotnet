@@ -323,8 +323,7 @@ partial class Program
     internal const string ServerInstructions = """
         Reads Microsoft Teams conversations, and sends messages, as the signed-in user.
 
-        The sending and reaction tools (send_channel_message, send_chat_message,
-        react_to_chat_message, react_to_channel_message) refuse unless TEAMS_MCP_ALLOW_SEND=true in
+        The sending and reaction tools (send_* and react_*) refuse unless TEAMS_MCP_ALLOW_SEND=true in
         this server's environment. That refusal is configuration and will not change on retry —
         report it and stop.
 

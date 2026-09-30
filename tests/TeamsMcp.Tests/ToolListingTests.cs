@@ -103,7 +103,7 @@ public class ToolListingTests
             description.Contains("TEAMS_MCP_ALLOW_SEND"));
     }
 
-    private static readonly HashSet<string> Sends = ["send_channel_message", "send_chat_message"];
+    private static readonly HashSet<string> Sends = ["send_channel_message", "send_chat_message", "send_chat_messages"];
 
     private static readonly HashSet<string> Reacts = ["react_to_chat_message", "react_to_channel_message"];
 
@@ -128,7 +128,8 @@ public class ToolListingTests
         Assert.DoesNotContain("text", parameters);
         if (Sends.Contains(tool.GetCustomAttribute<McpServerToolAttribute>()!.Name!))
         {
-            Assert.Contains("body", parameters);
+            // A burst takes the plural of the same name.
+            Assert.True(parameters.Contains("body") || parameters.Contains("bodies"));
         }
     }
 

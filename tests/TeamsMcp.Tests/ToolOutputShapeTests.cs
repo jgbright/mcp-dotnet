@@ -47,6 +47,14 @@ public class ToolOutputShapeTests
     }
 
     [Fact]
+    public void A_burst_that_all_went_out_says_nothing_about_failing()
+    {
+        var json = Serialize(new SentMessagesResult([new SentMessageDto("1", null, null)], null));
+
+        Assert.False(Has(json, "failed"));
+        Assert.Single(json.GetProperty("sent").EnumerateArray());
+    }
+    [Fact]
     public void An_empty_message_envelope_carries_no_has_more_or_skipped()
     {
         var json = Serialize(new MessagesResult([], null, null));

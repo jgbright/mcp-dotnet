@@ -1114,6 +1114,68 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         return new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl);
     });
 
+    // Several messages to one chat, each its own post, awaited in turn so Teams shows them in
+    // order. A failure after the first stops the run and is reported beside what already went
+    // out rather than thrown, because a thrown error would hide which messages landed.
+    [McpServerTool(Name = "send_chat_messages", UseStructuredContent = true, Destructive = false, Idempotent = false)]
+    [Description("Mutation: sends several messages in a row to one chat, each body a separate message, such as " +
+                 "draft variants to react to or forward one by one. Disabled unless the environment variable " +
+                 "TEAMS_MCP_ALLOW_SEND=true is set for this server. `chat` takes the same forms as in " +
+                 "send_chat_message. Stops at the first failure: `sent` lists what went out and `failed` names " +
+                 "the body that did not. Returns {sent, failed?}.")]
+    public Task<SentMessagesResult> SendChatMessages(
+        [Description("Chat id (19:...@thread.v2), a topic, a person's display name, or 'self'")] string chat,
+        [Description("Message bodies, sent in this order, 1 to 10 of them")] string[] bodies,
+        [Description("Body format for every message: 'text' (default), 'markdown', or 'html', as in " +
+                     "send_chat_message")] string? format = null,
+        CancellationToken ct = default) => Run("send_chat_messages",
+        A("chat", chat) + A("format", format ?? "text") + A("count", bodies?.Length ?? 0) +
+            string.Concat((bodies ?? []).Select((b, i) => TeamsMcpLog.ContentArg($"body[{i}]", b))),
+        async () =>
+    {
+        RequireSendEnabled();
+        // Every body is converted before anything is sent, so a bad one fails the call whole.
+        var messages = CheckBodies(bodies).Select(b => new ChatMessage { Body = BuildBody(b, format) }).ToList();
+        var client = await graph.GetClientAsync(ct);
+        var chatId = await ResolveChatAsync(client, chat, ct);
+
+        var sent = new List<SentMessageDto>();
+        for (var i = 0; i < messages.Count; i++)
+        {
+            ChatMessage? created;
+            try
+            {
+                created = await client.Chats[chatId].Messages.PostAsync(messages[i], cancellationToken: ct);
+            }
+            catch (Exception e) when (i > 0 && e is not OperationCanceledException)
+            {
+                var error = e is ODataError o ? $"Graph error {o.Error?.Code}: {o.Error?.Message}" : e.Message;
+                log.Line(LogLevel.Warning, Ev.ToolFail,
+                    "send_chat_messages stopped partway" + A("index", i) + A("sent", sent.Count) + A("reason", error), e);
+                return new SentMessagesResult(sent, new FailedSendDto(i, error));
+            }
+            sent.Add(new SentMessageDto(created?.Id, created?.CreatedDateTime, created?.WebUrl));
+        }
+        return new SentMessagesResult(sent, null);
+    });
+
+    internal const int MaxBodies = 10;
+
+    /// <summary>Refuses a burst that cannot be sent whole, before anything is posted.</summary>
+    internal static string[] CheckBodies(string[]? bodies)
+    {
+        if (bodies is not { Length: > 0 } || bodies.Length > MaxBodies)
+        {
+            throw new McpException(
+                $"`bodies` takes 1 to {MaxBodies} messages; got {bodies?.Length ?? 0}. Send more in further calls.");
+        }
+        if (Array.FindIndex(bodies, string.IsNullOrWhiteSpace) is var blank and >= 0)
+        {
+            throw new McpException($"`bodies[{blank}]` is empty. Nothing was sent.");
+        }
+        return bodies;
+    }
+
     // A reaction is self-scoped, so it is idempotent: setting one already set changes nothing,
     // and remove only takes off the signed-in user's own. setReaction takes the emoji itself and
     // answers 204, so the confirmation DTO is built here rather than read back. Measured: Graph
@@ -1361,6 +1423,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
         SearchWaitResult s => A("hits", s.Hits.Count) + A("total", s.Total) +
             A("waitedSeconds", s.WaitedSeconds) + (s.TimedOut is true ? A("timedOut", true) : ""),
         SentMessageDto sent => A("messageId", sent.Id),
+        SentMessagesResult s => A("sent", s.Sent.Count) + (s.Failed is { } f ? A("failedAt", f.Index) : ""),
         DownloadedImagesResult d =>
             A("images", d.Images.Count(i => i.Error is null)) +
             (d.Images.Any(i => i.Error is not null) ? A("failed", d.Images.Count(i => i.Error is not null)) : "") +
@@ -1925,6 +1988,12 @@ public sealed record SearchHitDto(
     string? WebUrl);
 
 public sealed record SentMessageDto(string? Id, DateTimeOffset? Created, string? WebUrl);
+
+/// <summary>What a burst sent, in order, and the body it stopped at if one failed.</summary>
+public sealed record SentMessagesResult(List<SentMessageDto> Sent, FailedSendDto? Failed);
+
+/// <summary>The body that was not sent: its index in <c>bodies</c> and why. Later ones were not tried.</summary>
+public sealed record FailedSendDto(int Index, string Error);
 
 /// <summary>
 /// Confirmation of a reaction change. Graph answers 204 to setReaction/unsetReaction, so this

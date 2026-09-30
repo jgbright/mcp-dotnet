@@ -35,7 +35,7 @@ When the user asks you to send them something in Teams ("send me...", "drop it i
 
 ### 3. The message goes in `body`
 
-`send_chat_message(chat, body, format?, reply_to?)` and `send_channel_message(team, channel, body, format?, reply_to?)` are the whole sending surface — there is no file-attachment tool, so a long document is sent as a message like anything else, with the markdown file on disk named as the durable copy. The content parameter is `body`, the same word the read tools use.
+`send_chat_message(chat, body, format?, reply_to?)`, `send_chat_messages(chat, bodies, format?)` and `send_channel_message(team, channel, body, format?, reply_to?)` are the whole sending surface. `send_chat_messages` posts several messages to one chat in order, one per body, which is the call for a set of draft variants the user will react to or forward one at a time; it stops at the first failure and says which bodies went out — there is no file-attachment tool, so a long document is sent as a message like anything else, with the markdown file on disk named as the durable copy. The content parameter is `body`, the same word the read tools use.
 
 `reply_to` answers a specific message rather than posting a loose one: pass a message id from the matching read tool. In a channel the reply lands inside that thread (pass the thread root's id — a reply's `replyToId` names it); in a chat it becomes a quote card, the same one the client's Reply button produces. Teams builds the quote from the id, so never restate the quoted text in `body`. **It does not work in the self chat** — Graph drops the quote there and the tool refuses rather than posting a message with an empty quote box, so a self-chat message is always a plain send.
 

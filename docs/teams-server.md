@@ -185,6 +185,13 @@ requested at all (see
 [authentication.md](authentication.md#teams-the-scope-list-follows-the-send-gate)). The refusal
 message says so, since "the gate is on but it still refuses" is otherwise a confusing state.
 
+`send_chat_messages` is `send_chat_message` repeated: the same gate, one chat resolved once, and one
+post per body (1 to 10), each awaited before the next so Teams shows them in order. Every body is
+checked and converted before the first post, so bad arguments fail the call with nothing sent. A
+post that fails after the first stops the run, and the result carries `sent` (what went out, in
+order) and `failed` (`index`, `error`) instead of throwing, because a thrown error would hide which
+messages landed. It has no `reply_to`; a quoted reply is a one-off.
+
 The content parameter is `body`, matching the read tools (`body` in a message DTO, `body_limit` on
 every read): a caller that has just read a conversation reaches for the word it saw there, and
 `format: "text"` is a different thing again.
@@ -288,6 +295,7 @@ idempotent (`Idempotent = true` where the sends are false).
 | `wait_for_any_message` | Polls `search_messages` |
 | `send_channel_message` | `TEAMS_MCP_ALLOW_SEND=true` |
 | `send_chat_message` | `TEAMS_MCP_ALLOW_SEND=true`; `chat` by id, topic, person or `self` |
+| `send_chat_messages` | Same gate and `chat` forms; 1 to 10 bodies in order, stops at the first failure |
 | `react_to_chat_message` | `TEAMS_MCP_ALLOW_SEND=true`; emoji via setReaction/unsetReaction; same `chat` forms |
 | `react_to_channel_message` | Same gate; `reply_id` reaches a reply through its thread root |
 

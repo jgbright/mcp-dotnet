@@ -97,7 +97,7 @@ time until their gate is set.
 
 | Gate | Enables |
 | --- | --- |
-| `TEAMS_MCP_ALLOW_SEND=true` | `send_channel_message`, `send_chat_message`, `react_to_channel_message`, `react_to_chat_message` |
+| `TEAMS_MCP_ALLOW_SEND=true` | `send_channel_message`, `send_chat_message`, `send_chat_messages`, `react_to_channel_message`, `react_to_chat_message` |
 | `ADO_MCP_ALLOW_WRITE=true` | `create_work_item`, `update_work_item`, `add_pull_request_comment`, `run_pipeline`, `deploy_release`, and any method other than GET or HEAD through `ado_api_request` |
 | `ADO_MCP_ALLOW_APPROVE=true` | `approve_release`, and only alongside `ADO_MCP_ALLOW_WRITE=true` |
 
@@ -242,7 +242,7 @@ does not blocks until the tool's own timeout. `wait_for_chat_messages` accepts u
 one call. The search-backed waiters poll no faster than every 20 seconds.
 
 Mutations, gated on `TEAMS_MCP_ALLOW_SEND=true`: `send_channel_message`, `send_chat_message`,
-`react_to_channel_message` and `react_to_chat_message`. The send tools take the message as `body`,
+`send_chat_messages`, `react_to_channel_message` and `react_to_chat_message`. The send tools take the message as `body`,
 the same word the reads use, plus an optional `format`: `markdown` for anything with structure
 (converted server-side), `html` only for markup markdown cannot express. The reaction tools set or
 clear one emoji on a message and ride the same send scopes.
