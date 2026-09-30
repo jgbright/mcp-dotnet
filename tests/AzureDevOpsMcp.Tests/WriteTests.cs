@@ -445,6 +445,29 @@ public class WriteToolTests : IDisposable
     }
 
     [Fact]
+    public async Task The_gate_refuses_before_fields_is_even_parsed()
+    {
+        var e = await Assert.ThrowsAsync<McpException>(() => _tools.UpdateWorkItem(17, fields: "not json"));
+
+        Assert.Contains("ADO_MCP_ALLOW_WRITE=true", e.Message);
+    }
+
+    [Fact]
+    public async Task Fields_alone_is_something_to_change_and_a_bad_one_is_refused_before_any_request()
+    {
+        using var _ = new EnvVar("ADO_MCP_ALLOW_WRITE", "true");
+
+        var clash = await Assert.ThrowsAsync<McpException>(
+            () => _tools.UpdateWorkItem(17, fields: """{"System.Title": "x"}"""));
+        var empty = await Assert.ThrowsAsync<McpException>(() => _tools.UpdateWorkItem(17, fields: "{}"));
+        var created = await Assert.ThrowsAsync<McpException>(
+            () => _tools.CreateWorkItem("Bug", "Retry loop spins", fields: """{"Custom.X": [1]}"""));
+
+        Assert.Contains("`title`", clash.Message);
+        Assert.Contains("Nothing to change", empty.Message);
+        Assert.Contains("Custom.X", created.Message);
+    }
+    [Fact]
     public async Task An_update_that_only_sets_an_estimate_has_something_to_change()
     {
         using var _ = new EnvVar("ADO_MCP_ALLOW_WRITE", "true");
@@ -498,5 +521,84 @@ public class WriteToolTests : IDisposable
         Assert.Contains(" thread=7", described);
         Assert.Contains(" comment.len=25", described);
         Assert.DoesNotContain("friday", described);
+    }
+}
+
+/// <summary>
+/// `fields` reaches any field the typed arguments do not, `@current` names the sprint, and a
+/// required-field rule error names the argument that would satisfy it.
+/// </summary>
+public class AnyFieldWriteTests
+{
+    [Fact]
+    public void Fields_become_add_operations_that_keep_their_json_types()
+    {
+        var ops = Writes.ExtraFields("""{"Microsoft.VSTS.Common.Severity": "3 - Medium", "Custom.Points": 2.5, "Custom.Unplanned": true}""");
+
+        Assert.Equal(
+            ["/fields/Microsoft.VSTS.Common.Severity", "/fields/Custom.Points", "/fields/Custom.Unplanned"],
+            ops.Select(o => o.Path));
+        Assert.All(ops, o => Assert.Equal("add", o.Op));
+        // Serialized as written: a number stays a number on the wire.
+        Assert.Equal("""[{"op":"add","path":"/fields/Microsoft.VSTS.Common.Severity","value":"3 - Medium"},{"op":"add","path":"/fields/Custom.Points","value":2.5},{"op":"add","path":"/fields/Custom.Unplanned","value":true}]""",
+            JsonSerializer.Serialize(ops, AdoClient.Json));
+        Assert.Equal(["Microsoft.VSTS.Common.Severity", "Custom.Points", "Custom.Unplanned"], Writes.FieldsWritten(ops));
+    }
+
+    [Theory]
+    [InlineData("""{"System.Tags": "a; b"}""", "add_tags")]
+    [InlineData("""{"system.state": "Active"}""", "`state`")]
+    [InlineData("""{"Microsoft.VSTS.Scheduling.CompletedWork": 2}""", "completed_work")]
+    public void A_field_a_typed_argument_sets_is_refused_naming_the_argument(string json, string argument)
+    {
+        Assert.Contains(argument, Assert.Throws<McpException>(() => Writes.ExtraFields(json)).Message);
+    }
+
+    [Theory]
+    [InlineData("""{"Custom.Owners": ["a", "b"]}""")]
+    [InlineData("""{"Custom.Nested": {"x": 1}}""")]
+    [InlineData("""{"Custom.Nothing": null}""")]
+    [InlineData("""["Microsoft.VSTS.Common.Severity"]""")]
+    [InlineData("""{"": "x"}""")]
+    [InlineData("Severity=3")]
+    public void Anything_but_an_object_of_scalars_is_refused(string json)
+    {
+        Assert.Throws<McpException>(() => Writes.ExtraFields(json));
+    }
+
+    [Fact]
+    public void No_fields_is_no_operations()
+    {
+        Assert.Empty(Writes.ExtraFields(null));
+        Assert.Empty(Writes.ExtraFields("  "));
+        Assert.Empty(Writes.ExtraFields("{}"));
+    }
+
+    [Theory]
+    [InlineData("@current", true)]
+    [InlineData(" @Current ", true)]
+    [InlineData(@"Project\2026\Sprint 20", false)]
+    [InlineData(null, false)]
+    public void The_current_sprint_is_spelled_at_current(string? iteration, bool current)
+    {
+        Assert.Equal(current, Writes.IsCurrentIteration(iteration));
+    }
+
+    [Theory]
+    [InlineData("TF401320: Rule Error for field Completed Work. Error code: Required, InvalidEmpty.", "Pass completed_work with this call.")]
+    [InlineData("TF401320: Rule Error for field Remaining Work. Error code: Required, InvalidEmpty.", "Pass remaining_work with this call.")]
+    [InlineData("TF401320: Rule Error for field Severity. Error code: Required, InvalidEmpty.", "Microsoft.VSTS.Common.Severity")]
+    [InlineData("TF401320: Rule Error for field Release Train. Error code: Required.", "Release Train is its display name")]
+    public void A_required_field_rule_names_the_argument_that_sets_the_field(string message, string hint)
+    {
+        Assert.Contains(hint, Writes.RuleHint(message));
+    }
+
+    [Theory]
+    [InlineData("TF401320: Rule Error for field State. Error code: InvalidListValue.")]
+    [InlineData("TF401347: Invalid tree name given for work item -1, field System.IterationPath.")]
+    public void Any_other_error_gets_no_hint(string message)
+    {
+        Assert.Null(Writes.RuleHint(message));
     }
 }

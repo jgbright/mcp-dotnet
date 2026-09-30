@@ -2849,7 +2849,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "hours on a Task, story points on an Agile User Story, effort on a Scrum backlog " +
                  "item — and writing one the type does not define is refused by Azure DevOps naming " +
                  "the field. `original_estimate` does not imply `remaining_work`: a sprint burndown " +
-                 "reads the second, so set both when starting from an estimate. Returns the item's " +
+                 "reads the second, so set both when starting from an estimate. `fields` sets any " +
+                 "field no argument covers, such as Severity, by reference name. Returns the item's " +
                  "identity and the fields this call wrote, read back from the service; " +
                  "return_full_item=true returns the whole item instead. A `comment` is appended to " +
                  "the discussion and is not echoed, since the response does not carry it.")]
@@ -2858,7 +2859,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("New state, e.g. Active, Resolved, Closed")] string? state = null,
         [Description("Assignee: display name, email, or identity GUID")] string? assigned_to = null,
         [Description("New area path")] string? area = null,
-        [Description("New iteration path")] string? iteration = null,
+        [Description("New iteration path, or @current for the team's current sprint")] string? iteration = null,
         [Description("Tag(s) to add, comma-separated")] string? add_tags = null,
         [Description("Tag(s) to remove, comma-separated")] string? remove_tags = null,
         [Description("Priority, as this project's process defines it (commonly 1-4, 1 highest)")] int? priority = null,
@@ -2875,6 +2876,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                      "replacing the current ones")] string? repro_steps = null,
         [Description("New acceptance criteria, replacing the current ones")] string? acceptance_criteria = null,
         [Description("Comment to add to the discussion")] string? comment = null,
+        [Description("Any other fields, as a JSON object of reference name to value, e.g. " +
+                     "{\"Microsoft.VSTS.Common.Severity\": \"3 - Medium\"}. A field a typed argument " +
+                     "sets is refused here; pass it there.")] string? fields = null,
         [Description("Return the whole work item rather than the fields this call wrote (default false)")] bool return_full_item = false,
         CancellationToken ct = default) => Run("update_work_item",
         A("id", id) + A("state", state) + A("assigned_to", assigned_to) + A("area", area) +
@@ -2886,22 +2890,24 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         AdoMcpLog.ContentArg("title", title) + AdoMcpLog.ContentArg("description", description) +
         AdoMcpLog.ContentArg("repro_steps", repro_steps) +
         AdoMcpLog.ContentArg("acceptance_criteria", acceptance_criteria) +
-        AdoMcpLog.ContentArg("comment", comment) + A("return_full_item", return_full_item), async () =>
+        AdoMcpLog.ContentArg("comment", comment) + AdoMcpLog.ContentArg("fields", fields) +
+        A("return_full_item", return_full_item), async () =>
     {
         RequireWriteEnabled();
         var estimates = new Writes.Estimates(
             original_estimate, remaining_work, completed_work, story_points, effort);
+        var extra = Writes.ExtraFields(fields);
         if (state is null && assigned_to is null && area is null && iteration is null &&
             add_tags is null && remove_tags is null && priority is null && !estimates.Any &&
             parent is null &&
             !remove_parent && title is null && description is null && repro_steps is null &&
-            acceptance_criteria is null && comment is null)
+            acceptance_criteria is null && comment is null && extra.Count == 0)
         {
             throw new McpException(
                 "Nothing to change: pass at least one of state, assigned_to, area, iteration, " +
                 "add_tags, remove_tags, priority, original_estimate, remaining_work, " +
                 "completed_work, story_points, effort, parent, remove_parent, title, description, " +
-                "repro_steps, acceptance_criteria, or comment.");
+                "repro_steps, acceptance_criteria, comment, or fields.");
         }
         if (parent is not null && remove_parent)
         {
@@ -2914,6 +2920,14 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         }
         var client = await ado.GetClientAsync(ct);
         var assignee = assigned_to is null ? null : await ResolveIdentityAsync(client, assigned_to, ct);
+        if (Writes.IsCurrentIteration(iteration))
+        {
+            // The sprint belongs to the item's own project, which the id alone does not say.
+            var item = await client.GetAsync<WireWorkItem>(
+                $"_apis/wit/workitems/{id}?{Api}&fields=System.TeamProject", ct);
+            iteration = await CurrentIterationAsync(
+                client, Mapping.Str(item.Fields, "System.TeamProject") ?? (await ResolveProjectAsync(client, null, ct)).Id, ct);
+        }
 
         // Tags are one semicolon-joined field and the parent is a relation addressed by its index,
         // so both are read-merge-write. One read serves both, but `fields` and `$expand` cannot be
@@ -2940,6 +2954,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         var ops = Writes.UpdatePatch(
             state, assignee, area, iteration, tags, priority, estimates, title, description,
             repro_steps, acceptance_criteria, comment);
+        ops.AddRange(extra);
         ops.AddRange(relationOps);
         if (ops.Count == 0)
         {
@@ -2948,13 +2963,13 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             return Mapping.WorkItemDetail(current!, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null);
         }
 
-        var updated = await client.PatchAsync<WireWorkItem>(
+        var updated = await WithRuleHint(() => client.PatchAsync<WireWorkItem>(
             HttpMethod.Patch,
             // Relations are only in the response when asked for, and a parent change cannot be
             // confirmed without them.
             $"_apis/wit/workitems/{id}?{Api}" + (reparenting ? "&$expand=relations" : ""),
             ops,
-            ct);
+            ct));
         return return_full_item
             ? Mapping.WorkItemDetail(updated, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null)
             : Mapping.WorkItemWritten(updated, Writes.FieldsWritten(ops), client.OrgUrl);
@@ -2969,7 +2984,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "hours on a Task, story points on an Agile User Story, effort on a Scrum backlog " +
                  "item — and passing one the type does not define is refused by Azure DevOps naming " +
                  "the field. `original_estimate` does not imply `remaining_work`: a sprint burndown " +
-                 "reads the second, so set both when starting from an estimate. Returns " +
+                 "reads the second, so set both when starting from an estimate. `fields` sets any " +
+                 "field no argument covers, such as Severity, by reference name. Returns " +
                  "the created work item with its id.")]
     public Task<WorkItemDetailDto> CreateWorkItem(
         [Description("Work item type, e.g. Bug, Task, \"User Story\"")] string type,
@@ -2980,7 +2996,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Acceptance criteria")] string? acceptance_criteria = null,
         [Description("Assignee: display name, email, or identity GUID")] string? assigned_to = null,
         [Description("Area path")] string? area = null,
-        [Description("Iteration path")] string? iteration = null,
+        [Description("Iteration path, or @current for the team's current sprint")] string? iteration = null,
         [Description("Tag(s), comma-separated")] string? tags = null,
         [Description("Priority, as this project's process defines it (commonly 1-4, 1 highest). " +
                      "Omitted means the process's own default, which is usually 2 — pass it to " +
@@ -2991,6 +3007,9 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         [Description("Story points (User Story on the Agile process)")] double? story_points = null,
         [Description("Effort (Product Backlog Item and Bug on the Scrum process)")] double? effort = null,
         [Description("Work item id to parent the new item under")] int? parent = null,
+        [Description("Any other fields, as a JSON object of reference name to value, e.g. " +
+                     "{\"Microsoft.VSTS.Common.Severity\": \"3 - Medium\"}. A field a typed argument " +
+                     "sets is refused here; pass it there.")] string? fields = null,
         CancellationToken ct = default) => Run("create_work_item",
         A("project", project) + A("type", type) + AdoMcpLog.ContentArg("title", title) +
         AdoMcpLog.ContentArg("description", description) + AdoMcpLog.ContentArg("repro_steps", repro_steps) +
@@ -2998,38 +3017,75 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         A("assigned_to", assigned_to) + A("area", area) + A("iteration", iteration) + A("tags", tags) +
         A("priority", priority) + A("original_estimate", original_estimate) +
         A("remaining_work", remaining_work) + A("completed_work", completed_work) +
-        A("story_points", story_points) + A("effort", effort) + A("parent", parent), async () =>
+        A("story_points", story_points) + A("effort", effort) + A("parent", parent) +
+        AdoMcpLog.ContentArg("fields", fields), async () =>
     {
         RequireWriteEnabled();
         if (string.IsNullOrWhiteSpace(title))
         {
             throw new McpException("`title` is required.");
         }
+        var extra = Writes.ExtraFields(fields);
         var client = await ado.GetClientAsync(ct);
         var resolvedProject = await ResolveProjectAsync(client, project, ct);
         var resolvedType = await ResolveWorkItemTypeAsync(client, resolvedProject.Id, type, ct);
         var assignee = assigned_to is null ? null : await ResolveIdentityAsync(client, assigned_to, ct);
+        if (Writes.IsCurrentIteration(iteration))
+        {
+            iteration = await CurrentIterationAsync(client, resolvedProject.Id, ct);
+        }
 
         var ops = Writes.CreatePatch(
             title, description, repro_steps, acceptance_criteria, assignee, area, iteration,
             tags is null ? null : Writes.MergeTags(null, tags, null), priority,
             new Writes.Estimates(
                 original_estimate, remaining_work, completed_work, story_points, effort));
+        ops.AddRange(extra);
         if (parent is { } parentId)
         {
             // Nothing exists yet to be parented elsewhere, so this is always a bare add.
             ops.AddRange(Writes.SetParent(relations: null, parentId, client.OrgUrl));
         }
 
-        var created = await client.PatchAsync<WireWorkItem>(
+        var created = await WithRuleHint(() => client.PatchAsync<WireWorkItem>(
             HttpMethod.Post,
             // The route's $ prefix on the type name is literal. The name itself may contain spaces.
             $"{Escape(resolvedProject.Id)}/_apis/wit/workitems/${Escape(resolvedType.Name)}?{Api}" +
             (parent is null ? "" : "&$expand=relations"),
             ops,
-            ct);
+            ct));
         return Mapping.WorkItemDetail(created, WriteEchoBodyLimit, client.OrgUrl, comments: null, skipped: null);
     });
+
+    /// <summary>
+    /// The path of the project's current sprint for its default team, which is what
+    /// <c>iteration: "@current"</c> means.
+    /// </summary>
+    private static async Task<string> CurrentIterationAsync(AdoClient client, string project, CancellationToken ct)
+    {
+        var current = await client.GetAsync<ListResponse<WireIteration>>(
+            $"{Escape(project)}/_apis/work/teamsettings/iterations?{Api}&$timeframe=current", ct);
+        return current.Value?.FirstOrDefault()?.Path
+            ?? throw new McpException(
+                "The project's default team has no current iteration, so @current names nothing. " +
+                "Pass the iteration path.");
+    }
+
+    /// <summary>
+    /// A required-field rule error names the field by display name. The argument that sets it is
+    /// appended, and the service's own message is left intact before it.
+    /// </summary>
+    private static async Task<T> WithRuleHint<T>(Func<Task<T>> write)
+    {
+        try
+        {
+            return await write();
+        }
+        catch (AdoApiException e) when (Writes.RuleHint(e.Message) is { } hint)
+        {
+            throw new AdoApiException(e.Status, $"{e.Message} {hint}", e.TypeKey, e.Path);
+        }
+    }
 
     [McpServerTool(Name = "add_pull_request_comment", UseStructuredContent = true, Destructive = false, Idempotent = false)]
     [Description("Write — requires ADO_MCP_ALLOW_WRITE=true in this server's environment. Comment on " +

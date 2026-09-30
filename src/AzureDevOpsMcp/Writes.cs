@@ -111,6 +111,136 @@ internal static class Writes
     }
 
     /// <summary>
+    /// The fields a typed argument writes, and that argument. <c>fields</c> refuses them, so each
+    /// field has one way to be set and the tag merge cannot be bypassed. The discussion
+    /// (<c>System.History</c>) is not listed: it is append-only however it is written.
+    /// </summary>
+    internal static readonly Dictionary<string, string> TypedFields = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["System.Title"] = "title",
+        ["System.Description"] = "description",
+        ["Microsoft.VSTS.TCM.ReproSteps"] = "repro_steps",
+        ["Microsoft.VSTS.Common.AcceptanceCriteria"] = "acceptance_criteria",
+        ["System.State"] = "state",
+        ["System.AssignedTo"] = "assigned_to",
+        ["System.AreaPath"] = "area",
+        ["System.IterationPath"] = "iteration",
+        ["System.Tags"] = "tags (add_tags/remove_tags on an update)",
+        ["Microsoft.VSTS.Common.Priority"] = "priority",
+        ["Microsoft.VSTS.Scheduling.OriginalEstimate"] = "original_estimate",
+        ["Microsoft.VSTS.Scheduling.RemainingWork"] = "remaining_work",
+        ["Microsoft.VSTS.Scheduling.CompletedWork"] = "completed_work",
+        ["Microsoft.VSTS.Scheduling.StoryPoints"] = "story_points",
+        ["Microsoft.VSTS.Scheduling.Effort"] = "effort",
+    };
+
+    /// <summary>
+    /// <c>fields</c> as patch operations: a JSON object of reference name to value, each a JSON
+    /// scalar that reaches the wire as the type it was written in, so a number stays a number.
+    /// Refused whole, before anything is sent: an object or array value, an empty name, and a
+    /// field a typed argument sets.
+    /// </summary>
+    internal static List<PatchOp> ExtraFields(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return [];
+        }
+        JsonElement root;
+        try
+        {
+            root = JsonSerializer.Deserialize<JsonElement>(json);
+        }
+        catch (JsonException e)
+        {
+            throw new ModelContextProtocol.McpException(
+                $"`fields` is not valid JSON ({e.Message}). Pass an object, e.g. " +
+                "{\"Microsoft.VSTS.Common.Severity\": \"3 - Medium\"}.");
+        }
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            throw new ModelContextProtocol.McpException(
+                "`fields` takes a JSON object of field reference name to value, e.g. " +
+                "{\"Microsoft.VSTS.Common.Severity\": \"3 - Medium\"}.");
+        }
+        var ops = new List<PatchOp>();
+        foreach (var field in root.EnumerateObject())
+        {
+            var name = field.Name.Trim();
+            if (name.Length == 0)
+            {
+                throw new ModelContextProtocol.McpException("`fields` has an entry with no field name.");
+            }
+            if (TypedFields.TryGetValue(name, out var argument))
+            {
+                throw new ModelContextProtocol.McpException(
+                    $"`fields` names {name}, which `{argument}` sets. Pass it there.");
+            }
+            if (field.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array or JsonValueKind.Null)
+            {
+                throw new ModelContextProtocol.McpException(
+                    $"`fields.{name}` must be a string, number or true/false, not {field.Value.ValueKind.ToString().ToLowerInvariant()}.");
+            }
+            ops.Add(Field(name, field.Value.Clone()));
+        }
+        return ops;
+    }
+
+    /// <summary>The iteration argument's spelling of "the team's current sprint".</summary>
+    internal static bool IsCurrentIteration(string? iteration) =>
+        string.Equals(iteration?.Trim(), "@current", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A required-field rule names the field by display name ("TF401320: Rule Error for field
+    /// Completed Work. Error code: Required, InvalidEmpty."), not by the argument that sets it.
+    /// This is the sentence to append naming that argument, or null for any other error. A field
+    /// no typed argument sets goes through <c>fields</c> by its reference name.
+    /// </summary>
+    internal static string? RuleHint(string message)
+    {
+        if (!message.Contains("TF401320", StringComparison.Ordinal))
+        {
+            return null;
+        }
+        var match = System.Text.RegularExpressions.Regex.Match(
+            message, @"Rule Error for field (?<field>[^.]+)\. Error code: (?<codes>[^.]*)");
+        if (!match.Success || !match.Groups["codes"].Value.Contains("Required", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        var field = match.Groups["field"].Value.Trim();
+        return RuleFieldArguments.TryGetValue(field, out var argument)
+            ? $"Pass {argument} with this call."
+            : RuleFieldReferences.TryGetValue(field, out var reference)
+                ? $"Pass it in fields, e.g. fields={{\"{reference}\": ...}}."
+                : $"Pass it in fields by its reference name; {field} is its display name.";
+    }
+
+    private static readonly Dictionary<string, string> RuleFieldArguments = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Completed Work"] = "completed_work",
+        ["Remaining Work"] = "remaining_work",
+        ["Original Estimate"] = "original_estimate",
+        ["Story Points"] = "story_points",
+        ["Effort"] = "effort",
+        ["Priority"] = "priority",
+        ["Title"] = "title",
+        ["Description"] = "description",
+        ["Repro Steps"] = "repro_steps",
+        ["Acceptance Criteria"] = "acceptance_criteria",
+        ["Assigned To"] = "assigned_to",
+        ["Area Path"] = "area",
+        ["Iteration Path"] = "iteration",
+    };
+
+    private static readonly Dictionary<string, string> RuleFieldReferences = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Severity"] = "Microsoft.VSTS.Common.Severity",
+        ["Value Area"] = "Microsoft.VSTS.Common.ValueArea",
+        ["Activity"] = "Microsoft.VSTS.Common.Activity",
+    };
+
+    /// <summary>
     /// Takes <c>object?</c> so a numeric field reaches the wire as a number: Priority is an integer
     /// field, and a boxed null <c>int?</c> is skipped by the same check as an absent string.
     /// </summary>

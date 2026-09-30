@@ -66,6 +66,8 @@ internal sealed record WireFieldChange(JsonElement? OldValue, JsonElement? NewVa
 
 internal sealed record WireRelationChanges(List<WireRelation>? Added, List<WireRelation>? Removed);
 
+internal sealed record WireIteration(string? Name, string? Path);
+
 internal sealed record WiqlRef(int Id);
 
 internal sealed record WiqlResult(List<WiqlRef>? WorkItems);

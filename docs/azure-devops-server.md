@@ -461,6 +461,19 @@ A field a model can see and cannot fix sends the work out through `az rest`. **E
 `WorkItemDetailDto` carries is writable by one of the two work item tools**, and a new field added to
 that DTO should arrive with the argument that sets it.
 
+Fields the DTO does not carry are reached through `fields`, a JSON object of reference name to value
+on both work item tools (Severity is the common case). Each entry becomes an `add` op carrying the
+JSON scalar as written, so a number stays a number. An object, array or null value is refused, and
+so is a field a typed argument sets (`Writes.TypedFields`): each field has one way to be written,
+and `System.Tags` in particular cannot bypass the tag merge. `iteration: "@current"` reads the
+project's default team's current iteration (`work/teamsettings/iterations?$timeframe=current`) and
+writes its path; on an update the project is the item's own, read first.
+
+A process rule that makes a field required answers `TF401320: Rule Error for field Completed Work.
+Error code: Required, InvalidEmpty.`, naming the field by display name. `Writes.RuleHint` appends
+the argument that sets it (`Pass completed_work with this call.`), or for a field only `fields`
+reaches, its reference name where known. The service's message is left intact before the hint.
+
 ### JSON Patch
 
 Work item writes go over JSON Patch: PATCH updates, POST creates, `application/json-patch+json` both
