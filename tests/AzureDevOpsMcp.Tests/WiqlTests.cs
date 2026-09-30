@@ -150,3 +150,45 @@ public class BranchNameTests
         Assert.Equal(expected, AdoTools.FullBranch(input));
     }
 }
+
+/// <summary>
+/// WIQL compares dates by day unless the request asks for time precision, and then refuses a
+/// literal with a time of day. Asking for it always would change what a date-only `=` means, so
+/// it is asked for only when a literal needs it.
+/// </summary>
+public class TimePrecisionTests
+{
+    [Theory]
+    [InlineData("[System.ChangedDate] >= '2026-09-29T14:30:00Z'")]
+    [InlineData("[System.ChangedDate] <= '2026-08-02T04:00:00Z'")]
+    [InlineData("[System.CreatedDate] < '2026-08-02 04:00'")]
+    [InlineData("[System.ChangedDate] >= '2026-08-02T00:00:00-04:00'")] // midnight somewhere else is not midnight UTC
+    [InlineData("[System.ChangedDate] >= '2026-08-02T00:00:00.5Z'")]
+    public void A_literal_with_a_time_of_day_asks_for_time_precision(string wiql)
+    {
+        Assert.True(AdoTools.NeedsTimePrecision(wiql));
+    }
+
+    [Theory]
+    [InlineData("[System.ChangedDate] = '2026-09-28'")] // `=` on a date means that day only without it
+    [InlineData("[System.ChangedDate] >= '2026-09-16T00:00:00Z'")]
+    [InlineData("[System.ChangedDate] >= '2026-09-16T00:00:00.000+00:00'")]
+    [InlineData("[System.ChangedDate] >= @Today - 2")]
+    [InlineData("[System.Title] CONTAINS 'at 14:30'")]
+    public void A_date_only_query_is_left_at_day_precision(string wiql)
+    {
+        Assert.False(AdoTools.NeedsTimePrecision(wiql));
+    }
+
+    [Fact]
+    public void The_changed_since_filter_asks_for_it_when_the_time_is_not_midnight()
+    {
+        var noon = AdoTools.BuildWiql("Project", [], null, null, null,
+            new DateTimeOffset(2026, 7, 1, 12, 0, 0, TimeSpan.Zero), null);
+        var midnight = AdoTools.BuildWiql("Project", [], null, null, null,
+            new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero), null);
+
+        Assert.True(AdoTools.NeedsTimePrecision(noon));
+        Assert.False(AdoTools.NeedsTimePrecision(midnight));
+    }
+}

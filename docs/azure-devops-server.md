@@ -358,6 +358,29 @@ name exactly, ignoring case, and `Tfvc.PickShelveset` narrows by owner, refusing
 `name;owner` when two people used the name. `read_tfvc_file` resolves its `shelveset` argument the
 same way and passes the owner's sign-in name in the version descriptor.
 
+## Work item history
+
+`get_work_item_history` reads `_apis/wit/workItems/{id}/updates` rather than the revisions,
+because each update already carries only the fields that changed, as `oldValue`/`newValue`. Two
+things about that endpoint cost a wrong answer if assumed away:
+
+- **It answers oldest first**, so a `since` window cannot end the walk early. Every page is read
+  (200 at a time, at most 10 pages), then sorted newest first and filtered. Hitting the page cap
+  sets `hasMore` and logs a Warning, because what it leaves unread is the newest updates.
+- **`revisedDate` is not when the update was made.** It is when the *next* update replaced it,
+  and 9999-01-01 on the latest one. The update's own time is the new value of
+  `System.ChangedDate`, which every update carries.
+
+Most of a raw update is bookkeeping: `System.Rev`, `System.Watermark`, the changed and authorized
+dates and people, the area and iteration ids and levels, and the state-change dates and people that
+restate the update's own author and time. `Mapping.BookkeepingFields` drops them and counts them in
+`skipped.fields`, and an update left with nothing is dropped and counted in `skipped.updates`.
+`System.History` is the discussion entry added in that update, so it comes back as `comment` in
+plain text. The rich-text fields (description, repro steps, acceptance criteria) report only their
+new value, converted and cut at `body_limit`, because both versions in full were most of a 48,000
+character raw answer. Relation changes come back as `linked`/`unlinked`, with a work item by id and
+a changeset, build or git commit by its number or hash parsed out of the `vstfs:` url.
+
 ## WIQL construction
 
 `list_work_items` takes either a full `wiql` query or filter arguments. When it builds the query
@@ -376,6 +399,15 @@ paths, not by a field on the work item.
 
 The WIQL endpoint returns ids only; fields come from a separate batched read that answers in id
 order, so results are reordered back to the query's ordering before mapping.
+
+**WIQL compares dates by day unless asked otherwise, and then refuses a time of day.** A literal
+such as `'2026-09-29T14:30:00Z'` fails with 400 "You cannot supply a time with the date when
+running a query using date precision", which is exactly the literal `changed_since` writes. The POST
+takes `timePrecision=true` to compare to the second, but it cannot simply always be sent: measured,
+it also turns `[System.ChangedDate] = '2026-09-28'` from "that day" (46 items) into "that exact
+midnight" (none). `NeedsTimePrecision` therefore sets it only when a quoted literal carries a time
+other than midnight UTC, and every date-only query keeps its old meaning. A query that mixes a
+date-only `=` with a timed literal gets the time-precision reading of both.
 
 ## Search
 
@@ -636,13 +668,16 @@ considerably more than `Not Found (404)`.
 | `read_tfvc_file` window | `max_lines`, default 300, max 2000; 100000 characters | `truncated`, page with `start_line` |
 | folder entries (`read_tfvc_file`) | 500 | `hasMore` |
 | work item ids per batch read | 200 | Batched; the endpoint 400s above this |
+| work items per `get_work_item_history` call | 50, one history read each | Refused above it |
+| updates read per work item (`get_work_item_history`) | 10 pages of 200 | `hasMore` + Warning |
 | waiter timeout (all three waiters) | 1–21600 s | Clamped; returns `timedOut: true` |
 | waiter interval (all three waiters) | 5–600 s | Clamped |
 
 ## Tool inventory
 
 Read: `list_projects`, `list_repos`, `list_pull_requests`, `get_pull_request`,
-`wait_for_pull_request`, `list_work_items`, `get_work_item`, `get_work_items`, `list_pipelines`,
+`wait_for_pull_request`, `list_work_items`, `get_work_item`, `get_work_items`,
+`get_work_item_history`, `list_pipelines`,
 `list_pipeline_runs`, `get_build_definition`, `search_build_definitions`,
 `get_pipeline_run`, `wait_for_pipeline_run`, `list_release_definitions`, `get_release_definition`,
 `get_release_definition_targets`, `list_deployment_groups`, `search_release_definitions`, `list_releases`,

@@ -316,6 +316,7 @@ Read:
 | `list_work_items` | WIQL or filter arguments, see below |
 | `get_work_item` | Description, repro steps and acceptance criteria; relations and discussion on request |
 | `get_work_items` | Several ids in one request, with their bodies, or exactly the fields named in `fields` |
+| `get_work_item_history` | Who changed what and when, newest first: field changes as from/to, comments, links added or removed; bookkeeping fields left out |
 | `list_pipelines` | |
 | `list_pipeline_runs` | One pipeline, several at once (`per_pipeline` for the latest N of each), or the runs named in `run_ids` |
 | `get_pipeline_run` | Reports each failed task with its stage, job, errors and log tail, and what the run was built from; `include_steps` lists every step with its duration, `step_log` fetches one step's log and `log_grep` keeps only its matching lines |

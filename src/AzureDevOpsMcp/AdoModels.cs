@@ -54,6 +54,18 @@ internal sealed record WireRelation(string? Rel, string? Url, Dictionary<string,
 internal sealed record WireWorkItem(
     int Id, Dictionary<string, JsonElement>? Fields, List<WireRelation>? Relations, string? Url);
 
+/// <summary>
+/// One entry of a work item's <c>updates</c>, oldest first. Only the fields that changed are
+/// present. The update's own time is <c>System.ChangedDate</c>'s new value: <c>revisedDate</c> is
+/// when the *next* update replaced this one, and 9999-01-01 on the latest.
+/// </summary>
+internal sealed record WireWorkItemUpdate(
+    int Rev, WireIdentity? RevisedBy, Dictionary<string, WireFieldChange>? Fields, WireRelationChanges? Relations);
+
+internal sealed record WireFieldChange(JsonElement? OldValue, JsonElement? NewValue);
+
+internal sealed record WireRelationChanges(List<WireRelation>? Added, List<WireRelation>? Removed);
+
 internal sealed record WiqlRef(int Id);
 
 internal sealed record WiqlResult(List<WiqlRef>? WorkItems);
@@ -478,6 +490,38 @@ public sealed record WorkItemDetailDto(
 public sealed record WorkItemBatchResult(List<WorkItemDetailDto> WorkItems, List<int>? NotFound);
 
 public sealed record RelationDto(string? Type, string? Name, int? WorkItemId, string? Url);
+
+/// <summary>
+/// A work item's history, newest first, within the window asked for. <c>hasMore</c> says
+/// <c>limit</c> cut it.
+/// </summary>
+public sealed record WorkItemHistoryDto(
+    int Id, string? Title, List<WorkItemChangeDto> Changes, bool? HasMore, SkippedDto? Skipped);
+
+public sealed record WorkItemHistoryResult(List<WorkItemHistoryDto> WorkItems, List<int>? NotFound);
+
+/// <summary>
+/// One update: who, when, and what changed. <c>comment</c> is the discussion entry added in it,
+/// as plain text. <c>linked</c>/<c>unlinked</c> are relations added and removed.
+/// </summary>
+public sealed record WorkItemChangeDto(
+    int Rev, string? By, DateTimeOffset? Date, Dictionary<string, FieldChangeDto>? Fields,
+    string? Comment, bool? Truncated, List<LinkChangeDto>? Linked, List<LinkChangeDto>? Unlinked);
+
+/// <summary>
+/// A field's old and new value as text. A long rich-text field (a description, repro steps)
+/// carries only its new value, converted and cut at <c>body_limit</c>: that it changed is the news,
+/// and both versions in full would be most of the answer.
+/// </summary>
+public sealed record FieldChangeDto(string? From, string? To, bool? Truncated);
+
+/// <summary>
+/// A relation added or removed: another work item by id, a TFVC changeset, a build or a git commit
+/// by its number or hash, and anything else by its url. <c>name</c> is the link's own name, such
+/// as Parent or Fixed in Changeset.
+/// </summary>
+public sealed record LinkChangeDto(
+    string? Name, int? WorkItemId, int? Changeset, int? Build, string? Commit, string? Url);
 
 public sealed record PipelineDto(int Id, string? Name, string? Folder);
 
@@ -1098,22 +1142,27 @@ public sealed record CommitDto(string Id, string? Author, DateTimeOffset? Date, 
 
 /// <summary>
 /// What was filtered out, so "nothing there" is distinguishable from "everything was filtered".
-/// Each count is null when it did not fire.
+/// Each count is null when it did not fire. <c>fields</c> and <c>updates</c> belong to work item
+/// history: bookkeeping fields that change on every update, and updates that held nothing else.
 /// </summary>
-public sealed record SkippedDto(int? Deleted, int? System, int? Succeeded);
+public sealed record SkippedDto(int? Deleted, int? System, int? Succeeded, int? Fields = null, int? Updates = null);
 
 internal sealed class SkipCounter
 {
     public int Deleted;
     public int System;
     public int Succeeded;
+    public int Fields;
+    public int Updates;
 
-    public SkippedDto? ToDto() => Deleted == 0 && System == 0 && Succeeded == 0
+    public SkippedDto? ToDto() => Deleted == 0 && System == 0 && Succeeded == 0 && Fields == 0 && Updates == 0
         ? null
         : new SkippedDto(
             Deleted == 0 ? null : Deleted,
             System == 0 ? null : System,
-            Succeeded == 0 ? null : Succeeded);
+            Succeeded == 0 ? null : Succeeded,
+            Fields == 0 ? null : Fields,
+            Updates == 0 ? null : Updates);
 }
 
 // -------------------------------------------------------------------------- mapping
@@ -1431,6 +1480,167 @@ internal static class Mapping
                 LinkedWorkItemId(r.Url) is null ? r.Url : null))
             .ToList();
         return mapped.Count > 0 ? mapped : null;
+    }
+
+    /// <summary>
+    /// Fields that change on every update, or restate the update's own author and time, so that
+    /// listing them would bury what the update actually did. Counted in <c>skipped.fields</c>.
+    /// </summary>
+    internal static readonly HashSet<string> BookkeepingFields = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "System.Id", "System.Rev", "System.Watermark", "System.ChangedDate", "System.ChangedBy",
+        "System.AuthorizedDate", "System.AuthorizedAs", "System.RevisedDate", "System.PersonId",
+        "System.CreatedDate", "System.CreatedBy", "System.CommentCount", "System.NodeName",
+        "System.AreaId", "System.IterationId",
+        "Microsoft.VSTS.Common.StateChangeDate", "Microsoft.VSTS.Common.ActivatedDate",
+        "Microsoft.VSTS.Common.ActivatedBy", "Microsoft.VSTS.Common.ResolvedDate",
+        "Microsoft.VSTS.Common.ResolvedBy", "Microsoft.VSTS.Common.ClosedDate",
+        "Microsoft.VSTS.Common.ClosedBy",
+    };
+
+    /// <summary>Rich-text fields: reported as changed, with only the new value, cut short.</summary>
+    internal static readonly HashSet<string> RichTextFields = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "System.Description", "Microsoft.VSTS.TCM.ReproSteps", "Microsoft.VSTS.Common.AcceptanceCriteria",
+        "Microsoft.VSTS.TCM.SystemInfo",
+    };
+
+    /// <summary>
+    /// A work item's updates as changes, newest first. Bookkeeping fields are dropped and counted,
+    /// and an update left with nothing is dropped and counted too. <paramref name="since"/> and
+    /// <paramref name="by"/> are the caller's window, not filters, so what they exclude is not
+    /// counted. <paramref name="fields"/>, when given, keeps only those fields; comments and links
+    /// are kept regardless.
+    /// </summary>
+    internal static (List<WorkItemChangeDto> Changes, bool HasMore) WorkItemHistory(
+        IReadOnlyList<WireWorkItemUpdate> updates, DateTimeOffset? since, Func<WireIdentity?, bool>? by,
+        IReadOnlyCollection<string>? fields, int bodyLimit, int limit, SkipCounter counts)
+    {
+        var changes = new List<WorkItemChangeDto>();
+        foreach (var update in updates.OrderByDescending(u => u.Rev))
+        {
+            var date = UpdateDate(update);
+            if (date < since || (by is not null && !by(update.RevisedBy)))
+            {
+                continue;
+            }
+
+            var mapped = new Dictionary<string, FieldChangeDto>();
+            string? comment = null;
+            bool? truncated = null;
+            foreach (var (name, change) in update.Fields ?? [])
+            {
+                if (BookkeepingFields.Contains(name) || name.StartsWith("System.AreaLevel", StringComparison.OrdinalIgnoreCase) ||
+                    name.StartsWith("System.IterationLevel", StringComparison.OrdinalIgnoreCase))
+                {
+                    counts.Fields++;
+                    continue;
+                }
+                if (name.Equals("System.History", StringComparison.OrdinalIgnoreCase))
+                {
+                    (comment, var cut) = Text.Truncate(Text.FromHtml(FieldText(change.NewValue)), bodyLimit);
+                    truncated = cut is true ? true : truncated;
+                    continue;
+                }
+                if (fields is { Count: > 0 } && !fields.Contains(name, StringComparer.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                // An empty value set to another empty value (a creation's blank Tags) says nothing.
+                if (FieldChange(name, change, bodyLimit) is var field && !RichTextFields.Contains(name) && field.From == field.To)
+                {
+                    counts.Fields++;
+                    continue;
+                }
+                mapped[name] = field;
+            }
+            var linked = LinkChanges(update.Relations?.Added);
+            var unlinked = LinkChanges(update.Relations?.Removed);
+
+            if (mapped.Count == 0 && comment is null && linked is null && unlinked is null)
+            {
+                counts.Updates++;
+                continue;
+            }
+            if (changes.Count >= limit)
+            {
+                return (changes, true);
+            }
+            changes.Add(new WorkItemChangeDto(
+                update.Rev, update.RevisedBy?.DisplayName, date,
+                mapped.Count > 0 ? mapped : null, comment, truncated, linked, unlinked));
+        }
+        return (changes, false);
+    }
+
+    /// <summary>
+    /// When the update was made: <c>System.ChangedDate</c>'s new value, which every update carries.
+    /// <c>revisedDate</c> is not it (see <see cref="WireWorkItemUpdate"/>).
+    /// </summary>
+    internal static DateTimeOffset? UpdateDate(WireWorkItemUpdate update) =>
+        update.Fields?.GetValueOrDefault("System.ChangedDate")?.NewValue is { ValueKind: JsonValueKind.String } value &&
+        value.TryGetDateTimeOffset(out var date)
+            ? date
+            : null;
+
+    private static FieldChangeDto FieldChange(string name, WireFieldChange change, int bodyLimit)
+    {
+        if (RichTextFields.Contains(name))
+        {
+            var (to, cut) = Text.Truncate(Text.FromHtml(FieldText(change.NewValue)), bodyLimit);
+            return new FieldChangeDto(null, to, cut);
+        }
+        var (from, fromCut) = Text.Truncate(FieldText(change.OldValue), bodyLimit);
+        var (next, toCut) = Text.Truncate(FieldText(change.NewValue), bodyLimit);
+        return new FieldChangeDto(from, next, fromCut is true || toCut is true ? true : null);
+    }
+
+    /// <summary>A field value as text: a person by display name, anything else as written.</summary>
+    internal static string? FieldText(JsonElement? value) => value switch
+    {
+        null => null,
+        { ValueKind: JsonValueKind.String } s => s.GetString() is { Length: > 0 } text ? text : null,
+        { ValueKind: JsonValueKind.Object } o => o.TryGetProperty("displayName", out var name) ? name.GetString() : o.GetRawText(),
+        { ValueKind: JsonValueKind.Null or JsonValueKind.Undefined } => null,
+        { } other => other.GetRawText(),
+    };
+
+    private static List<LinkChangeDto>? LinkChanges(List<WireRelation>? relations)
+    {
+        var mapped = (relations ?? []).Where(r => r.Url is not null).Select(LinkChange).ToList();
+        return mapped.Count > 0 ? mapped : null;
+    }
+
+    /// <summary>
+    /// What a relation points at. Artifact links are vstfs urls whose last segment is the id:
+    /// <c>VersionControl/Changeset/34543</c>, <c>Build/Build/18518</c>, and
+    /// <c>Git/Commit/{project}%2F{repo}%2F{sha}</c>, whose id is the hash after the last %2F.
+    /// </summary>
+    internal static LinkChangeDto LinkChange(WireRelation relation)
+    {
+        var url = relation.Url!;
+        var name = AttributeString(relation.Attributes, "name") ?? ShortRelation(relation.Rel);
+        var last = url[(url.LastIndexOf('/') + 1)..];
+        if (LinkedWorkItemId(url) is { } workItem)
+        {
+            return new LinkChangeDto(name, workItem, null, null, null, null);
+        }
+        if (url.StartsWith("vstfs:///VersionControl/Changeset/", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(last, CultureInfo.InvariantCulture, out var changeset))
+        {
+            return new LinkChangeDto(name, null, changeset, null, null, null);
+        }
+        if (url.StartsWith("vstfs:///Build/Build/", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(last, CultureInfo.InvariantCulture, out var build))
+        {
+            return new LinkChangeDto(name, null, null, build, null, null);
+        }
+        if (url.StartsWith("vstfs:///Git/Commit/", StringComparison.OrdinalIgnoreCase))
+        {
+            var slash = last.LastIndexOf("%2F", StringComparison.OrdinalIgnoreCase);
+            return new LinkChangeDto(name, null, null, null, slash < 0 ? last : last[(slash + 3)..], null);
+        }
+        return new LinkChangeDto(name, null, null, null, null, url);
     }
 
     internal static ChangesetDto Changeset(WireTfvcChangesetRef c) =>

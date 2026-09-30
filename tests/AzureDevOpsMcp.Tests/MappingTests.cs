@@ -518,10 +518,30 @@ public class WorkItemIdParsingTests
     {
         // Dropping it would answer with fewer items than were asked for, which is the exact
         // failure this tool exists to remove.
-        var error = Assert.Throws<McpException>(() => AdoTools.ParseIds("5201,AB#5202,oops"));
+        var error = Assert.Throws<McpException>(() => AdoTools.ParseIds("5201,x7834,oops"));
 
-        Assert.Contains("'AB#5202'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'x7834'", error.Message, StringComparison.Ordinal);
         Assert.Contains("'oops'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("[5211, 5212]")]
+    [InlineData(" [5211,5212] ")]
+    [InlineData("AB#5211,#5212")]
+    [InlineData("[AB#5211, #5212]")]
+    public void A_bracketed_list_and_commit_title_ids_mean_the_same_list(string ids)
+    {
+        // Callers pass JSON array text, and ids as commit titles write them; the intent is plain.
+        Assert.Equal([5211, 5212], AdoTools.ParseIds(ids));
+    }
+
+    [Theory]
+    [InlineData("[5211")]
+    [InlineData("5211]x")]
+    [InlineData("[[5211]]")]
+    public void A_half_bracketed_or_otherwise_mangled_list_is_still_refused(string ids)
+    {
+        Assert.Throws<McpException>(() => AdoTools.ParseIds(ids));
     }
 
     [Fact]

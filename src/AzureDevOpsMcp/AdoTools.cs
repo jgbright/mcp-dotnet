@@ -305,7 +305,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "its id, which get_work_item returns in full. Returns {workItems, hasMore?, wiql?}.")]
     public Task<WorkItemsResult> ListWorkItems(
         [Description("Project id (GUID) or name; defaults to ADO_MCP_PROJECT")] string? project = null,
-        [Description("Full WIQL query. When given, every other filter argument is ignored.")] string? wiql = null,
+        [Description("Full WIQL query. When given, every other filter argument is ignored. Date literals may carry a time of day, e.g. '2026-08-02T04:00:00Z'.")] string? wiql = null,
         [Description("Team id (GUID) or name; restricts results to the area paths that team owns")] string? team = null,
         [Description("Work item type(s), comma-separated, e.g. Bug or \"Bug,Task\"")] string? type = null,
         [Description("State(s), comma-separated, e.g. Active or \"Active,New\"")] string? state = null,
@@ -344,7 +344,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         // The WIQL endpoint returns ids only. The fields come from a separate batched read, and
         // asking for one id more than the limit answers `hasMore` without a second query.
         var refs = await client.PostAsync<WiqlResult>(
-            $"{Escape(resolvedProject.Id)}/_apis/wit/wiql?{Api}&$top={limit + 1}",
+            $"{Escape(resolvedProject.Id)}/_apis/wit/wiql?{Api}&$top={limit + 1}" +
+            (NeedsTimePrecision(query) ? "&timePrecision=true" : ""),
             new { query },
             ct);
         var ids = (refs.WorkItems ?? []).Select(r => r.Id).ToList();
@@ -378,7 +379,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
                  "included unless asked for: set include_comments=true for the discussion, which " +
                  "costs an extra request, and include_relations=true for the links. Deleted comments " +
                  "are filtered out and counted in `skipped`. To read several items, use " +
-                 "get_work_items rather than calling this once per id.")]
+                 "get_work_items rather than calling this once per id. Who changed what, and when, is " +
+                 "get_work_item_history.")]
     public Task<WorkItemDetailDto> GetWorkItem(
         [Description("Work item id")] int id,
         [Description("Include the discussion (default false; costs one extra request)")] bool include_comments = false,
@@ -449,18 +451,135 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
         return new WorkItemBatchResult(mapped, missing.Count > 0 ? missing : null);
     });
 
+    private const int MaxHistoryIds = 50;
+
+    private const int UpdatesPageSize = 200;
+
+    private const int MaxUpdatePages = 10;
+
+    [McpServerTool(Name = "get_work_item_history", UseStructuredContent = true, ReadOnly = true)]
+    [Description("Read-only. What happened to one or more work items, newest first: each change with who " +
+                 "made it, when, and the fields it changed as {from, to}, the discussion comment it " +
+                 "added, and the links it added or removed (work items, changesets, builds, commits). " +
+                 "Answers \"what changed since Monday\" and \"who moved this to QA\". `ids` is " +
+                 "comma-separated, up to 50. Bookkeeping fields that change on every update are left " +
+                 "out and counted in `skipped.fields`; a long rich-text field reports only its new " +
+                 "value, cut at body_limit.")]
+    public Task<WorkItemHistoryResult> GetWorkItemHistory(
+        [Description("Work item ids, comma-separated, e.g. \"5201,5202\" (max 50)")] string ids,
+        [Description("Only changes made at/after this ISO-8601 timestamp")] string? since = null,
+        [Description("Only changes made by this person: display name, email, or \"me\"")] string? by = null,
+        [Description("Field reference names to keep, comma-separated, e.g. \"System.State,System.AssignedTo\" (default: every changed field)")] string? fields = null,
+        [Description("Max characters per field value or comment (default 300, 0 = unlimited)")] int body_limit = 300,
+        [Description("Most changes to return per work item (default 50, max 500)")] int limit = 50,
+        CancellationToken ct = default) => Run("get_work_item_history",
+        A("ids", ids) + A("since", since) + A("by", by) + A("fields", fields) +
+        A("body_limit", body_limit) + A("limit", limit), async () =>
+    {
+        var requested = ParseIds(ids);
+        if (requested.Count > MaxHistoryIds)
+        {
+            throw new McpException(
+                $"`ids` takes at most {MaxHistoryIds} work items per call, since each history is its " +
+                $"own read; {requested.Count} were supplied. Split the read.");
+        }
+        var sinceTs = ParseTimestamp(since, nameof(since));
+        var keep = Split(fields);
+        limit = Math.Clamp(limit, 1, 500);
+        var client = await ado.GetClientAsync(ct);
+        var matches = await HistoryAuthorAsync(client, by, ct);
+
+        var titles = (await GetWorkItemsAsync(client, requested, ct, ["System.Title"]))
+            .OfType<WireWorkItem>()
+            .ToDictionary(w => w.Id, w => Mapping.Str(w.Fields, "System.Title"));
+
+        var histories = new List<WorkItemHistoryDto>();
+        var missing = new List<int>();
+        foreach (var id in requested)
+        {
+            if (!titles.TryGetValue(id, out var title))
+            {
+                missing.Add(id);
+                continue;
+            }
+            var updates = await WorkItemUpdatesAsync(client, id, ct);
+            var counts = new SkipCounter();
+            var (changes, hasMore) = Mapping.WorkItemHistory(
+                updates.Updates, sinceTs, matches, keep, body_limit, limit, counts);
+            histories.Add(new WorkItemHistoryDto(
+                id, title, changes, hasMore || updates.Capped ? true : null, counts.ToDto()));
+        }
+        return new WorkItemHistoryResult(histories, missing.Count > 0 ? missing : null);
+    });
+
+    /// <summary>
+    /// Every update of one work item. The endpoint answers oldest first, so a `since` window cannot
+    /// end the walk early; it is bounded by <see cref="MaxUpdatePages"/> instead, and hitting that
+    /// is reported rather than passed off as the whole history.
+    /// </summary>
+    private async Task<(List<WireWorkItemUpdate> Updates, bool Capped)> WorkItemUpdatesAsync(
+        AdoClient client, int id, CancellationToken ct)
+    {
+        var updates = new List<WireWorkItemUpdate>();
+        for (var page = 0; page < MaxUpdatePages; page++)
+        {
+            var batch = (await client.GetAsync<ListResponse<WireWorkItemUpdate>>(
+                $"_apis/wit/workItems/{id}/updates?{Api}&$top={UpdatesPageSize}&$skip={page * UpdatesPageSize}", ct)).Value ?? [];
+            updates.AddRange(batch);
+            if (batch.Count < UpdatesPageSize)
+            {
+                return (updates, false);
+            }
+        }
+        log.Line(LogLevel.Warning, Ev.Page,
+            "work item history hit the page cap; the newest updates were not read" +
+            A("id", id) + A("updates", updates.Count));
+        return (updates, true);
+    }
+
+    /// <summary>
+    /// Who <c>by</c> means. "me" is the signed-in identity, compared by id; anything else matches a
+    /// display name or email, whole or in part, as <c>assigned_to</c> does.
+    /// </summary>
+    private static async Task<Func<WireIdentity?, bool>?> HistoryAuthorAsync(
+        AdoClient client, string? by, CancellationToken ct)
+    {
+        if (by is not { Length: > 0 })
+        {
+            return null;
+        }
+        if (string.Equals(by.Trim(), "me", StringComparison.OrdinalIgnoreCase))
+        {
+            var me = (await client.GetAsync<WireConnectionData>("_apis/connectionData?api-version=7.1-preview", ct))
+                .AuthenticatedUser?.Id;
+            return who => who?.Id is { } id && string.Equals(id, me, StringComparison.OrdinalIgnoreCase);
+        }
+        return who => new[] { who?.DisplayName, who?.UniqueName }
+            .Any(n => n?.Contains(by.Trim(), StringComparison.OrdinalIgnoreCase) == true);
+    }
+
     /// <summary>
     /// Ids as the caller writes them, which is the comma-separated list the batch endpoint itself
-    /// takes. A non-numeric entry is named rather than dropped: a silently shorter answer is the
-    /// failure this tool exists to remove.
+    /// takes. Two other spellings of the same intent are accepted: the list in brackets, as JSON
+    /// array text, and an id written <c>#1234</c> or <c>AB#1234</c>, as commit titles carry them. A
+    /// non-numeric entry is named rather than dropped: a silently shorter answer is the failure
+    /// this tool exists to remove.
     /// </summary>
     internal static List<int> ParseIds(string ids, string argument = "ids", string what = "work item")
     {
         var parsed = new List<int>();
         var bad = new List<string>();
-        foreach (var part in (ids ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries))
+        var list = (ids ?? "").Trim();
+        if (list is ['[', .., ']'])
+        {
+            list = list[1..^1];
+        }
+        foreach (var part in list.Split(',', StringSplitOptions.RemoveEmptyEntries))
         {
             var trimmed = part.Trim();
+            trimmed = trimmed.StartsWith("AB#", StringComparison.OrdinalIgnoreCase) ? trimmed[3..]
+                : trimmed.StartsWith('#') ? trimmed[1..]
+                : trimmed;
             if (trimmed.Length == 0)
             {
                 continue;
@@ -3270,6 +3389,8 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
             ? A("children", children.Count)
             : A("totalLines", f.TotalLines) + A("startLine", f.StartLine) + (f.Truncated is true ? A("truncated", true) : ""),
         ShelvesetDto s => A("changes", s.Changes?.Count ?? 0) + (s.HasMore is true ? A("hasMore", true) : ""),
+        WorkItemHistoryResult h => A("workItems", h.WorkItems.Count) +
+            A("changes", h.WorkItems.Sum(w => w.Changes.Count)) + A("notFound", h.NotFound?.Count ?? 0),
         PipelineRunDetailDto run =>
             A("run", run.Id) + A("result", run.Result) + A("failedSteps", run.FailedSteps?.Count ?? 0) +
             (run.Steps is { } steps ? A("steps", steps.Count) : "") + Skipped(run.Skipped),
@@ -3322,6 +3443,23 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
           A("skipped.succeeded", skipped.Succeeded);
 
     // -------------------------------------------------------------- WIQL construction
+
+    /// <summary>
+    /// Whether the WIQL POST needs <c>timePrecision=true</c>. Without it the service compares dates
+    /// by day and refuses a literal carrying a time other than midnight (400: "You cannot supply a
+    /// time with the date"). It cannot simply always be on: measured, it also turns
+    /// <c>[System.ChangedDate] = '2026-09-28'</c> from "that day" (46 items) into "that exact
+    /// midnight" (none). So it is set only when a literal needs it, which leaves every date-only
+    /// query behaving as it always has.
+    /// </summary>
+    internal static bool NeedsTimePrecision(string wiql) =>
+        TimedLiteral.Matches(wiql).Any(m =>
+            m.Groups["time"].Value.Any(c => c is >= '1' and <= '9') ||
+            m.Groups["offset"].Value is { Length: > 1 } offset && offset.Any(c => c is >= '1' and <= '9'));
+
+    private static readonly Regex TimedLiteral = new(
+        @"'\d{4}-\d{2}-\d{2}[T ](?<time>\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(?<offset>Z|[+-]\d{2}:?\d{2})?'",
+        RegexOptions.CultureInvariant);
 
     /// <summary>
     /// Builds the query the filter arguments describe. Pure, and the result is echoed back to the
