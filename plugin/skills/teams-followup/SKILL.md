@@ -1,6 +1,7 @@
 ---
 name: teams-followup
-version: 1.0.0
+metadata:
+  version: 1.0.0
 description: |
   Handle a Teams message end to end - investigate it, signal you are on it,
   draft a reply for the user, and forward it once they approve. Use when the
@@ -27,14 +28,14 @@ phone, and post it yourself once they say yes.
    tell the sender a human is on this, and a signal that arrives with the reply
    has said nothing. This is the user's own rubric; check
    `reference-teams-reactions.md` in their memory for what the emoji mean.
-3. **Draft to the user's self chat**, one message, `format: "markdown"`.
-   Destination comes from `reference-teams-destinations.md`. Shape below.
+3. **Draft to the user's self chat**, one message, `chat: "self"`,
+   `format: "markdown"`. Shape below.
 4. **Wait for the verdict** with the poller. A reaction approves; a reply is
    feedback. On approval, post the draft to the original conversation and mark
    the source done. On feedback, revise, resend as a new draft, re-arm.
 
 Steps 1-3 are the `teams-message` skill's drafting rules, unchanged - the
-critique pass, the markdown file as durable record, the humanizer. This skill
+critique pass and the markdown file as durable record. This skill
 adds the reacting, the waiting and the forwarding around them.
 
 ## The draft message
@@ -54,10 +55,10 @@ travel with it. Re-reading the sent message back and stripping the cue is the
 same job done worse - it turns a string you own into a parsing problem, and the
 failure mode is posting the cue into somebody else's conversation.
 
-Do not split the cue into a second message. That was tried: it left the
-instruction and the thing to react to in different bubbles, and the user reacted
-on the source message instead, which the watcher was not looking at. One message
-means one place to react.
+Do not split the cue into a second message. Split, the instruction and the
+thing to react to sit in different bubbles, and the user reacts on the source
+message instead, which the poller is not watching. One message means one place
+to react.
 
 Say the destination in the cue. "React to approve" without naming where it goes
 asks for a decision the user cannot check.
@@ -171,5 +172,5 @@ revision, to a second recipient, or to a follow-up message.
   own messages and would relay nothing.
 - **`could not start teams-mcp server`** - the .NET tool moved or its auth
   record is gone. `teams-mcp auth` is the fix; the `mcp-reauth` skill drives it.
-  The browser flow currently fails with `AADSTS500113` (no reply address
-  registered on the app registration), so device code is the working path.
+  The browser flow fails with `AADSTS500113` while the app registration has no
+  reply address registered, so device code is the working path.

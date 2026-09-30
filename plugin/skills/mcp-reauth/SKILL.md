@@ -1,7 +1,6 @@
 ---
 name: mcp-reauth
 description: Re-authenticate the Teams MCP server with Claude driving the Microsoft device-code flow end to end — background-runs `teams-mcp auth`, scrapes the device code, stages and drives the login page in the browser, and leaves the user only the final biometric. Use when Teams MCP tools fail with auth or disconnect errors, when the user asks to "log in to Teams MCP", "re-auth MCP", "fix Teams auth", or when a pre-drafting health probe fails.
-user_invocable: true
 ---
 
 # MCP re-auth, browser-driven
@@ -12,7 +11,7 @@ Converts the Teams MCP re-auth from a manual context-switch into a mostly-automa
 
 ## Step 0 — probe before you authenticate
 
-Call a cheap Teams tool first (`list_chats` with `limit: 1`), or from a shell run `teams-mcp selftest`, which does a silent-auth Graph round-trip and prints raw errors. **Only run the flow below if the probe fails.** An existing token cache does NOT short-circuit `teams-mcp auth` — it runs the full interactive flow regardless, so re-running it against healthy auth costs the user an entire sign-in for nothing.
+Call a cheap Teams tool first (`list_chats` with `limit: 1`), or from a shell run `teams-mcp selftest`, which does a silent-auth Graph round-trip and prints raw errors. **Only run the flow below if the probe fails.** An existing token cache does not short-circuit `teams-mcp auth` — it runs the full interactive flow regardless, so re-running it against healthy auth costs the user an entire sign-in for nothing.
 
 ## The flow
 

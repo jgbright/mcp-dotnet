@@ -1,13 +1,14 @@
 ---
 name: teams-message
-version: 2.3.0
+metadata:
+  version: 2.3.0
 description: |
   Draft and send Microsoft Teams messages following the user's established rules
-  for destination, formatting, humanization, and approval. Use whenever the user
+  for destination, formatting, and approval. Use whenever the user
   asks to draft, compose, send, resend, or update a Teams chat or channel
   message, or to react to one with an emoji. Also use when the user says "send
-  me" / "send this to me" / "drop it in Teams" — this skill knows how to look up
-  the current user's self-chat destination from local memory.
+  me" / "send this to me" / "drop it in Teams" — this skill knows how to reach
+  the current user's self chat.
 ---
 
 # Teams Message Skill
@@ -16,11 +17,11 @@ All the rules for drafting and sending Microsoft Teams messages on the current u
 
 This skill is intentionally portable across users and organizations. User-specific wiring (the actual self-chat ID, named recipients, project paths) lives in the user's local memory — this skill describes the *workflow* and *rules*, not personal identifiers.
 
-## Hard rules (non-negotiable)
+## Hard rules
 
 ### 1. Never send without explicit approval
 
-Do NOT send Teams messages to anyone other than the current user without the user's explicit affirmative approval. "Draft this" or "write this" is NOT approval to send. Approval must be a clear "send it" or equivalent, and approval is scoped to the specific message and recipient — approving one message does not approve future ones.
+Do not send a Teams message to anyone other than the current user without the user's explicit affirmative approval, because a sent message reaches its recipients the moment it posts. "Draft this" or "write this" is not approval to send. Approval must be a clear "send it" or equivalent, and approval is scoped to the specific message and recipient — approving one message does not approve future ones.
 
 Sending to the current user's own self-chat is always allowed because it's for the user's review. Anyone else requires a green light.
 
@@ -28,9 +29,7 @@ Sending to the current user's own self-chat is always allowed because it's for t
 
 When the user asks you to send them something in Teams ("send me...", "drop it in Teams for me", "send it to me but only to me"), the destination is the current user's Teams self-chat — i.e., whoever Claude is running as.
 
-**Look up the chat ID at runtime from local memory.** It is stored as a memory entry (typically `reference-teams-destinations.md`, indexed in MEMORY.md). Read that entry before sending. If no entry exists, ask the user for their Teams self-chat ID and offer to save it as a memory entry so future sessions don't have to ask again.
-
-**A self-chat ID cannot be rediscovered.** `list_chats` lists 1:1 and group chats; the user's chat with themselves is not among them, so there is nothing to verify a remembered value against and nothing to fall back on when the memory entry is missing. Ask, then confirm by sending and letting the user say they saw it — never guess a chat from the list and never substitute the closest-looking one.
+**Address it as `chat: "self"`.** Every chat tool accepts that reserved name. `get_current_user` returns the same chat's id as `selfChatId`, and `list_chats` lists it first with `kind: "self"`. Graph does not list the self chat among the user's chats, so these three are the only ways to reach it. Never pick the closest-looking chat from the list instead.
 
 **Do not use `19:meeting_...@thread.v2` chats as the destination for human-drafted messages.** They are ad-hoc / instant-meeting leftovers; messages posted there don't reliably surface in the Teams desktop sidebar. Some users wire one of these chats into automated notification commands; that wiring is held in user-local memory and is not a substitute for the self-chat.
 
@@ -40,16 +39,16 @@ When the user asks you to send them something in Teams ("send me...", "drop it i
 
 `reply_to` answers a specific message rather than posting a loose one: pass a message id from the matching read tool. In a channel the reply lands inside that thread (pass the thread root's id — a reply's `replyToId` names it); in a chat it becomes a quote card, the same one the client's Reply button produces. Teams builds the quote from the id, so never restate the quoted text in `body`. **It does not work in the self chat** — Graph drops the quote there and the tool refuses rather than posting a message with an empty quote box, so a self-chat message is always a plain send.
 
-### 4. Always use `format: "markdown"`
+### 4. Send with `format: "markdown"`
 
-Set `format: "markdown"` unless you have a specific reason not to. Plain text loses code blocks, bullets, bold, and links.
+Set `format: "markdown"` unless you have a specific reason not to — see "Body format for Teams rendering" below for why plain text and html are the exceptions.
 
 ## Workflow: drafting a new message
 
 When the user asks you to draft a Teams message (whether to send to themselves, to someone else, or to a group):
 
 0. **Probe Teams MCP health before drafting.** Call a cheap read first — `list_chats` with `limit: 1` is one request and returns almost nothing. If it fails or the server is disconnected, tell the user now and re-authenticate *before* the drafting chain runs — `teams-mcp auth` is the fix, and the `mcp-reauth` skill drives it end to end. The drafting chain can take minutes; discovering a dead server only at send time wastes the whole chain. If the user wants to proceed anyway, draft, but note delivery is blocked pending re-auth. Only fall through to re-auth when the probe actually fails: an existing token cache does **not** short-circuit the interactive flow, so running it unnecessarily costs the user a full sign-in.
-1. **Refine the draft before presenting it.** If the host project provides a drafting-refinement skill (commonly named `draft-critique`), invoke it via `Skill` — it produces a converged, already-humanized draft; use *that* as the input to the steps below, and don't re-humanize it. If no such skill is available, draft carefully, then apply a humanization pass if one is available (e.g. a `humanizer` skill).
+1. **Refine the draft before presenting it.** If the host project provides a drafting-refinement skill (commonly named `draft-critique`), invoke it via `Skill` and use its output as the input to the steps below. Follow any writing rules the user's project or memory defines.
 2. **Save the draft to a markdown file** at its canonical path. Pick a path that matches existing project conventions for the topic (look for sibling drafts or a `docs/correspondence/` folder; if a project memory entry names a path for this topic, use it). The file is the durable record; the Teams message is the delivery mechanism.
 3. **Top of the file:** Include a status line so the file is self-describing:
    ```
@@ -63,9 +62,8 @@ When the user asks you to draft a Teams message (whether to send to themselves, 
 When the user asks for changes to a draft:
 
 1. **Edit the markdown file** (don't just edit the message in the conversation). The file stays the source of truth.
-2. **Re-run the humanizer pass** if the edit is non-trivial. Small wording tweaks don't need a full pass, but tone or structure changes do.
-3. **Resend to the user's self-chat** with a clear version marker (`v2`, `v3`, etc.) in the heading so the user can tell the drafts apart in chat history.
-4. **Note what changed** either in the message itself or in a short accompanying line so the user doesn't have to diff it against the previous version.
+2. **Resend to the user's self-chat** with a clear version marker (`v2`, `v3`, etc.) in the heading so the user can tell the drafts apart in chat history.
+3. **Note what changed** either in the message itself or in a short accompanying line so the user doesn't have to diff it against the previous version.
 
 ## Body format for Teams rendering
 
@@ -98,7 +96,7 @@ is markdown, the file body and the sent body are now usually the same text.
 
 ### Sending to the current user (self)
 
-Use the chat ID from the user's local memory entry (typically `reference-teams-destinations.md`). Always. Do not use `19:meeting_...` chats for human drafts.
+Use `chat: "self"`. Do not use `19:meeting_...` chats for human drafts.
 
 ### Sending to a specific person
 
@@ -136,7 +134,7 @@ Two facts to work with, both measured against the live service:
 
 | Request                                                     | Action                                                              |
 | ----------------------------------------------------------- | ------------------------------------------------------------------- |
-| "Draft a message to X"                                      | Write the markdown file, humanize, present in conversation, send copy to the user's self-chat. **Do not send to X.** |
+| "Draft a message to X"                                      | Write the markdown file, present in conversation, send copy to the user's self-chat. **Do not send to X.** |
 | "Send me this" / "send it to me"                            | Send to the user's self-chat. Safe without further approval.        |
 | "Send it to X" (named recipient, clear)                     | Confirm chat identity, then send. Use the message body the user approved. |
 | "Send it" (ambiguous recipient)                             | Ask which chat before sending.                                      |
@@ -146,10 +144,9 @@ Two facts to work with, both measured against the live service:
 
 This skill keeps user-specific values out of its body so it remains portable. Expect to find these in the user's local memory directory:
 
-- **`reference-teams-destinations.md`** — chat IDs for the current user's Teams destinations, including the self-chat. Required for the "send to me" path.
+- **`reference-teams-destinations.md`** — chat IDs for the user's other named Teams destinations, when they keep any. The self chat needs no entry; it is `chat: "self"`.
 - **`reference-teams-reactions.md`** — the user's reaction rubric: which emoji they react with, when, and what each signals. Required before reacting on the user's behalf.
 - **`feedback-draft-correspondence.md`** — general approval-gate guidance for outbound correspondence (Teams, email, Slack).
-- **`feedback-humanizer-scope.md`** — scope of when to apply the humanizer pass.
 - **`feedback-teams-citation.md`** — citing Teams sources in docs (distinct from sending a Teams message).
 - A project-auth entry (naming varies per project) — auth state and any user-specific automated-notification chat targets used by other commands. Not the destination for human drafts.
 

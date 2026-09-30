@@ -1,6 +1,7 @@
 # CLAUDE.md — TeamsMcp
 
-Teams-server specifics. The repository-wide rules are in the root `CLAUDE.md` and still apply;
+Teams-server specifics. The repository-wide rules are in the root `CLAUDE.md` and
+`.claude/rules/tool-conventions.md`, and still apply;
 `docs/teams-server.md` and `docs/authentication.md` are the long form of what follows.
 
 ## Architecture constraints

@@ -1,7 +1,7 @@
 # CLAUDE.md — AzureDevOpsMcp
 
-Azure DevOps server specifics. The repository-wide rules are in the root `CLAUDE.md` and still
-apply; `docs/azure-devops-server.md` is the long form of what follows.
+Azure DevOps server specifics. The repository-wide rules are in the root `CLAUDE.md` and
+`.claude/rules/tool-conventions.md`, and still apply; `docs/azure-devops-server.md` is the long form of what follows.
 
 ## Architecture constraints
 

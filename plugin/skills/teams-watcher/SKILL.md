@@ -1,6 +1,7 @@
 ---
 name: teams-watcher
-version: 1.1.0
+metadata:
+  version: 1.1.0
 description: |
   Watch Teams conversations for replies and surface each new message in this
   session as it arrives. One watch covers many conversations, scoped to a
@@ -136,44 +137,22 @@ is the designed trade: watch state dies with the watcher. Do not widen
 `-Backfill` on a re-arm to compensate; use `search_messages` to catch up
 deliberately instead.
 
-## Why this is not a subagent, and why no wake trick fixes it
+## Arm it in this session, not in a subagent
 
-It was built as one first. A subagent goes idle the moment it has armed its
-watch, and **nothing wakes an idle subagent**. Background events queue and are
-delivered only when it is next invoked for some other reason.
+Nothing wakes an idle subagent. Measured: a subagent that armed a watch and
+went idle relayed nothing while its poller printed two replies, and a
+background command's completion reached it only after an unrelated message
+woke it. Every wake trick (a spool file, a file watcher, a named pipe) ends in
+that same completion path, so none of them fixes it. The poller is a script
+that cannot act on anything and spends no model tokens per poll, so a subagent
+would add nothing to the relay-only discipline.
 
-Both delivery paths were measured rather than assumed:
-
-- **Monitor events.** A watcher armed at 10:07:41 sat idle while its poller
-  detected messages at 10:11:03 and 10:11:20, and relayed neither. Both lines
-  were in the poller's output and both ids were recorded in the cursor. They
-  surfaced only when an unrelated message woke the agent.
-- **Background task completion.** A probe launched a 20 second command at
-  10:14:40 and went idle. No notification reached it. It was woken at 10:16:58
-  by a message, and the completion notification arrived afterwards, riding
-  along behind it.
-
-The second result is the one that closes the door, because it rules out the
-obvious repair. A spool directory with a waiter that blocks until a file appears
-looks like it should work, and it does not: the waiter's exit is itself a task
-completion, so it queues like everything else. The same goes for a file watcher,
-a named pipe, or any other trigger, because they all terminate in that same
-delivery path.
-
-A lead that has to poke its own watcher to get its messages is worse off than
-one that checks Teams directly, so the watch belongs in a session that stays
-alive. Nothing is lost by dropping the hop. The detection is a script, it cannot
-interpret, and it costs no model tokens per poll, so the relay-only discipline a
-subagent would have enforced is already structural.
-
-For the same reason, do not pass `-ExitOnBatch`. That flag makes the poller exit
-after its first batch, which suits a caller that wakes on process exit. Under
-Monitor it is wrong twice over: the poller does not exit when it arms, so the
-READY confirmation is unreachable until the first reply, and anything relaunching
-it risks a second poller on top of a live one. When it exits, it prints its
-final position as a `TEAMS-WATCH-CURSOR` line; the relaunch passes that token
-back via `-Cursor`, which is what keeps consecutive `-ExitOnBatch` runs from
-replaying or dropping the gap between them.
+Do not pass `-ExitOnBatch` under Monitor. It makes the poller exit after its
+first batch, which only suits a caller that wakes on process exit: under
+Monitor the READY line cannot arrive until the first reply, and a relaunch
+risks a second poller on top of a live one. A caller that does use it passes
+the final `TEAMS-WATCH-CURSOR` token back via `-Cursor`, so consecutive runs
+neither replay nor drop the gap between them.
 
 ## Failure modes
 

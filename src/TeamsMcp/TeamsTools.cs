@@ -64,8 +64,8 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
                  "The signed-in user's own notes-to-self chat is listed first with kind: \"self\" — Graph " +
                  "does not return it among the user's chats, so it would otherwise be unreachable without " +
                  "knowing its id. Its position is fixed, not a claim about recency. Every chat tool also " +
-                 "takes a topic or a person's name in `chat` directly, so this is no longer a required " +
-                 "translation step before reading or sending.")]
+                 "takes a topic or a person's name in `chat` directly, so there is no need to call this " +
+                 "first to turn a name into an id before reading or sending.")]
     public Task<List<ChatDto>> ListChats(
         [Description("Only chats that include a member whose display name contains this (case-insensitive)")] string? member = null,
         [Description("Only chats whose topic contains this (case-insensitive)")] string? topic = null,
@@ -182,9 +182,10 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     [McpServerTool(Name = "get_current_user", UseStructuredContent = true, ReadOnly = true)]
     [Description("Read-only. Who this server is signed in as, and the id of that user's notes-to-self " +
                  "chat — the destination for anything staged for the user's own review. Graph does not " +
-                 "list that chat among the user's chats, so this and the reserved name `self`, which " +
-                 "every chat tool accepts in `chat`, are the two ways to reach it. Doubles as a health " +
-                 "probe: it fails the way every other tool would if the sign-in has lapsed. One request.")]
+                 "list that chat among the user's chats, so this, the first row of list_chats and the " +
+                 "reserved name `self`, which every chat tool accepts in `chat`, are the ways to reach " +
+                 "it. Doubles as a health probe: it fails the way every other tool would if the sign-in " +
+                 "has lapsed. One request.")]
     public Task<CurrentUserDto> GetCurrentUser(CancellationToken ct = default) =>
         Run("get_current_user", "", async () =>
         {
@@ -979,7 +980,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     // `replyToId` names. A channel thread is one level deep, so replying to a reply still lands in
     // the one thread. Chats have no threads and quote instead; see send_chat_message.
     [McpServerTool(Name = "send_channel_message", UseStructuredContent = true, Destructive = false, Idempotent = false)]
-    [Description("MUTATION: posts a message visible to everyone in the channel. Disabled unless the environment " +
+    [Description("Mutation: posts a message visible to everyone in the channel. Disabled unless the environment " +
                  "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `team`/`channel` accept ids or display " +
                  "names. Set reply_to to a thread root's message id to post inside that thread rather than " +
                  "starting a new one.")]
@@ -1017,7 +1018,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     //   - The client's old Skype markup (`<blockquote itemtype=".../Reply">`) is refused outright.
     // Graph builds the card from the id, so the caller never restates the quoted text.
     [McpServerTool(Name = "send_chat_message", UseStructuredContent = true, Destructive = false, Idempotent = false)]
-    [Description("MUTATION: sends a message visible to everyone in the chat. Disabled unless the environment " +
+    [Description("Mutation: sends a message visible to everyone in the chat. Disabled unless the environment " +
                  "variable TEAMS_MCP_ALLOW_SEND=true is set for this server. `chat` is a chat id, a group " +
                  "chat's topic, the other person's display name for a 1:1, or 'self' for the notes-to-self " +
                  "chat; a name matching more than one chat is refused with the candidates listed rather " +
@@ -1058,7 +1059,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     // keeps one reaction per user per message, so setting a different emoji MOVES the caller's
     // reaction, and the 204 looks identical either way.
     [McpServerTool(Name = "react_to_chat_message", UseStructuredContent = true, Destructive = false, Idempotent = true)]
-    [Description("MUTATION: puts an emoji reaction on a chat message as the signed-in user; remove=true takes " +
+    [Description("Mutation: puts an emoji reaction on a chat message as the signed-in user; remove=true takes " +
                  "it off again. `reaction` is the emoji itself, e.g. 🤔 or ✅. The user holds one reaction per " +
                  "message through this API: setting a different emoji moves it rather than adding a second. " +
                  "Disabled unless the environment variable TEAMS_MCP_ALLOW_SEND=true is set for this server. " +
@@ -1093,7 +1094,7 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
     });
 
     [McpServerTool(Name = "react_to_channel_message", UseStructuredContent = true, Destructive = false, Idempotent = true)]
-    [Description("MUTATION: puts an emoji reaction on a channel message as the signed-in user; remove=true " +
+    [Description("Mutation: puts an emoji reaction on a channel message as the signed-in user; remove=true " +
                  "takes it off again. `reaction` is the emoji itself, e.g. 🤔 or ✅. The user holds one reaction " +
                  "per message through this API: setting a different emoji moves it rather than adding a second. " +
                  "Disabled unless the environment variable TEAMS_MCP_ALLOW_SEND=true is set for this server. " +

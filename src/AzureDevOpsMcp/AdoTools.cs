@@ -2512,7 +2512,7 @@ public sealed class AdoTools(AdoContext ado, ILogger<AdoTools> log)
     // signed-in person in a control that exists to require a person. Destructive because
     // approving a pre-deploy gate is what lets the deployment proceed.
     [McpServerTool(Name = "approve_release", UseStructuredContent = true, Destructive = true, Idempotent = false)]
-    [Description("Write — requires BOTH ADO_MCP_ALLOW_WRITE=true and ADO_MCP_ALLOW_APPROVE=true in " +
+    [Description("Write — requires both ADO_MCP_ALLOW_WRITE=true and ADO_MCP_ALLOW_APPROVE=true in " +
                  "this server's environment; approving is gated separately from every other write " +
                  "because it records the signed-in person as having authorized the deployment. " +
                  "Approve (or with reject=true, reject) the approval an environment of a release is " +
