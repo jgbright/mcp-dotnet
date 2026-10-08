@@ -56,3 +56,29 @@ Sign in once with `teams-mcp auth`; the `mcp-reauth` skill automates most of it.
 | `teams-followup` | Handle one message end to end: investigate, react 🤔 on the source, draft to the self-chat, forward it once the user reacts to approve. |
 | `pr-review` | Review one of your own Azure DevOps PRs, revise the findings with Claude in your Teams self-chat (optionally testing the branch first), and post them to the PR as inline comments once you react to approve. |
 | `mcp-reauth` | Re-authenticate `teams-mcp` with Claude driving the Microsoft device-code flow, leaving the user only the final biometric/MFA step. |
+
+## Send gate and drafts pane
+
+The plugin also carries a hooks module (`hooks/`, Claude Code function hooks, early
+access) that does two things for Teams drafts.
+
+**Send gate.** A Teams send to anyone but the self chat goes through only when its body
+was approved. There are two ways to approve. The user reacts to that exact body's
+self-chat draft, and the gate reads the reaction back before letting the send through.
+Or the user presses Send in the drafts pane. Each approval covers one send. The gate
+also refuses any reaction placed in the self chat, since reactions there are the user's
+approvals, and refuses a body that still carries teams-followup's "React to approve"
+cue. Reactions in other chats pass. A phone approval is tied to the body, not to the
+destination.
+
+**Drafts pane.** The `show_drafts` tool (`mcp__mcp-dotnet__show_drafts`) shows the
+variants side by side in a pane beside the transcript. Each variant has three buttons:
+Self (hotkeys 1-4) posts it to the self chat, Copy copies it, and Send posts it to the
+destination. Notes typed into Revise come back as the next prompt. `/drafts` reopens
+the pane, and the status line shows the open draft and whether a verdict is pending.
+
+Turn the gate off with the `sendGate` option (`/config`, or `pluginConfigs` in
+settings). The pane works either way.
+
+`claude plugin test plugin` runs the hook tests and `claude plugin validate plugin`
+checks the module.

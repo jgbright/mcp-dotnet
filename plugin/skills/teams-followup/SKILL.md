@@ -1,7 +1,7 @@
 ---
 name: teams-followup
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 description: |
   Handle a Teams message end to end - investigate it, signal you are on it,
   draft a reply for the user, and forward it once they approve. Use when the
@@ -105,6 +105,11 @@ TEAMS-VERDICT-QUIET     waited=<n>s
 TEAMS-VERDICT-GAP       <the draft fell out of the window>
 TEAMS-VERDICT-ERR       <what went wrong, first then every tenth>
 ```
+
+**The send gate checks it too.** When this plugin's hooks are loaded, the gate
+refuses the forward unless the self-chat draft with that exact body (cue removed)
+has a reaction. It also refuses any reaction in the self chat and any body that
+still carries the cue. If the forward is refused, report the reason.
 
 **Verify an approval before acting on it.** A monitor event is a notification,
 not the user's turn - re-read the message and confirm the reaction is there

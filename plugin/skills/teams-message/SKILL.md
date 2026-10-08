@@ -1,7 +1,7 @@
 ---
 name: teams-message
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 description: |
   Draft and send Microsoft Teams messages following the user's established rules
   for destination, formatting, and approval. Use whenever the user
@@ -56,6 +56,9 @@ When the user asks you to draft a Teams message (whether to send to themselves, 
    ```
 4. **Present the draft** in the conversation so the user can review. Do not send to anyone but the user's own self-chat until they explicitly approve.
 5. **Send a copy to the user's self-chat** if they ask to see it in Teams (they often do — it lets them review from a phone or copy-paste into the real destination themselves).
+6. **Show the variants in the drafts pane** when the `show_drafts` tool is listed (`mcp__mcp-dotnet__show_drafts`). Pass the topic, the version, the destination as the send tools address it, and each variant's exact body. The user picks and sends from there. A press on Send is the approval, and the pane posts the body itself, so don't send it again. The transcript receives a note saying what went where.
+
+**The send gate.** When this plugin's hooks are loaded, a send to anyone but the self chat is refused unless that exact body was approved. It counts as approved when the user reacted to its self-chat draft or pressed Send in the pane. Each approval covers one send. A refusal says why. Do not work around it. Tell the user what is still needed.
 
 ## Workflow: editing and resending
 
