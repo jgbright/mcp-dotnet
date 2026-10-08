@@ -469,3 +469,79 @@ public class DescribeResultTests
         Assert.Equal("", TeamsTools.Describe(42));
     }
 }
+
+/// <summary>An adaptive card's visible text is rendered into the body, after any body text.</summary>
+public class AdaptiveCardTests
+{
+    private const string AlertCard = """
+        {"type":"AdaptiveCard","version":"1.4","body":[
+          {"type":"TextBlock","text":"Disk Space Low","weight":"Bolder"},
+          {"type":"Image","url":"https://example.test/icon.png"},
+          {"type":"FactSet","facts":[{"title":"Host","value":"web-01"},{"title":"Free","value":"5%"}]},
+          {"type":"FactSet","facts":[{"title":"Host","value":"web-02"},{"title":"Free","value":"3%"}]},
+          {"type":"Input.Text","id":"note","placeholder":"Add a note"}],
+         "actions":[{"type":"Action.OpenUrl","title":"Open dashboard","url":"https://example.test"}]}
+        """;
+
+    private static ChatMessage CardMessage(string card, string html = "<attachment id=\"a1\"></attachment>") => new()
+    {
+        Id = "1",
+        MessageType = ChatMessageType.Message,
+        Body = new ItemBody { ContentType = BodyType.Html, Content = html },
+        Attachments = [new ChatMessageAttachment { Id = "a1", ContentType = TeamsTools.AdaptiveCardContentType, Content = card }],
+    };
+
+    private static MessageDto? Map(ChatMessage msg, int bodyLimit = 2000) =>
+        TeamsTools.MapMessage(msg, includeSystem: false, bodyLimit, includeReplies: false, new TeamsTools.SkipCounter());
+
+    [Fact]
+    public void Title_and_repeated_fact_blocks_render_in_order_and_the_card_stays_listed()
+    {
+        var dto = Map(CardMessage(AlertCard));
+
+        Assert.Equal("Disk Space Low\nHost: web-01\nFree: 5%\nHost: web-02\nFree: 3%", dto?.Body);
+        Assert.Null(dto?.Truncated);
+        Assert.Equal(TeamsTools.AdaptiveCardContentType, Assert.Single(dto!.Attachments!).ContentType);
+    }
+
+    [Fact]
+    public void Nested_containers_columns_and_rich_text_are_found()
+    {
+        const string card = """
+            {"type":"AdaptiveCard","body":[{"type":"Container","items":[
+              {"type":"ColumnSet","columns":[
+                {"type":"Column","items":[{"type":"TextBlock","text":"Left"}]},
+                {"type":"Column","items":[{"type":"RichTextBlock","inlines":["Right ",{"type":"TextRun","text":"side"}]}]}]}]}]}
+            """;
+
+        Assert.Equal("Left\nRight side", TeamsTools.CardToText(card));
+    }
+
+    [Fact]
+    public void Body_text_comes_before_card_text()
+    {
+        var dto = Map(CardMessage(AlertCard, "<p>See below</p><attachment id=\"a1\"></attachment>"));
+
+        Assert.StartsWith("See below\nDisk Space Low\n", dto?.Body);
+    }
+
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("""{"type":"AdaptiveCard","body":[{"type":"TextBlock","text":{"oops":1}}]}""")]
+    public void A_card_that_does_not_parse_leaves_the_body_as_it_was(string card)
+    {
+        var dto = Map(CardMessage(card));
+
+        Assert.Equal("", dto?.Body);
+        Assert.Single(dto!.Attachments!);
+    }
+
+    [Fact]
+    public void Body_limit_cuts_card_text()
+    {
+        var dto = Map(CardMessage(AlertCard), bodyLimit: 10);
+
+        Assert.Equal("Disk Space", dto?.Body);
+        Assert.True(dto?.Truncated);
+    }
+}

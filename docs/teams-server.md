@@ -53,6 +53,15 @@ keyed by the emoji (or a classic type name like `like`; a custom org-uploaded re
 and valued by the reactors' display names, falling back to id then `?`, so the list's length is the
 count. Attribution separates "somebody acknowledged this" from "I already reacted to this".
 
+An adaptive card arrives as an attachment whose `content` is the card JSON as a string, and the
+message list returns it without any `$expand`; the body of a card-only message is empty. So
+`CardToText` walks the card and appends what a person would see to the body: `TextBlock` and
+`RichTextBlock` text and `FactSet` facts as `title: value`, one element per line, found through
+`Container`, `ColumnSet`, `Column` and `Table` nesting. Images, inputs and actions are skipped, and a
+card whose JSON does not parse adds nothing rather than failing the read. The appended text counts
+against `body_limit` like any other body, and the attachment entry stays, so a caller can tell the
+text came from a card. Quote cards (`messageReference`) keep their `content` dropped.
+
 ## Downloading images
 
 `download_message_images` handles the two ways a message carries an image.

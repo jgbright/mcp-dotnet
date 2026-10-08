@@ -217,8 +217,9 @@ with the candidates listed rather than resolved to the most recently active one,
 resolved to is logged at Info. `get_current_user` returns the signed-in identity and that self-chat
 id, which Graph does not include in the chat listing; `list_chats` carries it as a row marked
 `kind: "self"`. Message reads return `{messages, hasMore?, skipped?}`; deleted and system messages are
-skipped and counted. Bodies come back as plain text, links kept as `text (url)`, truncated at
-`body_limit` and flagged with `truncated: true`. Null fields are omitted everywhere.
+skipped and counted. Bodies come back as plain text, links kept as `text (url)`, with an adaptive
+card's visible text after any body text, truncated at `body_limit` and flagged with
+`truncated: true`. Null fields are omitted everywhere.
 
 Search, over the Microsoft Search index: `search_messages`, `list_mentions`, and the waiters
 `wait_for_mentions` and `wait_for_any_message`. These four are the only tools that span every chat

@@ -351,8 +351,9 @@ partial class Program
         nothing happened: read the parameter list it gives you and call again. Parameter names are
         snake_case.
 
-        Message bodies arrive as plain text, not HTML — links are kept as "text (url)". A body cut at
-        `body_limit` is marked `truncated`; raise the limit and re-read rather than inferring the rest.
+        Message bodies arrive as plain text, not HTML — links are kept as "text (url)", and an adaptive
+        card's visible text follows any body text, the card still listed in `attachments`. A body cut
+        at `body_limit` is marked `truncated`; raise the limit and re-read rather than inferring the rest.
 
         Teams and channels are named or given by id, whichever the caller has: an ambiguous or unknown
         name fails with the candidates listed, so re-call with one of them rather than guessing.

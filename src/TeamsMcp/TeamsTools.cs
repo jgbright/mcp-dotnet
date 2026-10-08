@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Azure.Identity;
@@ -19,7 +20,8 @@ namespace TeamsMcp;
 
 // Output conventions, all serving a model's context window: null fields are omitted (configured
 // in Program.cs), messageType appears only on non-user messages, deleted and system messages are
-// skipped by default and counted in `skipped`, and bodies arrive as plain text cut at body_limit.
+// skipped by default and counted in `skipped`, and bodies arrive as plain text cut at body_limit,
+// with an adaptive card's visible text appended.
 [McpServerToolType]
 public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> log)
 {
@@ -1657,7 +1659,16 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             return null;
         }
 
-        var (body, truncated) = TruncateBody(ToPlainText(msg.Body), bodyLimit);
+        // A card's visible text follows the body, so a card-only message reads like any other.
+        var text = ToPlainText(msg.Body);
+        foreach (var card in (msg.Attachments ?? []).Where(a => a.ContentType == AdaptiveCardContentType))
+        {
+            if (CardToText(card.Content) is { Length: > 0 } cardText)
+            {
+                text = string.IsNullOrEmpty(text) ? cardText : text + "\n" + cardText;
+            }
+        }
+        var (body, truncated) = TruncateBody(text, bodyLimit);
 
         List<MessageDto>? replies = null;
         if (includeReplies && msg.Replies is { Count: > 0 })
@@ -1743,6 +1754,88 @@ public sealed partial class TeamsTools(GraphContext graph, ILogger<TeamsTools> l
             return null;
         }
         return body.ContentType == BodyType.Html ? HtmlToText(content) : content.Trim();
+    }
+
+    internal const string AdaptiveCardContentType = "application/vnd.microsoft.card.adaptive";
+
+    /// <summary>
+    /// The text an adaptive card shows, one element per line: TextBlock and RichTextBlock text,
+    /// FactSet facts as "title: value", and whatever containers hold. Images, inputs and actions
+    /// are skipped. Null when the card JSON does not parse, so one bad card cannot fail a read.
+    /// </summary>
+    internal static string? CardToText(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+        JsonNode? card;
+        try
+        {
+            card = JsonNode.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        var lines = new List<string>();
+        try
+        {
+            Walk(card);
+        }
+        catch (InvalidOperationException)
+        {
+            return null; // a node of the wrong JSON kind where the schema expects text
+        }
+        return lines.Count > 0 ? string.Join("\n", lines) : null;
+
+        void Add(string? line)
+        {
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                lines.Add(line.Trim());
+            }
+        }
+
+        void Walk(JsonNode? node)
+        {
+            if (node is JsonArray array)
+            {
+                foreach (var item in array)
+                {
+                    Walk(item);
+                }
+                return;
+            }
+            if (node is not JsonObject element)
+            {
+                return;
+            }
+            switch ((string?)element["type"])
+            {
+                case "TextBlock":
+                    Add((string?)element["text"]);
+                    return;
+                case "RichTextBlock":
+                    // Inlines are a string or a TextRun, and together they make one line.
+                    Add(string.Concat((element["inlines"] as JsonArray ?? [])
+                        .Select(i => i is JsonObject run ? (string?)run["text"] : (string?)i)));
+                    return;
+                case "FactSet":
+                    foreach (var fact in element["facts"] as JsonArray ?? [])
+                    {
+                        Add($"{(string?)fact?["title"]}: {(string?)fact?["value"]}");
+                    }
+                    return;
+            }
+            // The card, Container, ColumnSet, Column, Table and its cells: recurse into what they
+            // hold. Actions live under "actions" and are never reached.
+            Walk(element["body"]);
+            Walk(element["items"]);
+            Walk(element["columns"]);
+            Walk(element["rows"]);
+            Walk(element["cells"]);
+        }
     }
 
     internal static string? FromHtml(string? html) => string.IsNullOrEmpty(html) ? null : HtmlToText(html);
