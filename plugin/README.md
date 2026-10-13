@@ -63,9 +63,15 @@ The plugin also carries a hooks module (`hooks/`, Claude Code function hooks, ea
 access) that does two things for Teams drafts.
 
 **Send gate.** A Teams send to anyone but the self chat goes through only when its body
-was approved. There are two ways to approve. The user reacts to that exact body's
-self-chat draft, and the gate reads the reaction back before letting the send through.
-Or the user presses Send in the drafts pane. Each approval covers one send. The gate
+was approved. There are three ways to approve. The user types an instruction to send
+("send it", "post", "go ahead", "ship it") after the body's self-chat draft was posted;
+the gate counts only prompts the user entered at the terminal or through Remote Control,
+never one a plugin submitted or text read from a tool. The user reacts to the self-chat
+draft, and the gate reads the reaction back before letting the send through. Or the user
+presses Send in the drafts pane. A draft may open with one label line ("Option A, …", a
+heading, a bold line) and a blank line, and still approves the body below it. Each
+approval covers one send call; one typed instruction may cover several bodies sent to one
+chat in a single `send_chat_messages` call. The gate
 also refuses any reaction placed in the self chat, since reactions there are the user's
 approvals, and refuses a body that still carries teams-followup's "React to approve"
 cue. Reactions in other chats pass. A phone approval is tied to the body, not to the

@@ -1,7 +1,7 @@
 {
   "name": "mcp-dotnet",
   "description": "Microsoft Teams and Azure DevOps MCP servers (.NET) with companion skills for messaging, watching conversations, handling a message end to end, and re-authenticating, plus a send gate and drafts pane for Teams drafts.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "author": {
     "name": "Jason Bright"
   },
@@ -10,7 +10,7 @@
     "sendGate": {
       "type": "boolean",
       "title": "Teams send gate",
-      "description": "Refuse Teams sends to anyone but the self chat unless the body was approved by a reaction on its self-chat draft or a Send press in the drafts pane.",
+      "description": "Refuse Teams sends to anyone but the self chat unless the body was approved: a send instruction the user typed after its self-chat draft was posted, a reaction on that draft, or a Send press in the drafts pane.",
       "default": true
     }
   }
